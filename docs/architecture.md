@@ -20,3 +20,5 @@ Each deployable service owns its presentation and infrastructure adapters. Share
 - Containers are disposable; state belongs in an external store.
 - Message contracts are versioned.
 - Secrets never enter source control or image layers.
+- Use one explicitly supported Python minor version across local development, tests, and service containers (Python 3.12).
+
