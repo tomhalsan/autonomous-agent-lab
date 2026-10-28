@@ -1,5 +1,7 @@
 from typing import Protocol
+
 from agent_contracts import TaskRequested
+
 
 class TaskQueue(Protocol):
     async def enqueue(self, task: TaskRequested) -> None: ...

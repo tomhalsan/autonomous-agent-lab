@@ -1,6 +1,7 @@
 import redis.asyncio as redis
 from agent_contracts import TaskRequested
 
+
 class RedisGateway:
     def __init__(self, url: str) -> None:
         self._client = redis.from_url(url, decode_responses=True)
@@ -15,3 +16,7 @@ class RedisGateway:
     async def events(self, limit: int = 50) -> list[dict[str, str]]:
         rows = await self._client.xrevrange("agent.events", count=limit)
         return [dict(fields, event_id=event_id) for event_id, fields in rows]
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+

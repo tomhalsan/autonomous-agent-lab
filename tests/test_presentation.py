@@ -1,6 +1,18 @@
 import pytest
-from orchestrator.presentation.api import TaskInput, dashboard
+from orchestrator.config import Settings
+from orchestrator.presentation.api import (
+    TaskInput,
+    agents,
+    create_app,
+    create_task,
+    dashboard,
+    events,
+    health,
+)
 from pydantic import ValidationError
+from starlette.requests import Request
+
+from tests.test_application import FakeStateReader, FakeTaskQueue
 
 
 def test_task_input_rejects_empty_prompt() -> None:
@@ -25,3 +37,45 @@ async def test_dashboard_html_binds_prompt_element_explicitly() -> None:
     assert "JSON.stringify({prompt:prompt.value})" not in html
     assert "JSON.stringify({prompt: prompt.value})" not in html
     assert "task.onsubmit" not in html
+
+
+@pytest.mark.anyio
+async def test_health_endpoint() -> None:
+    res = await health()
+    assert res == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_create_app_with_fakes_and_endpoints() -> None:
+    fake_queue = FakeTaskQueue()
+    fake_reader = FakeStateReader(
+        agents_data=[{"agent_id": "worker-1", "state": "idle"}],
+        events_data=[{"event_id": "1", "state": "idle"}],
+    )
+    custom_settings = Settings(redis_url="redis://fake:6379/9", app_env="test")
+
+    app = create_app(
+        settings=custom_settings,
+        task_queue=fake_queue,
+        state_reader=fake_reader,
+    )
+
+    assert app.state.settings.app_env == "test"
+    assert app.state.gateway is None
+
+    req = Request({"type": "http", "app": app})
+
+    # Test task submission endpoint
+    task_res = await create_task(TaskInput(prompt="build agent"), request=req)
+    assert task_res["status"] == "accepted"
+    assert len(fake_queue.enqueued) == 1
+    assert fake_queue.enqueued[0].prompt == "build agent"
+
+    # Test agents query endpoint
+    agents_res = await agents(request=req)
+    assert agents_res == [{"agent_id": "worker-1", "state": "idle"}]
+
+    # Test events query endpoint
+    events_res = await events(request=req, limit=10)
+    assert events_res == [{"event_id": "1", "state": "idle"}]
+    assert fake_reader.last_events_limit == 10

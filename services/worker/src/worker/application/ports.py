@@ -1,5 +1,7 @@
 from typing import Protocol
+
 from agent_contracts import AgentEvent, TaskRequested
+
 
 class MessageBus(Protocol):
     async def next_task(self) -> TaskRequested: ...
