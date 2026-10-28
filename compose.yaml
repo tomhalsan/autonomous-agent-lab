@@ -1,0 +1,53 @@
+name: autonomous-agent-lab
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis_data:/data
+    networks: [agent_net]
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      APP_ENV: ${APP_ENV:-development}
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [agent_net]
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      AGENT_ID: worker-1
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [agent_net]
+    restart: unless-stopped
+
+networks:
+  agent_net:
+    driver: bridge
+volumes:
+  redis_data:
