@@ -28,8 +28,9 @@ From another computer on your LAN, use `http://<windows-host-ip>:8080` after all
 ## Quality checks
 
 ```bash
-python -m pip install pytest ruff
+python -m pip install -r requirements-dev.txt
 python -m pytest
+python -m ruff check .
 docker compose config
 ```
 

@@ -1,0 +1,6 @@
+-r services/orchestrator/requirements.txt
+-r services/worker/requirements.txt
+pytest>=9.0.0
+anyio>=4.0.0
+ruff>=0.17.0
+
