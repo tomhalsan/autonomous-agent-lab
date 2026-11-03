@@ -20,8 +20,6 @@ services:
     environment:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       APP_ENV: ${APP_ENV:-development}
-    ports:
-      - "8080:8080"
     depends_on:
       redis:
         condition: service_healthy
@@ -44,6 +42,15 @@ services:
       redis:
         condition: service_healthy
     networks: [agent_net]
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - agent_net
     restart: unless-stopped
 
 networks:
