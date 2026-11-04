@@ -2,9 +2,16 @@ from typing import Protocol
 
 from agent_contracts import TaskRequested
 
+from orchestrator.domain.capability import AgentCapability
+
 
 class TaskQueue(Protocol):
-    async def enqueue(self, task: TaskRequested) -> None: ...
+    async def enqueue(
+        self,
+        task: TaskRequested,
+        capability: AgentCapability = AgentCapability.GENERAL,
+    ) -> None: ...
+
 
 class StateReader(Protocol):
     async def agents(self) -> list[dict[str, str]]: ...

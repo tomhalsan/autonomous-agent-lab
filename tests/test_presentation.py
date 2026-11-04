@@ -1,5 +1,6 @@
 import pytest
 from orchestrator.config import Settings
+from orchestrator.domain.capability import AgentCapability
 from orchestrator.presentation.api import (
     TaskInput,
     agents,
@@ -69,7 +70,9 @@ async def test_create_app_with_fakes_and_endpoints() -> None:
     task_res = await create_task(TaskInput(prompt="build agent"), request=req)
     assert task_res["status"] == "accepted"
     assert len(fake_queue.enqueued) == 1
-    assert fake_queue.enqueued[0].prompt == "build agent"
+    enqueued_task, capability = fake_queue.enqueued[0]
+    assert enqueued_task.prompt == "build agent"
+    assert capability == AgentCapability.GENERAL
 
     # Test agents query endpoint
     agents_res = await agents(request=req)

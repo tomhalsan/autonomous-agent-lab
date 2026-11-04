@@ -2,15 +2,19 @@ import pytest
 from agent_contracts import TaskRequested
 from orchestrator.application.queries import GetAgentStates, GetRecentEvents
 from orchestrator.application.use_cases import SubmitTask
+from orchestrator.domain.capability import AgentCapability
 
 
 class FakeTaskQueue:
     def __init__(self) -> None:
-        self.enqueued: list[TaskRequested] = []
+        self.enqueued: list[tuple[TaskRequested, AgentCapability]] = []
 
-    async def enqueue(self, task: TaskRequested) -> None:
-        self.enqueued.append(task)
-
+    async def enqueue(
+        self,
+        task: TaskRequested,
+        capability: AgentCapability = AgentCapability.GENERAL,
+    ) -> None:
+        self.enqueued.append((task, capability))
 
 class FakeStateReader:
     def __init__(
@@ -38,8 +42,11 @@ async def test_submit_task_use_case() -> None:
 
     assert task.prompt == "test task prompt"
     assert len(queue.enqueued) == 1
-    assert queue.enqueued[0].prompt == "test task prompt"
 
+    enqueued_task, capability = queue.enqueued[0]
+
+    assert enqueued_task.prompt == "test task prompt"
+    assert capability == AgentCapability.GENERAL
 
 @pytest.mark.anyio
 async def test_get_agent_states_query() -> None:
@@ -75,3 +82,20 @@ async def test_get_recent_events_bounds_limits() -> None:
     # Test valid within-range limit
     await query.execute(limit=25)
     assert reader.last_events_limit == 25
+
+@pytest.mark.anyio
+async def test_submit_research_task_routes_to_research_capability() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    task = await use_case.execute(
+        "Compare local and cloud LLMs",
+        capability=AgentCapability.RESEARCH,
+    )
+
+    assert len(queue.enqueued) == 1
+
+    enqueued_task, capability = queue.enqueued[0]
+
+    assert enqueued_task == task
+    assert capability == AgentCapability.RESEARCH
