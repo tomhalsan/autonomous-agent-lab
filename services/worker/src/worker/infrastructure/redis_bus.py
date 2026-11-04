@@ -36,12 +36,13 @@ async def retry_with_backoff[T](
 
 
 class RedisBus:
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, queue_name: str = "agent.tasks.general") -> None:
         self.client = redis.from_url(url, decode_responses=True)
+        self.queue_name = queue_name
 
     async def next_task(self) -> TaskRequested:
         async def _fetch():
-            return await self.client.blpop("agent.tasks", timeout=2)
+            return await self.client.blpop(self.queue_name, timeout=2)
 
         while True:
             res = await retry_with_backoff(_fetch)

@@ -19,10 +19,11 @@ logger = logging.getLogger("worker")
 async def run_worker() -> None:
     agent_id = os.getenv("AGENT_ID", "worker-1")
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    bus = RedisBus(redis_url)
+    task_queue = os.getenv("TASK_QUEUE", "agent.tasks.general")
+    bus = RedisBus(redis_url, queue_name=task_queue)
     processor = TaskProcessor(agent_id, bus)
 
-    logger.info("Initializing worker %s...", agent_id)
+    logger.info("Initializing worker %s on queue %s...", agent_id, task_queue)
 
     try:
         await bus.publish(AgentEvent.create(agent_id, "idle", "Waiting for work"))

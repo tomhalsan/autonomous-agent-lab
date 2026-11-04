@@ -1,16 +1,26 @@
+from typing import Any
+
 import pytest
 from agent_contracts import TaskRequested
-from orchestrator.application.queries import GetAgentStates, GetRecentEvents
+from orchestrator.application.queries import (
+    GetAgentStates,
+    GetRecentEvents,
+    GetTaskResult,
+)
 from orchestrator.application.use_cases import SubmitTask
+from orchestrator.domain.capability import AgentCapability
 
 
 class FakeTaskQueue:
     def __init__(self) -> None:
-        self.enqueued: list[TaskRequested] = []
+        self.enqueued: list[tuple[TaskRequested, AgentCapability]] = []
 
-    async def enqueue(self, task: TaskRequested) -> None:
-        self.enqueued.append(task)
-
+    async def enqueue(
+        self,
+        task: TaskRequested,
+        capability: AgentCapability = AgentCapability.GENERAL,
+    ) -> None:
+        self.enqueued.append((task, capability))
 
 class FakeStateReader:
     def __init__(
@@ -30,6 +40,23 @@ class FakeStateReader:
         return self.events_data[:limit]
 
 
+class FakeResultReader:
+    def __init__(
+        self,
+        results: dict[str, dict[str, Any]] | None = None,
+        pending: set[str] | None = None,
+    ) -> None:
+        self.results = results or {}
+        self.pending = pending or set()
+
+    async def get_result(self, task_id: str) -> dict[str, Any] | None:
+        if task_id in self.results:
+            return self.results[task_id]
+        if task_id in self.pending:
+            return {"task_id": task_id, "status": "pending", "output": None}
+        return None
+
+
 @pytest.mark.anyio
 async def test_submit_task_use_case() -> None:
     queue = FakeTaskQueue()
@@ -38,8 +65,11 @@ async def test_submit_task_use_case() -> None:
 
     assert task.prompt == "test task prompt"
     assert len(queue.enqueued) == 1
-    assert queue.enqueued[0].prompt == "test task prompt"
 
+    enqueued_task, capability = queue.enqueued[0]
+
+    assert enqueued_task.prompt == "test task prompt"
+    assert capability == AgentCapability.GENERAL
 
 @pytest.mark.anyio
 async def test_get_agent_states_query() -> None:
@@ -75,3 +105,122 @@ async def test_get_recent_events_bounds_limits() -> None:
     # Test valid within-range limit
     await query.execute(limit=25)
     assert reader.last_events_limit == 25
+
+@pytest.mark.anyio
+async def test_submit_research_task_routes_to_research_capability() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    task = await use_case.execute(
+        "Compare local and cloud LLMs",
+        capability=AgentCapability.RESEARCH,
+    )
+
+    assert len(queue.enqueued) == 1
+
+    enqueued_task, capability = queue.enqueued[0]
+
+    assert enqueued_task == task
+    assert capability == AgentCapability.RESEARCH
+
+
+@pytest.mark.anyio
+async def test_submit_task_automatic_routing_research() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    task = await use_case.execute("Compare local and cloud LLMs")
+
+    assert len(queue.enqueued) == 1
+    enqueued_task, capability = queue.enqueued[0]
+    assert enqueued_task == task
+    assert capability == AgentCapability.RESEARCH
+
+
+@pytest.mark.anyio
+async def test_submit_task_automatic_routing_general() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    task = await use_case.execute("build agent")
+
+    assert len(queue.enqueued) == 1
+    enqueued_task, capability = queue.enqueued[0]
+    assert enqueued_task == task
+    assert capability == AgentCapability.GENERAL
+
+
+@pytest.mark.anyio
+async def test_submit_task_preserves_explicit_capability_override() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    # Research prompt explicitly directed to GENERAL
+    task1 = await use_case.execute(
+        "Investigate system logs",
+        capability=AgentCapability.GENERAL,
+    )
+    assert queue.enqueued[0] == (task1, AgentCapability.GENERAL)
+
+    # General prompt explicitly directed to RESEARCH
+    task2 = await use_case.execute(
+        "build agent",
+        capability=AgentCapability.RESEARCH,
+    )
+    assert queue.enqueued[1] == (task2, AgentCapability.RESEARCH)
+
+
+class FakeCapabilityRouter:
+    def __init__(self, capability_to_return: AgentCapability) -> None:
+        self.capability_to_return = capability_to_return
+        self.routed_prompts: list[str] = []
+
+    def route(self, prompt: str) -> AgentCapability:
+        self.routed_prompts.append(prompt)
+        return self.capability_to_return
+
+
+@pytest.mark.anyio
+async def test_submit_task_uses_injected_router() -> None:
+    queue = FakeTaskQueue()
+    fake_router = FakeCapabilityRouter(AgentCapability.RESEARCH)
+    use_case = SubmitTask(queue, router=fake_router)
+
+    # Non-research prompt routed to RESEARCH via injected router
+    task = await use_case.execute("simple task")
+
+    assert fake_router.routed_prompts == ["simple task"]
+    assert queue.enqueued[0] == (task, AgentCapability.RESEARCH)
+
+
+@pytest.mark.anyio
+async def test_get_task_result_query_completed() -> None:
+    expected = {
+        "task_id": "task-1",
+        "status": "completed",
+        "output": "research findings",
+    }
+    reader = FakeResultReader(results={"task-1": expected})
+    query = GetTaskResult(reader)
+
+    result = await query.execute("task-1")
+    assert result == expected
+
+
+@pytest.mark.anyio
+async def test_get_task_result_query_pending() -> None:
+    reader = FakeResultReader(pending={"task-pending-1"})
+    query = GetTaskResult(reader)
+
+    result = await query.execute("task-pending-1")
+    assert result == {"task_id": "task-pending-1", "status": "pending", "output": None}
+
+
+@pytest.mark.anyio
+async def test_get_task_result_query_not_found() -> None:
+    reader = FakeResultReader()
+    query = GetTaskResult(reader)
+
+    result = await query.execute("non-existent-task")
+    assert result is None
+
