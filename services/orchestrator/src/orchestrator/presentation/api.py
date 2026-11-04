@@ -5,15 +5,17 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from orchestrator.application.ports import StateReader, TaskQueue
+from orchestrator.application.ports import CapabilityRouter, StateReader, TaskQueue
 from orchestrator.application.queries import GetAgentStates, GetRecentEvents
 from orchestrator.application.use_cases import SubmitTask
 from orchestrator.config import Settings
+from orchestrator.domain.capability import AgentCapability
 from orchestrator.infrastructure.redis_adapter import RedisGateway
 
 
 class TaskInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=2000)
+    capability: AgentCapability | None = None
 
 
 async def health() -> dict[str, str]:
@@ -27,7 +29,7 @@ async def dashboard() -> str:
 async def create_task(value: TaskInput, request: Request) -> dict[str, str]:
     submit_task: SubmitTask = request.app.state.submit_task
     try:
-        task = await submit_task.execute(value.prompt)
+        task = await submit_task.execute(value.prompt, capability=value.capability)
         return {"task_id": task.task_id, "status": "accepted"}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -48,6 +50,7 @@ def create_app(
     gateway: RedisGateway | None = None,
     task_queue: TaskQueue | None = None,
     state_reader: StateReader | None = None,
+    router: CapabilityRouter | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
 
@@ -57,7 +60,7 @@ def create_app(
     queue = task_queue or gateway
     reader = state_reader or gateway
 
-    submit_task = SubmitTask(queue)
+    submit_task = SubmitTask(queue, router=router)
     get_agent_states = GetAgentStates(reader)
     get_recent_events = GetRecentEvents(reader)
 

@@ -99,3 +99,72 @@ async def test_submit_research_task_routes_to_research_capability() -> None:
 
     assert enqueued_task == task
     assert capability == AgentCapability.RESEARCH
+
+
+@pytest.mark.anyio
+async def test_submit_task_automatic_routing_research() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    task = await use_case.execute("Compare local and cloud LLMs")
+
+    assert len(queue.enqueued) == 1
+    enqueued_task, capability = queue.enqueued[0]
+    assert enqueued_task == task
+    assert capability == AgentCapability.RESEARCH
+
+
+@pytest.mark.anyio
+async def test_submit_task_automatic_routing_general() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    task = await use_case.execute("build agent")
+
+    assert len(queue.enqueued) == 1
+    enqueued_task, capability = queue.enqueued[0]
+    assert enqueued_task == task
+    assert capability == AgentCapability.GENERAL
+
+
+@pytest.mark.anyio
+async def test_submit_task_preserves_explicit_capability_override() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    # Research prompt explicitly directed to GENERAL
+    task1 = await use_case.execute(
+        "Investigate system logs",
+        capability=AgentCapability.GENERAL,
+    )
+    assert queue.enqueued[0] == (task1, AgentCapability.GENERAL)
+
+    # General prompt explicitly directed to RESEARCH
+    task2 = await use_case.execute(
+        "build agent",
+        capability=AgentCapability.RESEARCH,
+    )
+    assert queue.enqueued[1] == (task2, AgentCapability.RESEARCH)
+
+
+class FakeCapabilityRouter:
+    def __init__(self, capability_to_return: AgentCapability) -> None:
+        self.capability_to_return = capability_to_return
+        self.routed_prompts: list[str] = []
+
+    def route(self, prompt: str) -> AgentCapability:
+        self.routed_prompts.append(prompt)
+        return self.capability_to_return
+
+
+@pytest.mark.anyio
+async def test_submit_task_uses_injected_router() -> None:
+    queue = FakeTaskQueue()
+    fake_router = FakeCapabilityRouter(AgentCapability.RESEARCH)
+    use_case = SubmitTask(queue, router=fake_router)
+
+    # Non-research prompt routed to RESEARCH via injected router
+    task = await use_case.execute("simple task")
+
+    assert fake_router.routed_prompts == ["simple task"]
+    assert queue.enqueued[0] == (task, AgentCapability.RESEARCH)

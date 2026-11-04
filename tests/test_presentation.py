@@ -82,3 +82,48 @@ async def test_create_app_with_fakes_and_endpoints() -> None:
     events_res = await events(request=req, limit=10)
     assert events_res == [{"event_id": "1", "state": "idle"}]
     assert fake_reader.last_events_limit == 10
+
+
+@pytest.mark.anyio
+async def test_create_task_automatic_research_routing() -> None:
+    fake_queue = FakeTaskQueue()
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        task_queue=fake_queue,
+        state_reader=FakeStateReader(),
+    )
+    req = Request({"type": "http", "app": app})
+
+    task_res = await create_task(
+        TaskInput(prompt="Research consensus algorithms"),
+        request=req,
+    )
+    assert task_res["status"] == "accepted"
+    assert len(fake_queue.enqueued) == 1
+    enqueued_task, capability = fake_queue.enqueued[0]
+    assert enqueued_task.prompt == "Research consensus algorithms"
+    assert capability == AgentCapability.RESEARCH
+
+
+@pytest.mark.anyio
+async def test_create_task_explicit_capability_override() -> None:
+    fake_queue = FakeTaskQueue()
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        task_queue=fake_queue,
+        state_reader=FakeStateReader(),
+    )
+    req = Request({"type": "http", "app": app})
+
+    task_res = await create_task(
+        TaskInput(
+            prompt="Research consensus algorithms",
+            capability=AgentCapability.GENERAL,
+        ),
+        request=req,
+    )
+    assert task_res["status"] == "accepted"
+    assert len(fake_queue.enqueued) == 1
+    enqueued_task, capability = fake_queue.enqueued[0]
+    assert enqueued_task.prompt == "Research consensus algorithms"
+    assert capability == AgentCapability.GENERAL

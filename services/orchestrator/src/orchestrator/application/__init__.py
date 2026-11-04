@@ -1,6 +1,13 @@
-from .ports import StateReader, TaskQueue
+from .ports import CapabilityRouter, StateReader, TaskQueue
 from .queries import GetAgentStates, GetRecentEvents
 from .use_cases import SubmitTask
 
-__all__ = ["GetAgentStates", "GetRecentEvents", "StateReader", "SubmitTask", "TaskQueue"]
+__all__ = [
+    "CapabilityRouter",
+    "GetAgentStates",
+    "GetRecentEvents",
+    "StateReader",
+    "SubmitTask",
+    "TaskQueue",
+]
 
