@@ -53,6 +53,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       AGENT_ID: research-agent-1
       TASK_QUEUE: ${RESEARCH_TASK_QUEUE:-agent.tasks.research}
+      RESEARCH_EXECUTOR: ${RESEARCH_EXECUTOR:-stub}
     depends_on:
       redis:
         condition: service_healthy

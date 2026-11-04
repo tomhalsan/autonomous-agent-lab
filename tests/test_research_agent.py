@@ -6,6 +6,7 @@ from agent_contracts import AgentEvent, TaskRequested
 from orchestrator.application.queries import GetAgentStates, GetRecentEvents
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
 from research_agent.domain.models import ResearchResult
+from research_agent.infrastructure.executor_factory import create_research_executor
 from research_agent.infrastructure.redis_bus import RedisBus
 from research_agent.infrastructure.stub_executor import StubResearchExecutor
 
@@ -276,3 +277,109 @@ async def test_run_research_agent_env_overrides(monkeypatch: pytest.MonkeyPatch)
             "redis://localhost:6379/0",
             queue_name="custom.tasks.research",
         )
+
+
+# --- ResearchExecutor Factory & Selection Tests ---
+
+
+def test_create_research_executor_default_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RESEARCH_EXECUTOR", raising=False)
+    executor = create_research_executor()
+    assert isinstance(executor, StubResearchExecutor)
+
+
+def test_create_research_executor_explicit_stub() -> None:
+    executor = create_research_executor("stub")
+    assert isinstance(executor, StubResearchExecutor)
+
+    # Verify case and whitespace insensitivity
+    executor_caps = create_research_executor("  STUB  ")
+    assert isinstance(executor_caps, StubResearchExecutor)
+
+
+def test_create_research_executor_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "stub")
+    executor = create_research_executor()
+    assert isinstance(executor, StubResearchExecutor)
+
+
+def test_create_research_executor_unsupported_raises() -> None:
+    with pytest.raises(ValueError, match="Unsupported research executor: 'llm'"):
+        create_research_executor("llm")
+
+    with pytest.raises(ValueError, match="Unsupported research executor: 'unknown'"):
+        create_research_executor("unknown")
+
+    with pytest.raises(ValueError, match="Unsupported research executor: ''"):
+        create_research_executor("")
+
+
+def test_create_research_executor_unsupported_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "unsupported_provider")
+    with pytest.raises(ValueError, match="Unsupported research executor: 'unsupported_provider'"):
+        create_research_executor()
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_creates_stub_executor_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RESEARCH_EXECUTOR", raising=False)
+
+    with (
+        patch("research_agent.main.RedisBus") as mock_bus_cls,
+        patch("research_agent.main.ResearchProcessor") as mock_processor_cls,
+    ):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_processor_cls.assert_called_once()
+        _, _, executor_arg = mock_processor_cls.call_args[0]
+        assert isinstance(executor_arg, StubResearchExecutor)
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_explicit_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "stub")
+
+    with (
+        patch("research_agent.main.RedisBus") as mock_bus_cls,
+        patch("research_agent.main.ResearchProcessor") as mock_processor_cls,
+    ):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_processor_cls.assert_called_once()
+        _, _, executor_arg = mock_processor_cls.call_args[0]
+        assert isinstance(executor_arg, StubResearchExecutor)
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_unsupported_executor_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "unsupported_model")
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls:
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(ValueError, match="Unsupported research executor: 'unsupported_model'"):
+            await run_research_agent()
+
+        # Fails before attempting any Redis connection
+        mock_bus_cls.assert_not_called()
+

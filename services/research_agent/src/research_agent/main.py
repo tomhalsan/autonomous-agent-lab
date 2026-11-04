@@ -6,8 +6,8 @@ import sys
 from agent_contracts import AgentEvent
 
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
+from research_agent.infrastructure.executor_factory import create_research_executor
 from research_agent.infrastructure.redis_bus import RedisBus
-from research_agent.infrastructure.stub_executor import StubResearchExecutor
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -21,12 +21,18 @@ async def run_research_agent() -> None:
     agent_id = os.getenv("AGENT_ID", "research-agent-1")
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     task_queue = os.getenv("TASK_QUEUE", "agent.tasks.research")
+    executor_name = os.getenv("RESEARCH_EXECUTOR", "stub")
 
+    executor = create_research_executor(executor_name)
     bus = RedisBus(redis_url, queue_name=task_queue)
-    executor = StubResearchExecutor()
     processor = ResearchProcessor(agent_id, bus, executor)
 
-    logger.info("Initializing research agent %s on queue %s...", agent_id, task_queue)
+    logger.info(
+        "Initializing research agent %s on queue %s with executor %s...",
+        agent_id,
+        task_queue,
+        executor_name,
+    )
 
     try:
         await bus.publish(AgentEvent.create(agent_id, "idle", "Waiting for work"))
