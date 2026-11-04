@@ -45,6 +45,20 @@ services:
     networks: [agent_net]
     restart: unless-stopped
 
+  research-agent:
+    build:
+      context: .
+      dockerfile: services/research_agent/Dockerfile
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      AGENT_ID: research-agent-1
+      TASK_QUEUE: ${RESEARCH_TASK_QUEUE:-agent.tasks.research}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [agent_net]
+    restart: unless-stopped
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     command: tunnel --no-autoupdate run
