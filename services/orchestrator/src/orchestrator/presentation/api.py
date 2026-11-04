@@ -1,12 +1,22 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from orchestrator.application.ports import CapabilityRouter, StateReader, TaskQueue
-from orchestrator.application.queries import GetAgentStates, GetRecentEvents
+from orchestrator.application.ports import (
+    CapabilityRouter,
+    ResultReader,
+    StateReader,
+    TaskQueue,
+)
+from orchestrator.application.queries import (
+    GetAgentStates,
+    GetRecentEvents,
+    GetTaskResult,
+)
 from orchestrator.application.use_cases import SubmitTask
 from orchestrator.config import Settings
 from orchestrator.domain.capability import AgentCapability
@@ -45,24 +55,45 @@ async def events(request: Request, limit: int = 25) -> list[dict[str, str]]:
     return await get_recent_events.execute(limit=limit)
 
 
+async def task_result(task_id: str, request: Request) -> dict[str, Any]:
+    get_task_result: GetTaskResult = request.app.state.get_task_result
+    result = await get_task_result.execute(task_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+    return result
+
+
+class NoOpResultReader:
+    async def get_result(self, task_id: str) -> dict[str, Any] | None:
+        return None
+
+
 def create_app(
     settings: Settings | None = None,
     gateway: RedisGateway | None = None,
     task_queue: TaskQueue | None = None,
     state_reader: StateReader | None = None,
+    result_reader: ResultReader | None = None,
     router: CapabilityRouter | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
 
-    if gateway is None and task_queue is None and state_reader is None:
+    if (
+        gateway is None
+        and task_queue is None
+        and state_reader is None
+        and result_reader is None
+    ):
         gateway = RedisGateway(resolved_settings.redis_url)
 
     queue = task_queue or gateway
     reader = state_reader or gateway
+    results = result_reader or gateway or NoOpResultReader()
 
     submit_task = SubmitTask(queue, router=router)
     get_agent_states = GetAgentStates(reader)
     get_recent_events = GetRecentEvents(reader)
+    get_task_result = GetTaskResult(results)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -77,12 +108,14 @@ def create_app(
     app.state.submit_task = submit_task
     app.state.get_agent_states = get_agent_states
     app.state.get_recent_events = get_recent_events
+    app.state.get_task_result = get_task_result
 
     app.add_api_route("/health", health, methods=["GET"])
     app.add_api_route("/", dashboard, methods=["GET"], response_class=HTMLResponse)
     app.add_api_route("/api/tasks", create_task, methods=["POST"], status_code=202)
     app.add_api_route("/api/agents", agents, methods=["GET"])
     app.add_api_route("/api/events", events, methods=["GET"])
+    app.add_api_route("/api/tasks/{task_id}/result", task_result, methods=["GET"])
 
     return app
 

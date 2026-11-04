@@ -1,10 +1,13 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from agent_contracts import TaskRequested
 from orchestrator.domain.capability import AgentCapability
 from orchestrator.infrastructure.redis_adapter import RedisGateway
+from research_agent.domain.models import ResearchResult
+from research_agent.infrastructure.redis_bus import RedisBus as ResearchRedisBus
 from worker.infrastructure.redis_bus import RedisBus
 
 
@@ -12,33 +15,39 @@ from worker.infrastructure.redis_bus import RedisBus
 async def test_redis_gateway_routes_general_capability() -> None:
     gateway = RedisGateway("redis://localhost:6379/0")
     gateway._client.rpush = AsyncMock()
+    gateway._client.set = AsyncMock()
     task = TaskRequested.create("general task prompt")
 
     await gateway.enqueue(task, capability=AgentCapability.GENERAL)
 
     gateway._client.rpush.assert_awaited_once_with("agent.tasks.general", task.to_json())
+    gateway._client.set.assert_awaited_once()
 
 
 @pytest.mark.anyio
 async def test_redis_gateway_routes_research_capability() -> None:
     gateway = RedisGateway("redis://localhost:6379/0")
     gateway._client.rpush = AsyncMock()
+    gateway._client.set = AsyncMock()
     task = TaskRequested.create("research task prompt")
 
     await gateway.enqueue(task, capability=AgentCapability.RESEARCH)
 
     gateway._client.rpush.assert_awaited_once_with("agent.tasks.research", task.to_json())
+    gateway._client.set.assert_awaited_once()
 
 
 @pytest.mark.anyio
 async def test_redis_gateway_defaults_to_general() -> None:
     gateway = RedisGateway("redis://localhost:6379/0")
     gateway._client.rpush = AsyncMock()
+    gateway._client.set = AsyncMock()
     task = TaskRequested.create("default task prompt")
 
     await gateway.enqueue(task)
 
     gateway._client.rpush.assert_awaited_once_with("agent.tasks.general", task.to_json())
+    gateway._client.set.assert_awaited_once()
 
 
 @pytest.mark.anyio
@@ -129,4 +138,68 @@ async def test_run_worker_defaults_to_general_queue(monkeypatch: pytest.MonkeyPa
             "redis://localhost:6379/0",
             queue_name="agent.tasks.general",
         )
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_get_result_completed() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    result_data = {
+        "task_id": "task-res-1",
+        "status": "completed",
+        "output": "Found 3 articles",
+        "acknowledged": True,
+    }
+    gateway._client.get = AsyncMock(return_value=json.dumps(result_data))
+
+    res = await gateway.get_result("task-res-1")
+
+    assert res == result_data
+    gateway._client.get.assert_awaited_once_with("task.result:task-res-1")
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_get_result_pending() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    # First get() for task.result returns None, second for task.status returns status json
+    gateway._client.get = AsyncMock(
+        side_effect=[None, json.dumps({"task_id": "task-res-2", "status": "pending"})]
+    )
+
+    res = await gateway.get_result("task-res-2")
+
+    assert res == {
+        "task_id": "task-res-2",
+        "status": "pending",
+        "output": None,
+    }
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_get_result_unknown() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.get = AsyncMock(return_value=None)
+    gateway.events = AsyncMock(return_value=[])
+
+    res = await gateway.get_result("unknown-task-id")
+
+    assert res is None
+
+
+@pytest.mark.anyio
+async def test_research_redis_bus_save_result() -> None:
+    bus = ResearchRedisBus("redis://localhost:6379/0")
+    bus.client.set = AsyncMock()
+
+    result = ResearchResult(task_id="res-abc-123", output="Full research text")
+    await bus.save(result)
+
+    bus.client.set.assert_awaited_once()
+    key, val = bus.client.set.await_args[0]
+    assert key == "task.result:res-abc-123"
+    loaded = json.loads(val)
+    assert loaded["task_id"] == "res-abc-123"
+    assert loaded["status"] == "completed"
+    assert loaded["output"] == "Full research text"
+    assert loaded["acknowledged"] is True
+
 

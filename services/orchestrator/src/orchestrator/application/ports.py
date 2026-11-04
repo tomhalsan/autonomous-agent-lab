@@ -1,4 +1,4 @@
-from typing import Protocol
+from typing import Any, Protocol
 
 from agent_contracts import TaskRequested
 
@@ -20,3 +20,7 @@ class StateReader(Protocol):
 
 class CapabilityRouter(Protocol):
     def route(self, prompt: str) -> AgentCapability: ...
+
+
+class ResultReader(Protocol):
+    async def get_result(self, task_id: str) -> dict[str, Any] | None: ...

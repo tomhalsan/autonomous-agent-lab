@@ -1,4 +1,5 @@
 import pytest
+from fastapi import HTTPException
 from orchestrator.config import Settings
 from orchestrator.domain.capability import AgentCapability
 from orchestrator.presentation.api import (
@@ -9,11 +10,16 @@ from orchestrator.presentation.api import (
     dashboard,
     events,
     health,
+    task_result,
 )
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from tests.test_application import FakeStateReader, FakeTaskQueue
+from tests.test_application import (
+    FakeResultReader,
+    FakeStateReader,
+    FakeTaskQueue,
+)
 
 
 def test_task_input_rejects_empty_prompt() -> None:
@@ -127,3 +133,61 @@ async def test_create_task_explicit_capability_override() -> None:
     enqueued_task, capability = fake_queue.enqueued[0]
     assert enqueued_task.prompt == "Research consensus algorithms"
     assert capability == AgentCapability.GENERAL
+
+
+@pytest.mark.anyio
+async def test_get_task_result_endpoint_completed() -> None:
+    fake_results = FakeResultReader(
+        results={
+            "task-done-1": {
+                "task_id": "task-done-1",
+                "status": "completed",
+                "output": "Completed research report",
+            }
+        }
+    )
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        result_reader=fake_results,
+    )
+    req = Request({"type": "http", "app": app})
+
+    res = await task_result("task-done-1", request=req)
+    assert res == {
+        "task_id": "task-done-1",
+        "status": "completed",
+        "output": "Completed research report",
+    }
+
+
+@pytest.mark.anyio
+async def test_get_task_result_endpoint_pending() -> None:
+    fake_results = FakeResultReader(pending={"task-waiting-1"})
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        result_reader=fake_results,
+    )
+    req = Request({"type": "http", "app": app})
+
+    res = await task_result("task-waiting-1", request=req)
+    assert res == {
+        "task_id": "task-waiting-1",
+        "status": "pending",
+        "output": None,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_task_result_endpoint_not_found() -> None:
+    fake_results = FakeResultReader()
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        result_reader=fake_results,
+    )
+    req = Request({"type": "http", "app": app})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await task_result("unknown-id", request=req)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Task 'unknown-id' not found"

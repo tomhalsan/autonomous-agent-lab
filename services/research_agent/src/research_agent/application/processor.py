@@ -2,7 +2,7 @@ import logging
 
 from agent_contracts import AgentEvent, TaskRequested
 
-from research_agent.application.ports import MessageBus, ResearchExecutor
+from research_agent.application.ports import MessageBus, ResearchExecutor, ResultStore
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +22,12 @@ class ResearchProcessor:
         agent_id: str,
         bus: MessageBus,
         executor: ResearchExecutor,
+        result_store: ResultStore | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.bus = bus
         self.executor = executor
+        self.result_store = result_store
 
     async def run_once(self, task: TaskRequested) -> None:
         logger.info("Research agent %s processing task %s", self.agent_id, task.task_id)
@@ -36,6 +38,11 @@ class ResearchProcessor:
         )
         try:
             result = await self.executor.execute(task)
+            if self.result_store is not None:
+                await self.result_store.save(result)
+            elif hasattr(self.bus, "save"):
+                await self.bus.save(result)
+
             await self.bus.publish(
                 AgentEvent.create(
                     self.agent_id, "idle", f"Completed: {result.output}", task.task_id

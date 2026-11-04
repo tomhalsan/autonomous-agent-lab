@@ -54,6 +54,7 @@ services:
       AGENT_ID: research-agent-1
       TASK_QUEUE: ${RESEARCH_TASK_QUEUE:-agent.tasks.research}
       RESEARCH_EXECUTOR: ${RESEARCH_EXECUTOR:-stub}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
     depends_on:
       redis:
         condition: service_healthy

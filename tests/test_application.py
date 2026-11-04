@@ -1,6 +1,12 @@
+from typing import Any
+
 import pytest
 from agent_contracts import TaskRequested
-from orchestrator.application.queries import GetAgentStates, GetRecentEvents
+from orchestrator.application.queries import (
+    GetAgentStates,
+    GetRecentEvents,
+    GetTaskResult,
+)
 from orchestrator.application.use_cases import SubmitTask
 from orchestrator.domain.capability import AgentCapability
 
@@ -32,6 +38,23 @@ class FakeStateReader:
     async def events(self, limit: int = 50) -> list[dict[str, str]]:
         self.last_events_limit = limit
         return self.events_data[:limit]
+
+
+class FakeResultReader:
+    def __init__(
+        self,
+        results: dict[str, dict[str, Any]] | None = None,
+        pending: set[str] | None = None,
+    ) -> None:
+        self.results = results or {}
+        self.pending = pending or set()
+
+    async def get_result(self, task_id: str) -> dict[str, Any] | None:
+        if task_id in self.results:
+            return self.results[task_id]
+        if task_id in self.pending:
+            return {"task_id": task_id, "status": "pending", "output": None}
+        return None
 
 
 @pytest.mark.anyio
@@ -168,3 +191,36 @@ async def test_submit_task_uses_injected_router() -> None:
 
     assert fake_router.routed_prompts == ["simple task"]
     assert queue.enqueued[0] == (task, AgentCapability.RESEARCH)
+
+
+@pytest.mark.anyio
+async def test_get_task_result_query_completed() -> None:
+    expected = {
+        "task_id": "task-1",
+        "status": "completed",
+        "output": "research findings",
+    }
+    reader = FakeResultReader(results={"task-1": expected})
+    query = GetTaskResult(reader)
+
+    result = await query.execute("task-1")
+    assert result == expected
+
+
+@pytest.mark.anyio
+async def test_get_task_result_query_pending() -> None:
+    reader = FakeResultReader(pending={"task-pending-1"})
+    query = GetTaskResult(reader)
+
+    result = await query.execute("task-pending-1")
+    assert result == {"task_id": "task-pending-1", "status": "pending", "output": None}
+
+
+@pytest.mark.anyio
+async def test_get_task_result_query_not_found() -> None:
+    reader = FakeResultReader()
+    query = GetTaskResult(reader)
+
+    result = await query.execute("non-existent-task")
+    assert result is None
+

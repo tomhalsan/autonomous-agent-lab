@@ -9,6 +9,7 @@ from research_agent.domain.models import ResearchResult
 from research_agent.infrastructure.executor_factory import create_research_executor
 from research_agent.infrastructure.redis_bus import RedisBus
 from research_agent.infrastructure.stub_executor import StubResearchExecutor
+from research_agent.infrastructure.tavily_executor import TavilyResearchExecutor
 
 
 class FakeMessageBus:
@@ -20,6 +21,14 @@ class FakeMessageBus:
 
     async def next_task(self) -> TaskRequested:
         raise NotImplementedError
+
+
+class FakeResultStore:
+    def __init__(self) -> None:
+        self.saved: dict[str, ResearchResult] = {}
+
+    async def save(self, result: ResearchResult) -> None:
+        self.saved[result.task_id] = result
 
 
 class FakeCompatibilityStateReader:
@@ -382,4 +391,296 @@ async def test_run_research_agent_unsupported_executor_fails_startup(
 
         # Fails before attempting any Redis connection
         mock_bus_cls.assert_not_called()
+
+
+# --- TavilyResearchExecutor Tests ---
+
+
+def test_create_research_executor_tavily_with_env_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "tavily")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-12345")
+    executor = create_research_executor()
+    assert isinstance(executor, TavilyResearchExecutor)
+
+
+def test_create_research_executor_tavily_explicit_name_and_key() -> None:
+    executor = create_research_executor("tavily", api_key="tvly-test-12345")
+    assert isinstance(executor, TavilyResearchExecutor)
+
+    # Verify case and whitespace insensitivity
+    executor_caps = create_research_executor("  TAVILY  ", api_key="tvly-test-12345")
+    assert isinstance(executor_caps, TavilyResearchExecutor)
+
+
+def test_create_research_executor_tavily_missing_key_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    with pytest.raises(
+        ValueError,
+        match="TAVILY_API_KEY environment variable is required when RESEARCH_EXECUTOR is 'tavily'",
+    ):
+        create_research_executor("tavily")
+
+
+def test_create_research_executor_tavily_empty_key_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "   ")
+    with pytest.raises(
+        ValueError,
+        match="TAVILY_API_KEY environment variable is required when RESEARCH_EXECUTOR is 'tavily'",
+    ):
+        create_research_executor("tavily")
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_tavily_missing_key_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "tavily")
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls:
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(
+            ValueError,
+            match="TAVILY_API_KEY environment variable is required when RESEARCH_EXECUTOR is 'tavily'",
+        ):
+            await run_research_agent()
+
+        mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_tavily_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "tavily")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-12345")
+
+    with (
+        patch("research_agent.main.RedisBus") as mock_bus_cls,
+        patch("research_agent.main.ResearchProcessor") as mock_processor_cls,
+    ):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_processor_cls.assert_called_once()
+        _, _, executor_arg = mock_processor_cls.call_args[0]
+        assert isinstance(executor_arg, TavilyResearchExecutor)
+
+
+@pytest.mark.anyio
+async def test_tavily_executor_successful_search() -> None:
+    mock_client = AsyncMock()
+    mock_client.search.return_value = {
+        "query": "Compare local and cloud LLMs",
+        "answer": "Local LLMs prioritize privacy while cloud LLMs offer superior compute scale.",
+        "results": [
+            {
+                "title": "Local vs Cloud Comparison",
+                "url": "https://example.com/compare",
+                "content": "Benchmark shows 10x latency variance.",
+            },
+            {
+                "title": "Cloud AI Scaling",
+                "url": "https://example.com/cloud",
+                "content": "Scale-out architectures simplify operations.",
+            },
+        ],
+    }
+
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_client)
+    task = TaskRequested.create("Compare local and cloud LLMs")
+
+    result = await executor.execute(task)
+
+    assert result.task_id == task.task_id
+    assert "Research query: Compare local and cloud LLMs" in result.output
+    assert "Summary: Local LLMs prioritize privacy while cloud LLMs offer superior compute scale." in result.output
+    assert "[1] Local vs Cloud Comparison (https://example.com/compare)" in result.output
+    assert "Benchmark shows 10x latency variance." in result.output
+    assert "[2] Cloud AI Scaling (https://example.com/cloud)" in result.output
+    assert "Scale-out architectures simplify operations." in result.output
+    mock_client.search.assert_awaited_once_with(query="Compare local and cloud LLMs")
+
+
+@pytest.mark.anyio
+async def test_tavily_executor_empty_results_no_fabrication() -> None:
+    mock_client = AsyncMock()
+    mock_client.search.return_value = {
+        "query": "obscure nonexistent topic",
+        "results": [],
+    }
+
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_client)
+    task = TaskRequested.create("obscure nonexistent topic")
+
+    result = await executor.execute(task)
+
+    assert result.task_id == task.task_id
+    assert result.output == "No research results found for query: obscure nonexistent topic"
+    mock_client.search.assert_awaited_once_with(query="obscure nonexistent topic")
+
+
+@pytest.mark.anyio
+async def test_tavily_executor_api_failure_handling() -> None:
+    mock_client = AsyncMock()
+    mock_client.search.side_effect = RuntimeError("Rate limit exceeded")
+
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_client)
+    task = TaskRequested.create("rate limited query")
+
+    with pytest.raises(RuntimeError, match="Tavily search failed for task"):
+        await executor.execute(task)
+
+
+@pytest.mark.anyio
+async def test_tavily_executor_redacts_api_key_on_failure() -> None:
+    secret_key = "tvly-super-secret-key-99999"
+    mock_client = AsyncMock()
+    mock_client.search.side_effect = RuntimeError(f"HTTP 401 Unauthorized for {secret_key}")
+
+    executor = TavilyResearchExecutor(api_key=secret_key, client=mock_client)
+    task = TaskRequested.create("auth fail query")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await executor.execute(task)
+
+    assert secret_key not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_research_processor_with_tavily_executor_integration() -> None:
+    mock_client = AsyncMock()
+    mock_client.search.return_value = {
+        "query": "Survey consensus models",
+        "results": [
+            {
+                "title": "Raft vs Paxos",
+                "url": "https://example.com/raft",
+                "content": "Leader election mechanisms",
+            }
+        ],
+    }
+
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_client)
+    bus = FakeMessageBus()
+    processor = ResearchProcessor("research-agent-1", bus, executor)
+    task = TaskRequested.create("Survey consensus models")
+
+    await processor.run_once(task)
+
+    assert len(bus.published) == 2
+    assert bus.published[0].state == "working"
+    assert bus.published[1].state == "idle"
+    assert "Completed:" in bus.published[1].detail
+    assert "Raft vs Paxos" in bus.published[1].detail
+
+
+@pytest.mark.anyio
+async def test_research_processor_stores_result_on_success() -> None:
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    executor = StubResearchExecutor()
+    processor = ResearchProcessor("research-agent-1", bus, executor, result_store=store)
+    task = TaskRequested.create("Investigate consensus algorithms")
+
+    await processor.run_once(task)
+
+    assert task.task_id in store.saved
+    saved = store.saved[task.task_id]
+    assert saved.task_id == task.task_id
+    assert f"Deterministic execution completed for task: {task.task_id}" in saved.output
+    assert saved.acknowledged is True
+    # Operational events intact
+    assert len(bus.published) == 2
+    assert bus.published[0].state == "working"
+    assert bus.published[1].state == "idle"
+
+
+@pytest.mark.anyio
+async def test_research_processor_error_does_not_store_result() -> None:
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    executor = StubResearchExecutor(failure_trigger="trigger_fail")
+    processor = ResearchProcessor("research-agent-1", bus, executor, result_store=store)
+    task = TaskRequested.create("Task containing trigger_fail in prompt")
+
+    with pytest.raises(ResearchExecutionError):
+        await processor.run_once(task)
+
+    assert len(store.saved) == 0
+    assert len(bus.published) == 2
+    assert bus.published[0].state == "working"
+    assert bus.published[1].state == "error"
+
+
+@pytest.mark.anyio
+async def test_research_processor_with_tavily_stores_grounded_result() -> None:
+    mock_client = AsyncMock()
+    mock_client.search.return_value = {
+        "query": "Compare local and cloud LLMs",
+        "answer": "Local LLMs offer privacy; cloud LLMs scale seamlessly.",
+        "results": [
+            {
+                "title": "Local vs Cloud",
+                "url": "https://example.com/llm-analysis",
+                "content": "Benchmark shows 10x compute throughput on cloud.",
+            }
+        ],
+    }
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_client)
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    processor = ResearchProcessor("research-agent-1", bus, executor, result_store=store)
+    task = TaskRequested.create("Compare local and cloud LLMs")
+
+    await processor.run_once(task)
+
+    assert task.task_id in store.saved
+    saved = store.saved[task.task_id]
+    assert saved.task_id == task.task_id
+    assert "Research query: Compare local and cloud LLMs" in saved.output
+    assert "Summary: Local LLMs offer privacy; cloud LLMs scale seamlessly." in saved.output
+    assert "[1] Local vs Cloud (https://example.com/llm-analysis)" in saved.output
+    assert "Benchmark shows 10x compute throughput on cloud." in saved.output
+    assert len(bus.published) == 2
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_wires_result_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "stub")
+
+    with (
+        patch("research_agent.main.RedisBus") as mock_bus_cls,
+        patch("research_agent.main.ResearchProcessor") as mock_processor_cls,
+    ):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_processor_cls.assert_called_once()
+        _, kwargs = mock_processor_cls.call_args
+        assert kwargs.get("result_store") == mock_bus
+
+
 

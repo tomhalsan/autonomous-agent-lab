@@ -13,3 +13,7 @@ class MessageBus(Protocol):
 class ResearchExecutor(Protocol):
     async def execute(self, task: TaskRequested) -> ResearchResult: ...
 
+
+class ResultStore(Protocol):
+    async def save(self, result: ResearchResult) -> None: ...
+

@@ -25,7 +25,7 @@ async def run_research_agent() -> None:
 
     executor = create_research_executor(executor_name)
     bus = RedisBus(redis_url, queue_name=task_queue)
-    processor = ResearchProcessor(agent_id, bus, executor)
+    processor = ResearchProcessor(agent_id, bus, executor, result_store=bus)
 
     logger.info(
         "Initializing research agent %s on queue %s with executor %s...",
