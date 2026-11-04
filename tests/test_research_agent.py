@@ -5,10 +5,12 @@ import pytest
 from agent_contracts import AgentEvent, TaskRequested
 from orchestrator.application.queries import GetAgentStates, GetRecentEvents
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
-from research_agent.domain.models import ResearchResult
+from research_agent.domain.models import ResearchResult, SynthesisResult
 from research_agent.infrastructure.executor_factory import create_research_executor
+from research_agent.infrastructure.inference_factory import create_inference_provider
 from research_agent.infrastructure.redis_bus import RedisBus
 from research_agent.infrastructure.stub_executor import StubResearchExecutor
+from research_agent.infrastructure.stub_inference import StubInferenceProvider, StubSynthesizer
 from research_agent.infrastructure.tavily_executor import TavilyResearchExecutor
 
 
@@ -58,6 +60,30 @@ def test_research_result_valid() -> None:
 def test_research_result_rejects_empty_task_id() -> None:
     with pytest.raises(ValueError, match="task_id must not be empty"):
         ResearchResult(task_id="   ", output="any")
+
+
+def test_synthesis_result_valid() -> None:
+    result = SynthesisResult(
+        question="What is consensus?",
+        content="Consensus ensures agreement across distributed nodes.",
+        evidence="Raft and Paxos are consensus algorithms.",
+        provider="stub",
+        model="stub",
+    )
+    assert result.question == "What is consensus?"
+    assert result.content == "Consensus ensures agreement across distributed nodes."
+    assert result.evidence == "Raft and Paxos are consensus algorithms."
+    assert result.provider == "stub"
+    assert result.model == "stub"
+
+
+def test_synthesis_result_rejects_empty_question() -> None:
+    with pytest.raises(ValueError, match="question must not be empty"):
+        SynthesisResult(
+            question="   ",
+            content="synthesized content",
+            evidence="evidence",
+        )
 
 
 # --- Infrastructure Adapter Tests: StubResearchExecutor ---
@@ -681,6 +707,234 @@ async def test_run_research_agent_wires_result_store(
         mock_processor_cls.assert_called_once()
         _, kwargs = mock_processor_cls.call_args
         assert kwargs.get("result_store") == mock_bus
+
+
+# --- Infrastructure Adapter Tests: StubInferenceProvider ---
+
+
+@pytest.mark.anyio
+async def test_stub_inference_provider_deterministic_synthesis() -> None:
+    provider = StubInferenceProvider()
+    question = "Survey Raft and Paxos"
+    evidence = "Raft is leader-based. Paxos uses two-phase commits."
+
+    res1 = await provider.synthesize(question=question, evidence=evidence)
+    res2 = await provider.synthesize(question=question, evidence=evidence)
+
+    assert res1.question == question
+    assert res1.evidence == evidence
+    assert res1.provider == "stub"
+    assert res1.model == "stub"
+    assert res1.content == res2.content
+    assert "Synthesized research for: Survey Raft and Paxos" in res1.content
+    assert "Grounded evidence:" in res1.content
+    assert evidence in res1.content
+
+
+@pytest.mark.anyio
+async def test_stub_inference_provider_empty_evidence() -> None:
+    provider = StubInferenceProvider()
+    question = "Unknown concept search"
+    evidence = "   "
+
+    res = await provider.synthesize(question=question, evidence=evidence)
+
+    assert res.question == question
+    assert "No grounded evidence available." in res.content
+    assert "Grounded evidence:" not in res.content
+
+
+@pytest.mark.anyio
+async def test_stub_inference_provider_simulated_failure() -> None:
+    provider = StubInferenceProvider(failure_trigger="trigger_inference_error")
+    question = "Prompt containing trigger_inference_error"
+
+    with pytest.raises(RuntimeError, match="Simulated synthesis failure"):
+        await provider.synthesize(question=question, evidence="Some evidence")
+
+
+def test_stub_synthesizer_alias() -> None:
+    assert StubSynthesizer is StubInferenceProvider
+
+
+# --- Inference Provider Factory Tests ---
+
+
+def test_create_inference_provider_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("INFERENCE_PROVIDER", raising=False)
+    provider = create_inference_provider()
+    assert isinstance(provider, StubInferenceProvider)
+
+
+def test_create_inference_provider_explicit_stub() -> None:
+    provider = create_inference_provider("stub")
+    assert isinstance(provider, StubInferenceProvider)
+
+
+def test_create_inference_provider_env_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub")
+    provider = create_inference_provider()
+    assert isinstance(provider, StubInferenceProvider)
+
+
+def test_create_inference_provider_case_insensitive() -> None:
+    provider = create_inference_provider("  STUB  ")
+    assert isinstance(provider, StubInferenceProvider)
+
+
+def test_create_inference_provider_unsupported_raises() -> None:
+    with pytest.raises(ValueError, match="Unsupported inference provider: 'openai'"):
+        create_inference_provider("openai")
+
+    with pytest.raises(ValueError, match="Unsupported inference provider: 'cloudflare'"):
+        create_inference_provider("cloudflare")
+
+
+# --- Processor Integration Tests with InferenceProvider ---
+
+
+@pytest.mark.anyio
+async def test_research_processor_with_inference_provider_synthesizes_output() -> None:
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    executor = StubResearchExecutor()
+    inference_provider = StubInferenceProvider()
+    processor = ResearchProcessor(
+        "research-agent-1",
+        bus,
+        executor,
+        result_store=store,
+        inference_provider=inference_provider,
+    )
+    task = TaskRequested.create("Investigate raft log compaction")
+
+    await processor.run_once(task)
+
+    assert task.task_id in store.saved
+    saved = store.saved[task.task_id]
+    assert saved.task_id == task.task_id
+    assert "Synthesized research for: Investigate raft log compaction" in saved.output
+    assert f"Deterministic execution completed for task: {task.task_id}" in saved.output
+    assert saved.acknowledged is True
+
+    # Event stream verification
+    assert len(bus.published) == 2
+    assert bus.published[0].state == "working"
+    assert bus.published[1].state == "idle"
+    assert (
+        "Completed: Synthesized research for: Investigate raft log compaction"
+        in bus.published[1].detail
+    )
+
+
+@pytest.mark.anyio
+async def test_research_processor_with_tavily_and_inference_provider() -> None:
+    mock_client = AsyncMock()
+    mock_client.search.return_value = {
+        "query": "Evaluate state machine replication",
+        "answer": "SMR requires consistent state across nodes.",
+        "results": [
+            {
+                "title": "SMR Overview",
+                "url": "https://example.com/smr",
+                "content": "Consensus protocols implement state machine replication.",
+            }
+        ],
+    }
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_client)
+    inference_provider = StubInferenceProvider()
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    processor = ResearchProcessor(
+        "research-agent-1",
+        bus,
+        executor,
+        result_store=store,
+        inference_provider=inference_provider,
+    )
+    task = TaskRequested.create("Evaluate state machine replication")
+
+    await processor.run_once(task)
+
+    assert task.task_id in store.saved
+    saved = store.saved[task.task_id]
+    assert "Synthesized research for: Evaluate state machine replication" in saved.output
+    assert "Grounded evidence:" in saved.output
+    assert "Research query: Evaluate state machine replication" in saved.output
+    assert "Summary: SMR requires consistent state across nodes." in saved.output
+    assert "https://example.com/smr" in saved.output
+    assert len(bus.published) == 2
+    assert bus.published[1].state == "idle"
+
+
+@pytest.mark.anyio
+async def test_research_processor_inference_error_publishes_error_event() -> None:
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    executor = StubResearchExecutor()
+    inference_provider = StubInferenceProvider(failure_trigger="trigger_synthesis_fail")
+    processor = ResearchProcessor(
+        "research-agent-1",
+        bus,
+        executor,
+        result_store=store,
+        inference_provider=inference_provider,
+    )
+    task = TaskRequested.create("Task containing trigger_synthesis_fail in prompt")
+
+    with pytest.raises(ResearchExecutionError, match="Simulated synthesis failure"):
+        await processor.run_once(task)
+
+    assert len(store.saved) == 0
+    assert len(bus.published) == 2
+    assert bus.published[0].state == "working"
+    assert bus.published[1].state == "error"
+    assert "Simulated synthesis failure" in bus.published[1].detail
+
+
+# --- Main Service Wiring Tests for InferenceProvider ---
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_wires_inference_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "stub")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub")
+
+    with (
+        patch("research_agent.main.RedisBus") as mock_bus_cls,
+        patch("research_agent.main.ResearchProcessor") as mock_processor_cls,
+    ):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_processor_cls.assert_called_once()
+        _, kwargs = mock_processor_cls.call_args
+        assert kwargs.get("result_store") == mock_bus
+        assert isinstance(kwargs.get("inference_provider"), StubInferenceProvider)
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_unsupported_inference_provider_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "unsupported_llm")
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls:
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(ValueError, match="Unsupported inference provider: 'unsupported_llm'"):
+            await run_research_agent()
+
+        mock_bus_cls.assert_not_called()
+
 
 
 

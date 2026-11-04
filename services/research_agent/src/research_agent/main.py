@@ -7,6 +7,7 @@ from agent_contracts import AgentEvent
 
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
 from research_agent.infrastructure.executor_factory import create_research_executor
+from research_agent.infrastructure.inference_factory import create_inference_provider
 from research_agent.infrastructure.redis_bus import RedisBus
 
 logging.basicConfig(
@@ -22,16 +23,25 @@ async def run_research_agent() -> None:
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     task_queue = os.getenv("TASK_QUEUE", "agent.tasks.research")
     executor_name = os.getenv("RESEARCH_EXECUTOR", "stub")
+    inference_provider_name = os.getenv("INFERENCE_PROVIDER", "stub")
 
     executor = create_research_executor(executor_name)
+    inference_provider = create_inference_provider(inference_provider_name)
     bus = RedisBus(redis_url, queue_name=task_queue)
-    processor = ResearchProcessor(agent_id, bus, executor, result_store=bus)
+    processor = ResearchProcessor(
+        agent_id,
+        bus,
+        executor,
+        result_store=bus,
+        inference_provider=inference_provider,
+    )
 
     logger.info(
-        "Initializing research agent %s on queue %s with executor %s...",
+        "Initializing research agent %s on queue %s with executor %s and inference provider %s...",
         agent_id,
         task_queue,
         executor_name,
+        inference_provider_name,
     )
 
     try:
@@ -64,4 +74,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

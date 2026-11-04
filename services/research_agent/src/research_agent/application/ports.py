@@ -2,7 +2,7 @@ from typing import Protocol
 
 from agent_contracts import AgentEvent, TaskRequested
 
-from research_agent.domain.models import ResearchResult
+from research_agent.domain.models import ResearchResult, SynthesisResult
 
 
 class MessageBus(Protocol):
@@ -17,3 +17,9 @@ class ResearchExecutor(Protocol):
 class ResultStore(Protocol):
     async def save(self, result: ResearchResult) -> None: ...
 
+
+class InferenceProvider(Protocol):
+    async def synthesize(self, question: str, evidence: str) -> SynthesisResult: ...
+
+
+ResearchSynthesizer = InferenceProvider
