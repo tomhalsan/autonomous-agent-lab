@@ -1,9 +1,10 @@
 import asyncio
 import logging
+from typing import Any
 
-from agent_contracts import AgentEvent, TaskRequested
+from agent_contracts import AgentEvent, TaskRequested, TaskResult
 
-from .ports import MessageBus
+from .ports import MessageBus, ResultStore
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +19,20 @@ class TaskExecutionError(Exception):
 
 
 class TaskProcessor:
-    def __init__(self, agent_id: str, bus: MessageBus) -> None:
+    def __init__(
+        self,
+        agent_id: str,
+        bus: MessageBus,
+        result_store: ResultStore | None = None,
+    ) -> None:
         self.agent_id = agent_id
         self.bus = bus
+        self.result_store = result_store
 
-    async def process(self, task: TaskRequested) -> None:
+    async def process(self, task: TaskRequested) -> Any:
         """Execute the task payload. Subclasses/extensions can override."""
         await asyncio.sleep(1)
+        return f"Completed: {task.prompt}"
 
     async def run_once(self, task: TaskRequested) -> None:
         logger.info("Worker %s processing task %s", self.agent_id, task.task_id)
@@ -34,7 +42,22 @@ class TaskProcessor:
             )
         )
         try:
-            await self.process(task)
+            res = await self.process(task)
+            if isinstance(res, TaskResult):
+                result = res
+            else:
+                result_output = (
+                    res
+                    if isinstance(res, str) and res.strip()
+                    else f"Completed: {task.prompt}"
+                )
+                result = TaskResult(task_id=task.task_id, output=result_output)
+
+            if self.result_store is not None:
+                await self.result_store.save(result)
+            elif hasattr(self.bus, "save"):
+                await self.bus.save(result)
+
             await self.bus.publish(
                 AgentEvent.create(
                     self.agent_id, "idle", f"Completed: {task.prompt}", task.task_id

@@ -4,7 +4,12 @@ import logging
 from collections.abc import Callable, Coroutine
 
 import redis.asyncio as redis
-from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested
+from agent_contracts import (
+    AgentCapabilityMetadata,
+    AgentEvent,
+    TaskRequested,
+    TaskResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +83,19 @@ class RedisBus:
             await self.client.sadd("agent.ids", event.agent_id)
             await self.client.hset(f"agent.state:{event.agent_id}", mapping=mapping)
             await self.client.xadd("agent.events", mapping, maxlen=500, approximate=True)
+
+        await retry_with_backoff(_write)
+
+    async def save(self, result: TaskResult) -> None:
+        data = {
+            "task_id": result.task_id,
+            "status": result.status,
+            "output": result.output,
+            "acknowledged": result.acknowledged,
+        }
+
+        async def _write():
+            await self.client.set(f"task.result:{result.task_id}", json.dumps(data))
 
         await retry_with_backoff(_write)
 
