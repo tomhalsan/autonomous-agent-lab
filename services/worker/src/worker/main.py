@@ -6,6 +6,7 @@ import sys
 from agent_contracts import AgentCapabilityMetadata, AgentEvent
 
 from worker.application.processor import TaskExecutionError, TaskProcessor
+from worker.infrastructure.inference_factory import create_inference_provider
 from worker.infrastructure.redis_bus import RedisBus
 
 logging.basicConfig(
@@ -20,16 +21,32 @@ async def run_worker() -> None:
     agent_id = os.getenv("AGENT_ID", "worker-1")
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     task_queue = os.getenv("TASK_QUEUE", "agent.tasks.general")
+    inference_provider_name = os.getenv("INFERENCE_PROVIDER", "stub")
+
+    inference_provider = create_inference_provider(inference_provider_name)
     bus = RedisBus(redis_url, queue_name=task_queue)
-    processor = TaskProcessor(agent_id, bus, result_store=bus)
+    processor = TaskProcessor(
+        agent_id,
+        bus,
+        result_store=bus,
+        inference_provider=inference_provider,
+    )
 
     metadata = AgentCapabilityMetadata(
         agent_id=agent_id,
         agent_type="worker",
         capabilities=["general"],
+        providers={
+            "inference_provider": inference_provider_name,
+        },
     )
 
-    logger.info("Initializing worker %s on queue %s...", agent_id, task_queue)
+    logger.info(
+        "Initializing worker %s on queue %s with inference provider %s...",
+        agent_id,
+        task_queue,
+        inference_provider_name,
+    )
 
     try:
         await bus.register(metadata)
