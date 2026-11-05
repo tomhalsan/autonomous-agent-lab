@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 
-from agent_contracts import AgentEvent
+from agent_contracts import AgentCapabilityMetadata, AgentEvent
 
 from worker.application.processor import TaskExecutionError, TaskProcessor
 from worker.infrastructure.redis_bus import RedisBus
@@ -23,9 +23,16 @@ async def run_worker() -> None:
     bus = RedisBus(redis_url, queue_name=task_queue)
     processor = TaskProcessor(agent_id, bus)
 
+    metadata = AgentCapabilityMetadata(
+        agent_id=agent_id,
+        agent_type="worker",
+        capabilities=["general"],
+    )
+
     logger.info("Initializing worker %s on queue %s...", agent_id, task_queue)
 
     try:
+        await bus.register(metadata)
         await bus.publish(AgentEvent.create(agent_id, "idle", "Waiting for work"))
         logger.info("Worker %s registered and waiting for tasks", agent_id)
 

@@ -203,3 +203,77 @@ async def test_research_redis_bus_save_result() -> None:
     assert loaded["acknowledged"] is True
 
 
+@pytest.mark.anyio
+async def test_redis_gateway_agents_parses_capability_metadata() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.smembers = AsyncMock(return_value={"worker-1", "research-agent-1"})  # type: ignore[method-assign]
+
+    async def mock_hgetall(key: str) -> dict[str, str]:
+        if "research" in key:
+            return {
+                "agent_id": "research-agent-1",
+                "agent_type": "research-agent",
+                "capabilities": '["research"]',
+                "providers": '{"research_executor": "tavily", "inference_provider": "cloudflare"}',
+                "research_executor": "tavily",
+                "inference_provider": "cloudflare",
+                "state": "idle",
+                "detail": "Waiting for work",
+            }
+        return {
+            "agent_id": "worker-1",
+            "agent_type": "worker",
+            "capabilities": '["general"]',
+            "providers": "{}",
+            "state": "working",
+            "detail": "Processing task",
+        }
+
+    gateway._client.hgetall = AsyncMock(side_effect=mock_hgetall)  # type: ignore[method-assign]
+
+    agents = await gateway.agents()
+    assert len(agents) == 2
+
+    # Sorted by agent_id: research-agent-1, worker-1
+    research_agent = agents[0]
+    worker = agents[1]
+
+    assert research_agent["agent_id"] == "research-agent-1"
+    assert research_agent["agent_type"] == "research-agent"
+    assert research_agent["capabilities"] == ["research"]
+    assert research_agent["research_executor"] == "tavily"
+    assert research_agent["inference_provider"] == "cloudflare"
+    assert research_agent["providers"] == {
+        "research_executor": "tavily",
+        "inference_provider": "cloudflare",
+    }
+    assert research_agent["state"] == "idle"
+
+    assert worker["agent_id"] == "worker-1"
+    assert worker["agent_type"] == "worker"
+    assert worker["capabilities"] == ["general"]
+    assert worker["providers"] == {}
+    assert worker["state"] == "working"
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_agents_legacy_fallback() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.smembers = AsyncMock(return_value={"legacy-agent"})  # type: ignore[method-assign]
+    gateway._client.hgetall = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "agent_id": "legacy-agent",
+            "state": "idle",
+            "detail": "Legacy worker",
+        }
+    )
+
+    agents = await gateway.agents()
+    assert len(agents) == 1
+    assert agents[0]["agent_id"] == "legacy-agent"
+    assert agents[0]["capabilities"] == []
+    assert agents[0]["providers"] == {}
+    assert agents[0]["state"] == "idle"
+
+
+

@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from agent_contracts import __version__
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -45,7 +46,7 @@ async def create_task(value: TaskInput, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-async def agents(request: Request) -> list[dict[str, str]]:
+async def agents(request: Request) -> list[dict[str, Any]]:
     get_agent_states: GetAgentStates = request.app.state.get_agent_states
     return await get_agent_states.execute()
 
@@ -101,7 +102,7 @@ def create_app(
         if gateway is not None and hasattr(gateway, "aclose"):
             await gateway.aclose()
 
-    app = FastAPI(title="Autonomous Agent Lab", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Autonomous Agent Lab", version=__version__, lifespan=lifespan)
 
     app.state.settings = resolved_settings
     app.state.gateway = gateway

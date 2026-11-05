@@ -2,7 +2,13 @@ import logging
 
 from agent_contracts import AgentEvent, TaskRequested
 
-from research_agent.application.ports import MessageBus, ResearchExecutor, ResultStore
+from research_agent.application.ports import (
+    InferenceProvider,
+    MessageBus,
+    ResearchExecutor,
+    ResultStore,
+)
+from research_agent.domain.models import ResearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +29,13 @@ class ResearchProcessor:
         bus: MessageBus,
         executor: ResearchExecutor,
         result_store: ResultStore | None = None,
+        inference_provider: InferenceProvider | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.bus = bus
         self.executor = executor
         self.result_store = result_store
+        self.inference_provider = inference_provider
 
     async def run_once(self, task: TaskRequested) -> None:
         logger.info("Research agent %s processing task %s", self.agent_id, task.task_id)
@@ -38,6 +46,18 @@ class ResearchProcessor:
         )
         try:
             result = await self.executor.execute(task)
+
+            if self.inference_provider is not None:
+                synthesis = await self.inference_provider.synthesize(
+                    question=task.prompt, evidence=result.output
+                )
+                result = ResearchResult(
+                    task_id=task.task_id,
+                    output=synthesis.content,
+                    acknowledged=result.acknowledged,
+                    truncated=synthesis.truncated,
+                )
+
             if self.result_store is not None:
                 await self.result_store.save(result)
             elif hasattr(self.bus, "save"):
@@ -61,4 +81,3 @@ class ResearchProcessor:
                 AgentEvent.create(self.agent_id, "error", str(exc), task.task_id)
             )
             raise ResearchExecutionError(task.task_id, exc) from exc
-

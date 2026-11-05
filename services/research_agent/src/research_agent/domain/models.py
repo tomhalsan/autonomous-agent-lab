@@ -6,8 +6,25 @@ class ResearchResult:
     task_id: str
     output: str
     acknowledged: bool = True
+    truncated: bool = False
 
     def __post_init__(self) -> None:
         if not self.task_id.strip():
             raise ValueError("task_id must not be empty")
+
+
+@dataclass(frozen=True)
+class SynthesisResult:
+    question: str
+    content: str
+    evidence: str
+    provider: str = "stub"
+    model: str = "stub"
+    truncated: bool = False
+    finish_reason: str | None = None
+    usage: dict[str, int] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.question.strip():
+            raise ValueError("question must not be empty")
 

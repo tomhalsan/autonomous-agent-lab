@@ -47,6 +47,13 @@ async def test_dashboard_html_binds_prompt_element_explicitly() -> None:
 
 
 @pytest.mark.anyio
+async def test_dashboard_displays_authoritative_version() -> None:
+    html = await dashboard()
+    assert "v0.2.0" in html
+    assert '<span class="version-badge">v0.2.0</span>' in html
+
+
+@pytest.mark.anyio
 async def test_health_endpoint() -> None:
     res = await health()
     assert res == {"status": "ok"}
@@ -67,6 +74,7 @@ async def test_create_app_with_fakes_and_endpoints() -> None:
         state_reader=fake_reader,
     )
 
+    assert app.version == "0.2.0"
     assert app.state.settings.app_env == "test"
     assert app.state.gateway is None
 
@@ -191,3 +199,125 @@ async def test_get_task_result_endpoint_not_found() -> None:
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "Task 'unknown-id' not found"
+
+
+@pytest.mark.anyio
+async def test_agents_endpoint_returns_capability_metadata() -> None:
+    fake_reader = FakeStateReader(
+        agents_data=[
+            {
+                "agent_id": "research-agent-1",
+                "agent_type": "research-agent",
+                "capabilities": ["research"],
+                "providers": {
+                    "research_executor": "tavily",
+                    "inference_provider": "cloudflare",
+                },
+                "research_executor": "tavily",
+                "inference_provider": "cloudflare",
+                "state": "idle",
+                "detail": "Waiting for work",
+            },
+            {
+                "agent_id": "worker-1",
+                "agent_type": "worker",
+                "capabilities": ["general"],
+                "providers": {},
+                "state": "idle",
+                "detail": "Waiting for work",
+            },
+        ]
+    )
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+
+    res = await agents(request=req)
+    assert len(res) == 2
+    assert res[0]["agent_id"] == "research-agent-1"
+    assert res[0]["capabilities"] == ["research"]
+    assert res[0]["providers"]["research_executor"] == "tavily"
+    assert res[0]["providers"]["inference_provider"] == "cloudflare"
+    assert res[0]["state"] == "idle"
+
+    assert res[1]["agent_id"] == "worker-1"
+    assert res[1]["capabilities"] == ["general"]
+    assert res[1]["state"] == "idle"
+
+
+@pytest.mark.anyio
+async def test_dashboard_endpoint_serves_console() -> None:
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        task_queue=FakeTaskQueue(),
+        state_reader=FakeStateReader(),
+    )
+    assert app is not None
+    html_content = await dashboard()
+    assert "<!doctype html>" in html_content
+    assert "Autonomous Agent Lab" in html_content
+    assert "A generic platform for experimenting with autonomous-agent patterns." in html_content
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_contains_required_console_elements() -> None:
+    html = await dashboard()
+
+    # Form and inputs
+    assert '<form id="task">' in html
+    assert '<textarea' in html
+    assert 'id="prompt"' in html
+    assert 'id="submit-btn"' in html
+    assert 'id="submit-error"' in html
+
+    # Tracking and results
+    assert 'id="active-task-id"' in html
+    assert 'id="task-routing-status"' in html
+    assert 'id="task-progress-bar"' in html
+    assert 'id="result-box"' in html
+    assert 'id="result-content"' in html
+    assert 'id="copy-result-btn"' in html
+    assert 'id="clear-task-btn"' in html
+
+    # Observatory panels
+    assert 'id="agents"' in html
+    assert 'id="events"' in html
+    assert 'Available Agents' in html
+    assert 'Activity Timeline' in html
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_accessibility_and_security_attributes() -> None:
+    html = await dashboard()
+
+    # Accessibility: labels and aria-live regions
+    assert '<label for="prompt">' in html
+    assert 'aria-live="polite"' in html
+    assert 'role="alert"' in html
+    assert 'prefers-reduced-motion' in html
+
+    # Security: rel attributes on external links and protocol validation
+    assert 'target="_blank"' in html
+    assert 'rel="noopener noreferrer"' in html
+    # Protocol restriction strictly to http or https in safe link formatting
+    assert 'https?:\\/\\/' in html or 'https?://' in html
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_does_not_contain_credential_field_names() -> None:
+    html = await dashboard()
+    sensitive_keys = [
+        "api_key",
+        "tavily_api_key",
+        "auth_token",
+        "account_id",
+        "user_password",
+        "cf_account_id",
+        "cf_api_token",
+    ]
+    for key in sensitive_keys:
+        assert key not in html, f"Found sensitive key '{key}' in dashboard HTML/JS"
+
+

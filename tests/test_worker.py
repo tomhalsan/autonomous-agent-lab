@@ -1,10 +1,12 @@
+import asyncio
 from typing import NoReturn
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import redis.asyncio as redis
-from agent_contracts import AgentEvent, TaskRequested
+from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested
 from worker.application.processor import TaskExecutionError, TaskProcessor
-from worker.infrastructure.redis_bus import retry_with_backoff
+from worker.infrastructure.redis_bus import RedisBus, retry_with_backoff
 
 
 class FakeMessageBus:
@@ -132,3 +134,56 @@ async def test_retry_with_backoff_does_not_retry_unexpected_defects() -> None:
 
     # Must fail immediately on attempt 1 without retrying programming defects
     assert call_count == 1
+
+
+@pytest.mark.anyio
+async def test_worker_redis_bus_register() -> None:
+    bus = RedisBus("redis://localhost:6379/0", queue_name="agent.tasks.general")
+    bus.client.sadd = AsyncMock()  # type: ignore[method-assign]
+    bus.client.hset = AsyncMock()  # type: ignore[method-assign]
+
+    metadata = AgentCapabilityMetadata(
+        agent_id="worker-test",
+        capabilities=["general"],
+        agent_type="worker",
+    )
+
+    await bus.register(metadata)
+
+    bus.client.sadd.assert_awaited_once_with("agent.ids", "worker-test")
+    bus.client.hset.assert_awaited_once()
+    key, kwargs = bus.client.hset.call_args[0][0], bus.client.hset.call_args[1]
+    assert key == "agent.state:worker-test"
+    mapping = kwargs["mapping"]
+    assert mapping["agent_id"] == "worker-test"
+    assert mapping["agent_type"] == "worker"
+    assert mapping["capabilities"] == '["general"]'
+    assert mapping["providers"] == "{}"
+
+
+@pytest.mark.anyio
+async def test_run_worker_registers_capability_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_ID", "worker-1")
+
+    with patch("worker.main.RedisBus") as mock_bus_cls, patch("worker.main.TaskProcessor"):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from worker.main import run_worker
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_worker()
+
+        mock_bus.register.assert_awaited_once()
+        metadata = mock_bus.register.call_args[0][0]
+        assert isinstance(metadata, AgentCapabilityMetadata)
+        assert metadata.agent_id == "worker-1"
+        assert metadata.capabilities == ["general"]
+        assert metadata.agent_type == "worker"
+
+        mock_bus.publish.assert_awaited_once()
+        event = mock_bus.publish.call_args[0][0]
+        assert event.agent_id == "worker-1"
+        assert event.state == "idle"
+

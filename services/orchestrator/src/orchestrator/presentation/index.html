@@ -1,1 +1,1382 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Autonomous Agent Lab</title><style>body{font-family:system-ui;margin:0;background:#0b1220;color:#e5e7eb}.wrap{max-width:1000px;margin:auto;padding:32px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:#111a2e;border:1px solid #26324b;border-radius:16px;padding:20px}h1{margin-top:0}input{width:75%;padding:12px;border-radius:10px;border:1px solid #44506a;background:#0b1220;color:white}button{padding:12px 18px;border:0;border-radius:10px;background:#4f8cff;color:white}.row{padding:10px 0;border-bottom:1px solid #26324b}.ok{color:#55d6a6}@media(max-width:700px){.grid{grid-template-columns:1fr}input{width:65%}}</style></head><body><main class="wrap"><h1>Autonomous Agent Lab</h1><p>Containerized agent state and event monitor</p><section class="card"><form id="task"><input id="prompt" placeholder="Give worker-1 a small task" required><button>Submit</button></form><p id="result"></p></section><div class="grid"><section class="card"><h2>Agents</h2><div id="agents">Loading...</div></section><section class="card"><h2>Recent events</h2><div id="events">Loading...</div></section></div></main><script>const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));async function refresh(){const [a,e]=await Promise.all([fetch('/api/agents').then(r=>r.json()),fetch('/api/events').then(r=>r.json())]);agents.innerHTML=a.length?a.map(x=>`<div class="row"><b>${esc(x.agent_id)}</b> <span class="ok">${esc(x.state)}</span><br>${esc(x.detail)}</div>`).join(''):'No agents yet';events.innerHTML=e.length?e.map(x=>`<div class="row"><b>${esc(x.state)}</b> ${esc(x.agent_id)}<br>${esc(x.detail)}</div>`).join(''):'No events yet'};const taskForm=document.getElementById('task');const promptInput=document.getElementById('prompt');taskForm.onsubmit=async ev=>{ev.preventDefault();const r=await fetch('/api/tasks',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompt:promptInput.value})});result.textContent=JSON.stringify(await r.json());promptInput.value='';refresh()};refresh();setInterval(refresh,2000);</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Autonomous Agent Lab</title>
+  <style>
+    :root {
+      --bg-canvas: #080e1a;
+      --bg-panel: #0f172a;
+      --bg-panel-elevated: #162035;
+      --bg-input: #0a1120;
+      --border-subtle: #1e293b;
+      --border-focus: #38bdf8;
+      --border-active: #2563eb;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-faint: #64748b;
+      --accent-cyan: #38bdf8;
+      --accent-indigo: #818cf8;
+      --accent-blue: #3b82f6;
+      --state-idle: #34d399;
+      --state-idle-bg: rgba(52, 211, 153, 0.12);
+      --state-working: #fbbf24;
+      --state-working-bg: rgba(251, 191, 36, 0.12);
+      --state-error: #f87171;
+      --state-error-bg: rgba(248, 113, 113, 0.14);
+      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: var(--font-sans);
+      background-color: var(--bg-canvas);
+      color: var(--text-main);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app-header {
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .header-content {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .brand-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-main);
+    }
+
+    .brand-title .lab-badge {
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      border-radius: 6px;
+      padding: 2px 7px;
+    }
+
+    .brand-title .version-badge {
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      letter-spacing: 0.04em;
+      background: rgba(148, 163, 184, 0.1);
+      color: var(--text-muted);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 6px;
+      padding: 2px 7px;
+      font-weight: 500;
+    }
+
+    .brand-subtitle {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      margin: 3px 0 0 0;
+    }
+
+    .system-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 9999px;
+      padding: 6px 14px;
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--state-idle);
+      box-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
+    }
+
+    .status-dot.offline {
+      background: var(--state-error);
+      box-shadow: 0 0 8px rgba(248, 113, 113, 0.4);
+    }
+
+    .main-wrap {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .console-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    .card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    }
+
+    .card-header {
+      margin-bottom: 16px;
+    }
+
+    .card-title {
+      font-size: 1.0625rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin: 0;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-desc {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      margin: 4px 0 0 0;
+    }
+
+    /* Form & Input */
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    .counter {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-faint);
+    }
+
+    textarea#prompt {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 14px;
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 0.9375rem;
+      line-height: 1.5;
+      resize: vertical;
+      min-height: 90px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    textarea#prompt:focus-visible {
+      outline: none;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+    }
+
+    textarea#prompt:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .suggestions-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .sugg-label {
+      font-size: 0.75rem;
+      color: var(--text-faint);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .chip-btn {
+      background: var(--bg-panel-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 9999px;
+      padding: 4px 11px;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .chip-btn:hover {
+      border-color: var(--accent-cyan);
+      color: var(--text-main);
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .chip-btn:focus-visible {
+      outline: 2px solid var(--accent-cyan);
+      outline-offset: 1px;
+    }
+
+    .btn-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn-primary {
+      background: var(--border-active);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 9px;
+      color: #fff;
+      font-size: 0.875rem;
+      font-weight: 600;
+      padding: 10px 20px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.15s ease, opacity 0.15s ease;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: #1d4ed8;
+    }
+
+    .btn-primary:focus-visible {
+      outline: 2px solid var(--accent-cyan);
+      outline-offset: 2px;
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: var(--bg-panel-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 9px;
+      color: var(--text-main);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      padding: 8px 16px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      border-color: var(--border-focus);
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .btn-secondary:focus-visible {
+      outline: 2px solid var(--accent-cyan);
+      outline-offset: 2px;
+    }
+
+    .btn-secondary:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn-icon {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .btn-icon:hover {
+      color: var(--text-main);
+      background: var(--bg-panel-elevated);
+    }
+
+    .btn-icon:focus-visible {
+      outline: 2px solid var(--accent-cyan);
+    }
+
+    .error-msg {
+      margin-top: 10px;
+      padding: 9px 12px;
+      background: var(--state-error-bg);
+      border: 1px solid rgba(248, 113, 113, 0.35);
+      border-radius: 8px;
+      color: var(--state-error);
+      font-size: 0.8125rem;
+    }
+
+    /* Tracking & Result Card */
+    .task-meta-bar {
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .meta-top-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .task-id-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8125rem;
+    }
+
+    .task-id-badge {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      background: var(--bg-panel);
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      color: var(--accent-cyan);
+    }
+
+    .routing-banner {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--state-working);
+      box-shadow: 0 0 6px var(--state-working);
+      animation: pulse 1.6s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.35; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.2); }
+    }
+
+    .progress-bar-container {
+      width: 100%;
+      height: 4px;
+      background: var(--bg-panel);
+      border-radius: 9999px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .progress-bar-fill {
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan));
+      animation: progress-indeterminate 1.5s infinite linear;
+      transform-origin: 0% 50%;
+    }
+
+    @keyframes progress-indeterminate {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+
+    .result-container {
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 16px;
+      min-height: 180px;
+      max-height: 460px;
+      overflow-y: auto;
+      margin-bottom: 16px;
+    }
+
+    .result-body {
+      font-size: 0.90625rem;
+      line-height: 1.65;
+      color: var(--text-main);
+      word-break: break-word;
+    }
+
+    .result-placeholder {
+      color: var(--text-faint);
+      font-style: italic;
+      font-size: 0.875rem;
+    }
+
+    .res-h2 { font-size: 1.15rem; font-weight: 700; margin: 18px 0 8px 0; color: #fff; border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px; }
+    .res-h3 { font-size: 1.02rem; font-weight: 600; margin: 14px 0 6px 0; color: var(--accent-cyan); }
+    .res-h4 { font-size: 0.92rem; font-weight: 600; margin: 12px 0 4px 0; color: var(--accent-indigo); }
+    .res-p { margin: 0 0 10px 0; }
+    .numbered-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .num-badge {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--accent-cyan);
+      background: rgba(56, 189, 248, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .bullet-list {
+      margin: 0 0 10px 0;
+      padding-left: 20px;
+    }
+    .bullet-list li { margin-bottom: 4px; }
+    .spacer { height: 8px; }
+
+    a.ext-link {
+      color: var(--accent-cyan);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      word-break: break-all;
+    }
+    a.ext-link:hover {
+      color: #7dd3fc;
+    }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      background: var(--bg-panel-elevated);
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: var(--accent-cyan);
+    }
+
+    .result-actions {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* Agents Panel */
+    .agents-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .agent-card {
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 14px;
+      transition: border-color 0.15s ease;
+    }
+
+    .agent-card:hover {
+      border-color: rgba(56, 189, 248, 0.4);
+    }
+
+    .agent-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+
+    .agent-name-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .agent-friendly-name {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .agent-id-tag {
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      color: var(--text-faint);
+    }
+
+    .state-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 3px 9px;
+      border-radius: 9999px;
+    }
+
+    .state-pill.idle {
+      background: var(--state-idle-bg);
+      color: var(--state-idle);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+    }
+
+    .state-pill.working {
+      background: var(--state-working-bg);
+      color: var(--state-working);
+      border: 1px solid rgba(251, 191, 36, 0.3);
+    }
+
+    .state-pill.error {
+      background: var(--state-error-bg);
+      color: var(--state-error);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+    }
+
+    .state-pill.unknown {
+      background: rgba(148, 163, 184, 0.1);
+      color: var(--text-muted);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .agent-meta-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .cap-badge {
+      font-size: 0.6875rem;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      font-weight: 600;
+      border-radius: 5px;
+      padding: 2px 7px;
+    }
+
+    .cap-badge.research {
+      background: rgba(56, 189, 248, 0.14);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+
+    .cap-badge.general {
+      background: rgba(129, 140, 248, 0.14);
+      color: var(--accent-indigo);
+      border: 1px solid rgba(129, 140, 248, 0.3);
+    }
+
+    .provider-tag {
+      font-size: 0.6875rem;
+      background: var(--bg-panel-elevated);
+      color: var(--text-muted);
+      border: 1px solid var(--border-subtle);
+      border-radius: 5px;
+      padding: 2px 7px;
+    }
+
+    .agent-detail-text {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .agent-task-meta {
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      color: var(--text-faint);
+      margin-top: 4px;
+    }
+
+    /* Timeline Panel */
+    .timeline-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 400px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .timeline-entry {
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 0.8125rem;
+      transition: background 0.15s ease;
+    }
+
+    .timeline-entry:hover {
+      background: var(--bg-panel-elevated);
+    }
+
+    .timeline-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+      gap: 8px;
+    }
+
+    .timeline-agent {
+      font-weight: 600;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .timeline-time {
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      color: var(--text-faint);
+      white-space: nowrap;
+    }
+
+    .timeline-detail {
+      color: var(--text-muted);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .timeline-task {
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      color: var(--accent-cyan);
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      border-radius: 4px;
+      padding: 1px 5px;
+      margin-top: 4px;
+      display: inline-block;
+    }
+
+    .empty-state {
+      font-size: 0.8125rem;
+      color: var(--text-faint);
+      font-style: italic;
+      text-align: center;
+      padding: 18px;
+    }
+
+    /* Accessibility: Reduced Motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, ::before, ::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
+
+    /* Responsive */
+    @media (max-width: 960px) {
+      .console-grid {
+        grid-template-columns: 1fr;
+      }
+      .main-wrap {
+        padding: 16px;
+      }
+    }
+
+    .app-footer {
+      border-top: 1px solid var(--border-subtle);
+      margin-top: 48px;
+      padding: 24px;
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+    }
+
+    .footer-content {
+      max-width: 1320px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .footer-sep {
+      color: var(--border-subtle);
+    }
+  </style>
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="header-content">
+      <div>
+        <h1 class="brand-title">
+          Autonomous Agent Lab
+          <span class="lab-badge">Prototype Console</span>
+          <span class="version-badge">v0.2.0</span>
+        </h1>
+        <p class="brand-subtitle">A generic platform for experimenting with autonomous-agent patterns.</p>
+      </div>
+      <div class="system-status" id="system-status-indicator">
+        <span class="status-dot" id="system-status-dot"></span>
+        <span id="system-status-text">System Connected</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-wrap">
+    <div class="console-grid">
+
+      <!-- Left Column: Task Submission & Results -->
+      <div class="grid-col">
+        <!-- 1. Task Submission Card -->
+        <section class="card" aria-labelledby="submission-heading">
+          <div class="card-header">
+            <h2 id="submission-heading" class="card-title">Submit Task</h2>
+            <p class="card-desc">Prompts are automatically routed to the specialized Research Agent or General Worker based on capability requirements.</p>
+          </div>
+
+          <form id="task">
+            <div class="form-group">
+              <div class="label-row">
+                <label for="prompt">Task Prompt</label>
+                <span id="prompt-count" class="counter">0 / 2000</span>
+              </div>
+              <textarea
+                id="prompt"
+                name="prompt"
+                rows="3"
+                placeholder="Enter a task (e.g., 'Research consensus algorithms in distributed systems' or 'Inspect worker health')..."
+                required
+                minlength="1"
+                maxlength="2000"
+              ></textarea>
+            </div>
+
+            <div class="suggestions-row">
+              <span class="sugg-label">Try:</span>
+              <button type="button" class="chip-btn" data-prompt="Research consensus algorithms in distributed systems">Research consensus algorithms</button>
+              <button type="button" class="chip-btn" data-prompt="Compare local and cloud LLMs for agent inference">Compare local vs cloud LLMs</button>
+              <button type="button" class="chip-btn" data-prompt="Inspect system status and report worker health">Inspect worker health</button>
+            </div>
+
+            <div class="btn-row">
+              <button type="submit" id="submit-btn" class="btn-primary">
+                <span id="submit-btn-text">Submit Task</span>
+              </button>
+            </div>
+
+            <div id="submit-error" class="error-msg" role="alert" style="display: none;"></div>
+          </form>
+        </section>
+
+        <!-- 2. Current Task & Results Card -->
+        <section class="card" aria-labelledby="results-heading">
+          <div class="card-header">
+            <h2 id="results-heading" class="card-title">Current Task & Results</h2>
+            <p class="card-desc">Observes automated routing, in-flight agent state, and synthesized output.</p>
+          </div>
+
+          <div class="task-meta-bar">
+            <div class="meta-top-row">
+              <div class="task-id-group">
+                <span class="meta-label" style="color: var(--text-faint);">Task ID:</span>
+                <span id="active-task-id" class="task-id-badge">None</span>
+                <button type="button" id="copy-task-id-btn" class="btn-icon" title="Copy Task ID" style="display: none;" aria-label="Copy Task ID">📋</button>
+              </div>
+              <div id="task-routing-status" class="routing-banner" aria-live="polite">
+                <span>Ready for task submission</span>
+              </div>
+            </div>
+            <div id="task-progress-bar" class="progress-bar-container" style="display: none;" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+              <div class="progress-bar-fill"></div>
+            </div>
+          </div>
+
+          <div class="result-container" id="result-box">
+            <div id="result-content" class="result-body">
+              <span class="result-placeholder">Submitted task output and research findings will appear here.</span>
+            </div>
+          </div>
+
+          <div class="result-actions">
+            <button type="button" id="copy-result-btn" class="btn-secondary" disabled>Copy Result</button>
+            <button type="button" id="clear-task-btn" class="btn-secondary">New Task</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Right Column: Available Agents & Activity Timeline -->
+      <div class="grid-col">
+        <!-- 3. Available Agents Card -->
+        <section class="card" aria-labelledby="agents-heading">
+          <div class="card-header">
+            <h2 id="agents-heading" class="card-title">Available Agents</h2>
+            <p class="card-desc">Inspect autonomous agents currently registered with the orchestrator.</p>
+          </div>
+
+          <div id="agents" class="agents-list" aria-live="polite">
+            <div class="empty-state">Loading agents...</div>
+          </div>
+        </section>
+
+        <!-- 4. Activity Timeline Card -->
+        <section class="card" aria-labelledby="timeline-heading">
+          <div class="card-header">
+            <h2 id="timeline-heading" class="card-title">Activity Timeline</h2>
+            <p class="card-desc">Real-time operational event stream emitted over Redis.</p>
+          </div>
+
+          <div id="events" class="timeline-list" aria-live="polite">
+            <div class="empty-state">Loading events...</div>
+          </div>
+        </section>
+      </div>
+
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <div class="footer-content">
+      <span>Autonomous Agent Lab</span>
+      <span class="footer-sep">•</span>
+      <span>v0.2.0</span>
+      <span class="footer-sep">•</span>
+      <span>Multi-Agent Research Prototype</span>
+    </div>
+  </footer>
+
+  <script>
+    // --- Utilities & Sanitization ---
+    const esc = (s) => String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+    // Safe result formatter: handles Markdown-like headings, lists, bold, code, and http/https links
+    function safeFormatResult(rawText) {
+      if (!rawText) {
+        return '<span class="result-placeholder">No output returned for this task.</span>';
+      }
+
+      // Step 1: Escape untrusted HTML characters completely
+      const escaped = esc(rawText);
+
+      // Step 2: Inline code formatting (`...`)
+      let formatted = escaped.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+      // Step 3: Bold formatting (**...**)
+      formatted = formatted.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+
+      // Step 4: Markdown links [title](https://...) with strict protocol validation
+      formatted = formatted.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)"'<>]+)\)/g, (match, title, url) => {
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="ext-link">${title}</a>`;
+      });
+
+      // Step 5: Autolink bare URLs (http:// or https:// only, avoid re-wrapping inside existing <a>)
+      formatted = formatted.replace(/(^|[\s(])(https?:\/\/[^\s\)"'<>]+)/g, (match, prefix, url) => {
+        return `${prefix}<a href="${url}" target="_blank" rel="noopener noreferrer" class="ext-link">${url}</a>`;
+      });
+
+      // Step 6: Process block structures (headings, numbered lists, bullet lists, paragraphs)
+      const lines = formatted.split('\n');
+      const output = [];
+      let inBulletList = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        if (!trimmed) {
+          if (inBulletList) {
+            output.push('</ul>');
+            inBulletList = false;
+          }
+          output.push('<div class="spacer"></div>');
+          continue;
+        }
+
+        if (trimmed.startsWith('### ')) {
+          if (inBulletList) { output.push('</ul>'); inBulletList = false; }
+          output.push(`<h4 class="res-h4">${trimmed.slice(4)}</h4>`);
+        } else if (trimmed.startsWith('## ')) {
+          if (inBulletList) { output.push('</ul>'); inBulletList = false; }
+          output.push(`<h3 class="res-h3">${trimmed.slice(3)}</h3>`);
+        } else if (trimmed.startsWith('# ')) {
+          if (inBulletList) { output.push('</ul>'); inBulletList = false; }
+          output.push(`<h2 class="res-h2">${trimmed.slice(2)}</h2>`);
+        } else if (/^\d+\.\s+/.test(trimmed)) {
+          if (inBulletList) { output.push('</ul>'); inBulletList = false; }
+          const match = trimmed.match(/^(\d+\.)\s+(.*)$/);
+          output.push(`<div class="numbered-item"><span class="num-badge">${match[1]}</span><span>${match[2]}</span></div>`);
+        } else if (/^[-*]\s+/.test(trimmed)) {
+          if (!inBulletList) { output.push('<ul class="bullet-list">'); inBulletList = true; }
+          output.push(`<li>${trimmed.replace(/^[-*]\s+/, '')}</li>`);
+        } else {
+          if (inBulletList) { output.push('</ul>'); inBulletList = false; }
+          output.push(`<p class="res-p">${trimmed}</p>`);
+        }
+      }
+
+      if (inBulletList) {
+        output.push('</ul>');
+      }
+
+      return output.join('\n');
+    }
+
+    function formatTime(isoStr) {
+      if (!isoStr) return '';
+      try {
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return isoStr;
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      } catch {
+        return isoStr;
+      }
+    }
+
+    function friendlyAgentName(agentId, agentType) {
+      const type = (agentType || '').toLowerCase();
+      const id = (agentId || '').toLowerCase();
+      if (type === 'research-agent' || id.includes('research')) return 'Research Agent';
+      if (type === 'worker' || id.includes('worker')) return 'General Worker';
+      return agentId || 'Agent';
+    }
+
+    // --- DOM Elements ---
+    const taskForm = document.getElementById('task');
+    const promptInput = document.getElementById('prompt');
+    const promptCount = document.getElementById('prompt-count');
+    const submitBtn = document.getElementById('submit-btn');
+    const submitBtnText = document.getElementById('submit-btn-text');
+    const submitError = document.getElementById('submit-error');
+
+    const activeTaskIdEl = document.getElementById('active-task-id');
+    const copyTaskIdBtn = document.getElementById('copy-task-id-btn');
+    const routingStatusEl = document.getElementById('task-routing-status');
+    const progressBarEl = document.getElementById('task-progress-bar');
+    const resultContentEl = document.getElementById('result-content');
+    const copyResultBtn = document.getElementById('copy-result-btn');
+    const clearTaskBtn = document.getElementById('clear-task-btn');
+
+    const agentsContainer = document.getElementById('agents');
+    const eventsContainer = document.getElementById('events');
+    const systemDot = document.getElementById('system-status-dot');
+    const systemText = document.getElementById('system-status-text');
+
+    // --- State Variables ---
+    let activeTaskId = null;
+    let pollTimer = null;
+    let refreshInterval = null;
+    let pollAttempts = 0;
+    const MAX_POLL_ATTEMPTS = 60; // 90 seconds (60 * 1500ms)
+    let lastRawResultOutput = '';
+    let knownAgents = [];
+    let knownEvents = [];
+
+    // Prompt character counter
+    promptInput.addEventListener('input', () => {
+      promptCount.textContent = `${promptInput.value.length} / 2000`;
+      submitError.style.display = 'none';
+    });
+
+    // Prompt suggestion chips
+    document.querySelectorAll('.chip-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        promptInput.value = btn.getAttribute('data-prompt') || '';
+        promptCount.textContent = `${promptInput.value.length} / 2000`;
+        promptInput.focus();
+        submitError.style.display = 'none';
+      });
+    });
+
+    // Copy Task ID
+    copyTaskIdBtn.addEventListener('click', async () => {
+      if (!activeTaskId) return;
+      try {
+        await navigator.clipboard.writeText(activeTaskId);
+        const originalText = copyTaskIdBtn.textContent;
+        copyTaskIdBtn.textContent = '✓';
+        setTimeout(() => { copyTaskIdBtn.textContent = originalText; }, 1500);
+      } catch (err) {
+        console.error('Failed to copy task ID:', err);
+      }
+    });
+
+    // Copy Result
+    copyResultBtn.addEventListener('click', async () => {
+      if (!lastRawResultOutput) return;
+      try {
+        await navigator.clipboard.writeText(lastRawResultOutput);
+        const original = copyResultBtn.textContent;
+        copyResultBtn.textContent = 'Copied!';
+        setTimeout(() => { copyResultBtn.textContent = original; }, 1500);
+      } catch (err) {
+        console.error('Failed to copy result:', err);
+      }
+    });
+
+    // New Task / Clear
+    clearTaskBtn.addEventListener('click', () => {
+      stopResultPolling();
+      activeTaskId = null;
+      lastRawResultOutput = '';
+      activeTaskIdEl.textContent = 'None';
+      copyTaskIdBtn.style.display = 'none';
+      progressBarEl.style.display = 'none';
+      routingStatusEl.innerHTML = '<span>Ready for task submission</span>';
+      resultContentEl.innerHTML = '<span class="result-placeholder">Submitted task output and research findings will appear here.</span>';
+      copyResultBtn.disabled = true;
+      promptInput.value = '';
+      promptCount.textContent = '0 / 2000';
+      submitError.style.display = 'none';
+      promptInput.disabled = false;
+      submitBtn.disabled = false;
+      submitBtnText.textContent = 'Submit Task';
+      promptInput.focus();
+    });
+
+    function setFormSubmitting(submitting) {
+      promptInput.disabled = submitting;
+      submitBtn.disabled = submitting;
+      submitBtnText.textContent = submitting ? 'Submitting...' : 'Submit Task';
+    }
+
+    function setSystemOnline(online) {
+      if (online) {
+        systemDot.className = 'status-dot';
+        systemText.textContent = 'System Connected';
+      } else {
+        systemDot.className = 'status-dot offline';
+        systemText.textContent = 'Orchestrator Offline';
+      }
+    }
+
+    function updateRoutingObservation(status, extraNote) {
+      if (!activeTaskId) return;
+
+      if (status === 'completed') {
+        progressBarEl.style.display = 'none';
+        // Determine whether research agent or worker handled it based on events
+        const matchingEv = knownEvents.find(e => e.task_id === activeTaskId && e.state === 'idle');
+        const agentName = matchingEv ? friendlyAgentName(matchingEv.agent_id) : 'Agent';
+        routingStatusEl.innerHTML = `<span style="color: var(--state-idle);">✓ ${esc(agentName)} completed this task</span>`;
+        return;
+      }
+
+      if (status === 'failed') {
+        progressBarEl.style.display = 'none';
+        routingStatusEl.innerHTML = `<span style="color: var(--state-error);">✕ Task execution error: ${esc(extraNote || 'Check event log')}</span>`;
+        return;
+      }
+
+      // Check current agent states to see who is working on it
+      const workingAgent = knownAgents.find(a => a.task_id === activeTaskId && a.state === 'working');
+      if (workingAgent) {
+        const name = friendlyAgentName(workingAgent.agent_id, workingAgent.agent_type);
+        progressBarEl.style.display = 'block';
+        routingStatusEl.innerHTML = `<span class="pulse-dot"></span><span>${esc(name)} is processing this task</span>`;
+        return;
+      }
+
+      // Check events for who picked it up
+      const workingEvent = knownEvents.find(e => e.task_id === activeTaskId && e.state === 'working');
+      if (workingEvent) {
+        const name = friendlyAgentName(workingEvent.agent_id);
+        progressBarEl.style.display = 'block';
+        routingStatusEl.innerHTML = `<span class="pulse-dot"></span><span>${esc(name)} is processing this task</span>`;
+        return;
+      }
+
+      // Default pending state
+      progressBarEl.style.display = 'block';
+      routingStatusEl.innerHTML = `<span class="pulse-dot"></span><span>Task accepted — awaiting agent dispatch</span>`;
+    }
+
+    function stopResultPolling() {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    async function pollTaskResult(taskId) {
+      if (!taskId || taskId !== activeTaskId) return;
+
+      pollAttempts++;
+      if (pollAttempts > MAX_POLL_ATTEMPTS) {
+        progressBarEl.style.display = 'none';
+        routingStatusEl.innerHTML = '<span style="color: var(--state-working);">Task polling timed out. It may still be finishing in the background.</span>';
+        stopResultPolling();
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/result`);
+        if (res.status === 200) {
+          const data = await res.json();
+          if (data.status === 'completed') {
+            lastRawResultOutput = data.output || '';
+            resultContentEl.innerHTML = safeFormatResult(data.output);
+            copyResultBtn.disabled = !lastRawResultOutput;
+            updateRoutingObservation('completed');
+            stopResultPolling();
+            return;
+          } else if (data.status === 'pending') {
+            updateRoutingObservation('pending');
+          } else if (data.status === 'error' || data.status === 'failed') {
+            updateRoutingObservation('failed', data.detail || 'Execution failure');
+            stopResultPolling();
+            return;
+          }
+        } else if (res.status === 404) {
+          // If just enqueued, may be brief moment before status is recorded
+          updateRoutingObservation('pending');
+        } else {
+          console.warn('Unexpected result response code:', res.status);
+        }
+      } catch (err) {
+        console.warn('Error polling task result:', err);
+      }
+
+      // Continue polling if still active
+      if (activeTaskId === taskId) {
+        pollTimer = setTimeout(() => pollTaskResult(taskId), 1500);
+      }
+    }
+
+    // --- Task Submission ---
+    taskForm.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const promptText = promptInput.value.trim();
+
+      if (!promptText) {
+        submitError.textContent = 'Please enter a task prompt before submitting.';
+        submitError.style.display = 'block';
+        promptInput.focus();
+        return;
+      }
+
+      submitError.style.display = 'none';
+      setFormSubmitting(true);
+      stopResultPolling();
+
+      try {
+        const response = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: promptText })
+        });
+
+        if (!response.ok) {
+          let errDetail = 'Task submission failed';
+          try {
+            const errJson = await response.json();
+            errDetail = errJson.detail || errDetail;
+          } catch {}
+          throw new Error(errDetail);
+        }
+
+        const data = await response.json();
+        activeTaskId = data.task_id;
+        pollAttempts = 0;
+        lastRawResultOutput = '';
+
+        // Update UI for active task
+        activeTaskIdEl.textContent = activeTaskId;
+        copyTaskIdBtn.style.display = 'inline-flex';
+        copyResultBtn.disabled = true;
+        resultContentEl.innerHTML = '<span class="result-placeholder">Task accepted. Processing and synthesizing response...</span>';
+        progressBarEl.style.display = 'block';
+        updateRoutingObservation('pending');
+
+        // Start result polling
+        pollTaskResult(activeTaskId);
+      } catch (err) {
+        submitError.textContent = err.message || 'Network error submitting task.';
+        submitError.style.display = 'block';
+      } finally {
+        setFormSubmitting(false);
+      }
+    };
+
+    // --- Agents & Events Refresh ---
+    async function refreshSystem() {
+      try {
+        const [agentsRes, eventsRes] = await Promise.all([
+          fetch('/api/agents'),
+          fetch('/api/events?limit=25')
+        ]);
+
+        if (agentsRes.ok && eventsRes.ok) {
+          setSystemOnline(true);
+          const agentsData = await agentsRes.json();
+          const eventsData = await eventsRes.json();
+          knownAgents = Array.isArray(agentsData) ? agentsData : [];
+          knownEvents = Array.isArray(eventsData) ? eventsData : [];
+
+          renderAgents(knownAgents);
+          renderEvents(knownEvents);
+
+          // Update routing observation if a task is active
+          if (activeTaskId && pollTimer) {
+            updateRoutingObservation('pending');
+          }
+        } else {
+          setSystemOnline(false);
+        }
+      } catch (err) {
+        setSystemOnline(false);
+      }
+    }
+
+    function renderAgents(agentsList) {
+      if (!agentsList || agentsList.length === 0) {
+        agentsContainer.innerHTML = '<div class="empty-state">No agents currently registered.</div>';
+        return;
+      }
+
+      agentsContainer.innerHTML = agentsList.map(a => {
+        const friendlyName = friendlyAgentName(a.agent_id, a.agent_type);
+        const state = (a.state || 'idle').toLowerCase();
+        const stateClass = (state === 'working' || state === 'idle' || state === 'error') ? state : 'unknown';
+
+        // Capabilities
+        const caps = Array.isArray(a.capabilities) ? a.capabilities : [];
+        const capsHtml = caps.map(c => {
+          const capLower = String(c).toLowerCase();
+          const capClass = capLower === 'research' ? 'research' : 'general';
+          return `<span class="cap-badge ${capClass}">${esc(c)}</span>`;
+        }).join('');
+
+        // Providers (safely extracted, omitting any credentials)
+        const provs = a.providers && typeof a.providers === 'object' ? a.providers : {};
+        const provTags = [];
+        if (provs.research_executor || a.research_executor) {
+          provTags.push(`Retrieval: ${esc(provs.research_executor || a.research_executor)}`);
+        }
+        if (provs.inference_provider || a.inference_provider) {
+          provTags.push(`Inference: ${esc(provs.inference_provider || a.inference_provider)}`);
+        }
+        const provsHtml = provTags.map(p => `<span class="provider-tag">${p}</span>`).join('');
+
+        // Task metadata
+        const taskMetaHtml = a.task_id ? `<div class="agent-task-meta">Task: <code>${esc(a.task_id)}</code></div>` : '';
+
+        return `
+          <div class="agent-card">
+            <div class="agent-head">
+              <div class="agent-name-group">
+                <span class="agent-friendly-name">${esc(friendlyName)}</span>
+                <span class="agent-id-tag">${esc(a.agent_id)}</span>
+              </div>
+              <span class="state-pill ${stateClass}">${esc(state)}</span>
+            </div>
+            <div class="agent-meta-tags">
+              ${capsHtml}
+              ${provsHtml}
+            </div>
+            <div class="agent-detail-text">${esc(a.detail || 'Waiting for work')}</div>
+            ${taskMetaHtml}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderEvents(eventsList) {
+      if (!eventsList || eventsList.length === 0) {
+        eventsContainer.innerHTML = '<div class="empty-state">No events recorded yet.</div>';
+        return;
+      }
+
+      eventsContainer.innerHTML = eventsList.map(e => {
+        const state = (e.state || 'idle').toLowerCase();
+        const stateClass = (state === 'working' || state === 'idle' || state === 'error') ? state : 'unknown';
+        const timeFormatted = formatTime(e.occurred_at);
+        const taskTag = e.task_id ? `<span class="timeline-task" title="${esc(e.task_id)}">Task: ${esc(e.task_id.slice(0, 8))}...</span>` : '';
+
+        return `
+          <div class="timeline-entry">
+            <div class="timeline-header">
+              <span class="timeline-agent">
+                <span>${esc(friendlyAgentName(e.agent_id))}</span>
+                <span class="state-pill ${stateClass}" style="font-size: 0.625rem; padding: 1px 6px;">${esc(state)}</span>
+              </span>
+              <span class="timeline-time">${esc(timeFormatted)}</span>
+            </div>
+            <div class="timeline-detail">${esc(e.detail || '')}</div>
+            ${taskTag}
+          </div>
+        `;
+      }).join('');
+    }
+
+    // --- Lifecycle Cleanups ---
+    window.addEventListener('beforeunload', () => {
+      stopResultPolling();
+      if (refreshInterval) clearInterval(refreshInterval);
+    });
+
+    window.addEventListener('pagehide', () => {
+      stopResultPolling();
+      if (refreshInterval) clearInterval(refreshInterval);
+    });
+
+    // Initial load and periodic refresh (every 2.5s)
+    refreshSystem();
+    refreshInterval = setInterval(refreshSystem, 2500);
+  </script>
+</body>
+</html>
