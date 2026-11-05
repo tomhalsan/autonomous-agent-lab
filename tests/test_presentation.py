@@ -47,6 +47,13 @@ async def test_dashboard_html_binds_prompt_element_explicitly() -> None:
 
 
 @pytest.mark.anyio
+async def test_dashboard_displays_authoritative_version() -> None:
+    html = await dashboard()
+    assert "v0.2.0" in html
+    assert '<span class="version-badge">v0.2.0</span>' in html
+
+
+@pytest.mark.anyio
 async def test_health_endpoint() -> None:
     res = await health()
     assert res == {"status": "ok"}
@@ -67,6 +74,7 @@ async def test_create_app_with_fakes_and_endpoints() -> None:
         state_reader=fake_reader,
     )
 
+    assert app.version == "0.2.0"
     assert app.state.settings.app_env == "test"
     assert app.state.gateway is None
 

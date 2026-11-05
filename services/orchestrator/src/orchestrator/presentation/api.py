@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from agent_contracts import __version__
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -101,7 +102,7 @@ def create_app(
         if gateway is not None and hasattr(gateway, "aclose"):
             await gateway.aclose()
 
-    app = FastAPI(title="Autonomous Agent Lab", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Autonomous Agent Lab", version=__version__, lifespan=lifespan)
 
     app.state.settings = resolved_settings
     app.state.gateway = gateway

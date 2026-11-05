@@ -11,9 +11,10 @@ A new, independent project for experimenting with containerized autonomous agent
 
 Dependency direction is inward: presentation/infrastructure -> application -> domain.
 
-## First milestone
+## Milestones
 
-The orchestrator accepts a task, Redis transports it, and a worker processes it while publishing state. A small dashboard shows agent state and recent events.
+- **v0.1.0 — Initial Worker Prototype**: The orchestrator accepts a task, Redis transports it, and a worker processes it while publishing state. A small dashboard shows agent state and recent events.
+- **v0.2.0 — Multi-Agent Research Prototype**: Automatic capability-based task routing, independent Research Agent service, grounded Tavily research retrieval, pluggable Cloudflare inference synthesis, persistent task results, observable agent capabilities and providers, and the Prototype Console interface.
 
 ## Start
 
@@ -25,7 +26,7 @@ The orchestrator accepts a task, Redis transports it, and a worker processes it 
 
 From another computer on your LAN, use `http://<windows-host-ip>:8080` after allowing TCP 8080 through the Windows firewall. Do not expose Redis directly.
 
-## Prototype Console
+## Prototype Console (v0.2.0)
 
 The Prototype Console provides a unified, approachable browser interface (`GET /`) for demonstrating and interacting with the lab:
 
