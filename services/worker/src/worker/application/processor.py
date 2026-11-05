@@ -1,10 +1,9 @@
-import asyncio
 import logging
 from typing import Any
 
 from agent_contracts import AgentEvent, TaskRequested, TaskResult
 
-from .ports import MessageBus, ResultStore
+from .ports import InferenceProvider, MessageBus, ResultStore
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +23,17 @@ class TaskProcessor:
         agent_id: str,
         bus: MessageBus,
         result_store: ResultStore | None = None,
+        inference_provider: InferenceProvider | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.bus = bus
         self.result_store = result_store
+        self.inference_provider = inference_provider
 
     async def process(self, task: TaskRequested) -> Any:
-        """Execute the task payload. Subclasses/extensions can override."""
-        await asyncio.sleep(1)
+        """Execute the task prompt using the configured inference provider."""
+        if self.inference_provider is not None:
+            return await self.inference_provider.generate(task.prompt)
         return f"Completed: {task.prompt}"
 
     async def run_once(self, task: TaskRequested) -> None:

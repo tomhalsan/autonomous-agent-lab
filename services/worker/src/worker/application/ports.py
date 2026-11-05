@@ -16,3 +16,8 @@ class MessageBus(Protocol):
 
 class ResultStore(Protocol):
     async def save(self, result: TaskResult) -> None: ...
+
+
+class InferenceProvider(Protocol):
+    async def generate(self, prompt: str) -> str: ...
+
