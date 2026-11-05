@@ -6,6 +6,7 @@ class ResearchResult:
     task_id: str
     output: str
     acknowledged: bool = True
+    truncated: bool = False
 
     def __post_init__(self) -> None:
         if not self.task_id.strip():
@@ -19,6 +20,9 @@ class SynthesisResult:
     evidence: str
     provider: str = "stub"
     model: str = "stub"
+    truncated: bool = False
+    finish_reason: str | None = None
+    usage: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if not self.question.strip():

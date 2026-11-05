@@ -12,6 +12,7 @@ def create_inference_provider(
     api_token: str | None = None,
     model: str | None = None,
     client: Any | None = None,
+    max_tokens: int | None = None,
 ) -> InferenceProvider:
     """Instantiate an InferenceProvider based on the provided name or INFERENCE_PROVIDER env var.
 
@@ -54,6 +55,7 @@ def create_inference_provider(
             api_token=resolved_token.strip(),
             model=resolved_model.strip() if resolved_model else None,
             client=client,
+            max_tokens=max_tokens,
         )
 
     raise ValueError(

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -1283,6 +1284,245 @@ async def test_cloudflare_provider_redacts_api_token_on_failure() -> None:
     err_str = str(exc_info.value)
     assert secret_token not in err_str
     assert "[REDACTED]" in err_str
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_normal_completion(caplog: pytest.LogCaptureFixture) -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "Raft achieves consensus via leader election and log replication. Sourced from https://raft.github.io.",
+                "finish_reason": "stop",
+                "usage": {
+                    "prompt_tokens": 45,
+                    "completion_tokens": 78,
+                    "total_tokens": 123,
+                },
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = await provider.synthesize(
+            question="How does Raft maintain consensus?",
+            evidence="Raft uses leader election and replicated logs (https://raft.github.io).",
+        )
+
+    assert result.truncated is False
+    assert result.finish_reason == "stop"
+    assert result.usage == {"prompt_tokens": 45, "completion_tokens": 78, "total_tokens": 123}
+    assert "[Response truncated" not in result.content
+    assert result.content.endswith(".")
+    # Safe metadata logged without secret exposure
+    assert "Cloudflare synthesis completed" in caplog.text
+    assert "finish_reason=stop" in caplog.text
+    assert "prompt_tokens=45" in caplog.text
+    assert "completion_tokens=78" in caplog.text
+    assert "test-tok" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_token_limit_completion(caplog: pytest.LogCaptureFixture) -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "This approach can improve performance by assigning specialized agents to specific tasks, reducing latency across nodes.",
+                "finish_reason": "length",
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 1024,
+                    "total_tokens": 1144,
+                },
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    evidence_text = "Multi-agent systems route specialized workloads (https://arxiv.org/abs/2308.08155)."
+    with caplog.at_level(logging.WARNING):
+        result = await provider.synthesize(
+            question="Investigate multi-agent consensus",
+            evidence=evidence_text,
+        )
+
+    # Must detect as truncated and not silently treat as complete
+    assert result.truncated is True
+    assert result.finish_reason == "length"
+    assert "[Response truncated: token limit reached]" in result.content
+    # Grounded evidence preserved
+    assert result.evidence == evidence_text
+    # Source attribution preserved
+    assert "https://arxiv.org/abs/2308.08155" in result.content
+    # Safe warning logged
+    assert "Cloudflare synthesis output detected as truncated" in caplog.text
+    assert "finish_reason=length" in caplog.text
+    assert "test-tok" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_response_ending_mid_sentence(caplog: pytest.LogCaptureFixture) -> None:
+    mock_client = AsyncMock()
+    # Response terminates abruptly mid-sentence with no trailing punctuation
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "This approach can improve performance by assigning specialized agents to specific",
+                "finish_reason": "stop",
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await provider.synthesize(
+            question="Analyze multi-agent partitioning",
+            evidence="Evidence text (https://example.com/multi-agent).",
+        )
+
+    # Must be detected as truncated despite finish_reason='stop' because it terminated mid-sentence
+    assert result.truncated is True
+    assert "[Response truncated: token limit reached]" in result.content
+    assert "https://example.com/multi-agent" in result.content
+    assert "ends_mid_sentence=True" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_payload_enforces_requested_number_of_findings() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "1. Finding one.\n2. Finding two.\n3. Finding three.\n\nSources:\n- https://example.com",
+                "finish_reason": "stop",
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+        max_tokens=800,
+    )
+
+    question = "List 3 key findings on distributed consensus protocols"
+    evidence = "Protocols include Raft, Paxos, PBFT (https://example.com)."
+    result = await provider.synthesize(question=question, evidence=evidence)
+
+    assert result.truncated is False
+    assert "[Response truncated" not in result.content
+
+    # Inspect payload sent to Cloudflare
+    mock_client.post.assert_called_once()
+    payload = mock_client.post.call_args[1]["json"]
+    assert payload["max_tokens"] == 800
+
+    system_prompt = payload["messages"][0]["content"]
+    assert "Answer only the requested number of findings" in system_prompt
+    assert "include one concise explanation per finding" in system_prompt
+    assert "include a short key finding per item only if space permits" in system_prompt
+    assert "Avoid adding extra findings beyond the requested count" in system_prompt
+    assert "Sources section" in system_prompt
+
+    user_prompt = payload["messages"][1]["content"]
+    assert "Answer only the requested number of findings" in user_prompt
+    assert question in user_prompt
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_payload_forbids_unrequested_additionally_section() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "1. Key finding.\n\nSources:\n- https://example.com",
+                "finish_reason": "stop",
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    await provider.synthesize(
+        question="Explain Raft heartbeats",
+        evidence="Leaders send periodic heartbeats (https://example.com).",
+    )
+
+    payload = mock_client.post.call_args[1]["json"]
+    system_prompt = payload["messages"][0]["content"]
+    user_prompt = payload["messages"][1]["content"]
+
+    # Verify explicit ban on unrequested "Additionally" sections
+    assert "Additionally" in system_prompt
+    assert "do not add an unrequested 'Additionally' section" in system_prompt
+    assert "Additionally" in user_prompt
 
 
 # --- End-to-end Integration: Processor with Tavily + Cloudflare ---

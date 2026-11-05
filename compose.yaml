@@ -17,6 +17,8 @@ services:
     build:
       context: .
       dockerfile: services/orchestrator/Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080"
     environment:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       APP_ENV: ${APP_ENV:-development}
@@ -59,6 +61,7 @@ services:
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
       CLOUDFLARE_AI_API_TOKEN: ${CLOUDFLARE_AI_API_TOKEN:-}
       CLOUDFLARE_AI_MODEL: ${CLOUDFLARE_AI_MODEL:-@cf/meta/llama-3.1-8b-instruct}
+      CLOUDFLARE_AI_MAX_TOKENS: ${CLOUDFLARE_AI_MAX_TOKENS:-1024}
     depends_on:
       redis:
         condition: service_healthy

@@ -89,6 +89,7 @@ class RedisBus:
             "status": "completed",
             "output": result.output,
             "acknowledged": result.acknowledged,
+            "truncated": result.truncated,
         }
 
         async def _write():

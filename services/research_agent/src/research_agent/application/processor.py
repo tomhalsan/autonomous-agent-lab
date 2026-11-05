@@ -55,6 +55,7 @@ class ResearchProcessor:
                     task_id=task.task_id,
                     output=synthesis.content,
                     acknowledged=result.acknowledged,
+                    truncated=synthesis.truncated,
                 )
 
             if self.result_store is not None:
