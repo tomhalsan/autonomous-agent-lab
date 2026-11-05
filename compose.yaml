@@ -56,6 +56,9 @@ services:
       RESEARCH_EXECUTOR: ${RESEARCH_EXECUTOR:-stub}
       INFERENCE_PROVIDER: ${INFERENCE_PROVIDER:-stub}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_AI_API_TOKEN: ${CLOUDFLARE_AI_API_TOKEN:-}
+      CLOUDFLARE_AI_MODEL: ${CLOUDFLARE_AI_MODEL:-@cf/meta/llama-3.1-8b-instruct}
     depends_on:
       redis:
         condition: service_healthy

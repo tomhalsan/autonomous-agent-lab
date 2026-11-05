@@ -1,11 +1,16 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from agent_contracts import AgentEvent, TaskRequested
 from orchestrator.application.queries import GetAgentStates, GetRecentEvents
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
 from research_agent.domain.models import ResearchResult, SynthesisResult
+from research_agent.infrastructure.cloudflare_inference import (
+    DEFAULT_CLOUDFLARE_AI_MODEL,
+    CloudflareInferenceProvider,
+)
 from research_agent.infrastructure.executor_factory import create_research_executor
 from research_agent.infrastructure.inference_factory import create_inference_provider
 from research_agent.infrastructure.redis_bus import RedisBus
@@ -786,8 +791,8 @@ def test_create_inference_provider_unsupported_raises() -> None:
     with pytest.raises(ValueError, match="Unsupported inference provider: 'openai'"):
         create_inference_provider("openai")
 
-    with pytest.raises(ValueError, match="Unsupported inference provider: 'cloudflare'"):
-        create_inference_provider("cloudflare")
+    with pytest.raises(ValueError, match="Unsupported inference provider: 'gemini'"):
+        create_inference_provider("gemini")
 
 
 # --- Processor Integration Tests with InferenceProvider ---
@@ -934,6 +939,468 @@ async def test_run_research_agent_unsupported_inference_provider_fails_startup(
             await run_research_agent()
 
         mock_bus_cls.assert_not_called()
+
+
+# --- Infrastructure Adapter Tests: CloudflareInferenceProvider ---
+
+
+def test_cloudflare_provider_creation_default_model() -> None:
+    provider = CloudflareInferenceProvider(account_id="acc-123", api_token="tok-456")
+    assert provider._account_id == "acc-123"
+    assert provider._api_token == "tok-456"
+    assert provider.model == DEFAULT_CLOUDFLARE_AI_MODEL
+
+
+def test_cloudflare_provider_creation_custom_model() -> None:
+    provider = CloudflareInferenceProvider(
+        account_id="acc-123",
+        api_token="tok-456",
+        model="@cf/meta/llama-3.3-70b-instruct",
+    )
+    assert provider.model == "@cf/meta/llama-3.3-70b-instruct"
+
+
+def test_cloudflare_provider_missing_account_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    with pytest.raises(
+        ValueError,
+        match="CLOUDFLARE_ACCOUNT_ID environment variable is required",
+    ):
+        CloudflareInferenceProvider(api_token="tok-456")
+
+
+def test_cloudflare_provider_missing_api_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLOUDFLARE_AI_API_TOKEN", raising=False)
+    with pytest.raises(
+        ValueError,
+        match="CLOUDFLARE_AI_API_TOKEN environment variable is required",
+    ):
+        CloudflareInferenceProvider(account_id="acc-123")
+
+
+def test_cloudflare_provider_secret_redaction_repr() -> None:
+    secret = "secret-super-sensitive-token-999"
+    provider = CloudflareInferenceProvider(account_id="acc-123", api_token=secret)
+    rep = repr(provider)
+    assert secret not in rep
+    assert "[REDACTED]" in rep
+
+
+# --- Factory Selection Tests: Cloudflare ---
+
+
+def test_create_inference_provider_cloudflare_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acc-env-1")
+    monkeypatch.setenv("CLOUDFLARE_AI_API_TOKEN", "tok-env-1")
+    monkeypatch.delenv("CLOUDFLARE_AI_MODEL", raising=False)
+
+    provider = create_inference_provider()
+    assert isinstance(provider, CloudflareInferenceProvider)
+    assert provider._account_id == "acc-env-1"
+    assert provider._api_token == "tok-env-1"
+    assert provider.model == DEFAULT_CLOUDFLARE_AI_MODEL
+
+
+def test_create_inference_provider_cloudflare_explicit_and_custom_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AI_API_TOKEN", raising=False)
+
+    provider = create_inference_provider(
+        name="cloudflare",
+        account_id="acc-custom",
+        api_token="tok-custom",
+        model="@cf/meta/llama-3.3-70b-instruct",
+    )
+    assert isinstance(provider, CloudflareInferenceProvider)
+    assert provider._account_id == "acc-custom"
+    assert provider._api_token == "tok-custom"
+    assert provider.model == "@cf/meta/llama-3.3-70b-instruct"
+
+
+def test_create_inference_provider_cloudflare_missing_account_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "cloudflare")
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.setenv("CLOUDFLARE_AI_API_TOKEN", "tok-1")
+
+    with pytest.raises(ValueError, match="CLOUDFLARE_ACCOUNT_ID environment variable is required"):
+        create_inference_provider()
+
+
+def test_create_inference_provider_cloudflare_missing_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acc-1")
+    monkeypatch.delenv("CLOUDFLARE_AI_API_TOKEN", raising=False)
+
+    with pytest.raises(ValueError, match="CLOUDFLARE_AI_API_TOKEN environment variable is required"):
+        create_inference_provider()
+
+
+# --- Synthesis Execution, Grounding, and Error Handling Tests ---
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_successful_synthesis() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "Raft achieves consensus via leader election and log replication. Sourced from https://raft.github.io"
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    question = "How does Raft maintain consensus?"
+    evidence = "Raft uses leader election and replicated logs (https://raft.github.io)."
+    result = await provider.synthesize(question=question, evidence=evidence)
+
+    assert result.question == question
+    assert "Raft achieves consensus" in result.content
+    assert result.evidence == evidence  # Grounded evidence preserved
+    assert result.provider == "cloudflare"
+    assert result.model == DEFAULT_CLOUDFLARE_AI_MODEL
+
+    # Verify request payload
+    mock_client.post.assert_called_once()
+    url, kwargs = mock_client.post.call_args[0][0], mock_client.post.call_args[1]
+    assert (
+        "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct"
+        in url
+    )
+    assert kwargs["headers"]["Authorization"] == "Bearer test-tok"
+    assert kwargs["headers"]["Content-Type"] == "application/json"
+
+    messages = kwargs["json"]["messages"]
+    assert len(messages) == 2
+    system_msg = messages[0]["content"]
+    assert "Answer the research question directly" in system_msg
+    assert "Rely exclusively on the provided grounded evidence" in system_msg
+    assert "Clearly identify key findings" in system_msg
+    assert "Preserve and source relevant URLs" in system_msg
+    assert "insufficient" in system_msg
+
+    user_msg = messages[1]["content"]
+    assert question in user_msg
+    assert evidence in user_msg
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_empty_evidence_formatting() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "The supplied evidence is insufficient to answer the question."
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    result = await provider.synthesize(question="What is Quantum Consensus?", evidence="   ")
+    assert result.evidence == "   "
+    assert "insufficient" in result.content
+
+    _, kwargs = mock_client.post.call_args
+    user_msg = kwargs["json"]["messages"][1]["content"]
+    assert "[No grounded evidence provided]" in user_msg
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_api_failure_error_status() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=401,
+        json={
+            "result": None,
+            "success": False,
+            "errors": [{"code": 1000, "message": "Invalid API Token"}],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Cloudflare Workers AI API error \(status 401\): Invalid API Token",
+    ):
+        await provider.synthesize(question="What is consensus?", evidence="Evidence")
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_network_failure() -> None:
+    mock_client = AsyncMock()
+    mock_client.post.side_effect = httpx.ConnectTimeout("Connection timed out")
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Cloudflare Workers AI request failed: Connection timed out",
+    ):
+        await provider.synthesize(question="What is consensus?", evidence="Evidence")
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_malformed_json_response() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        content=b"not-json-content",
+        headers={"Content-Type": "text/html"},
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    with pytest.raises(RuntimeError, match="Cloudflare Workers AI returned invalid JSON"):
+        await provider.synthesize(question="What is consensus?", evidence="Evidence")
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_malformed_response_missing_result() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={"success": True, "result": None},
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    with pytest.raises(RuntimeError, match="missing or invalid 'result' object"):
+        await provider.synthesize(question="What is consensus?", evidence="Evidence")
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_malformed_response_missing_response_string() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={"success": True, "result": {"other_field": 123}},
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+
+    with pytest.raises(RuntimeError, match="missing 'result.response' string"):
+        await provider.synthesize(question="What is consensus?", evidence="Evidence")
+
+
+@pytest.mark.anyio
+async def test_cloudflare_provider_redacts_api_token_on_failure() -> None:
+    secret_token = "secret-cf-super-token-xyz"
+    mock_client = AsyncMock()
+    mock_client.post.side_effect = httpx.RequestError(
+        f"Failed to connect using token {secret_token}"
+    )
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token=secret_token,
+        client=mock_client,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+
+    err_str = str(exc_info.value)
+    assert secret_token not in err_str
+    assert "[REDACTED]" in err_str
+
+
+# --- End-to-end Integration: Processor with Tavily + Cloudflare ---
+
+
+@pytest.mark.anyio
+async def test_research_processor_with_tavily_and_cloudflare_inference() -> None:
+    mock_tavily_client = AsyncMock()
+    mock_tavily_client.search.return_value = {
+        "query": "Survey state machine replication",
+        "answer": "SMR relies on consensus.",
+        "results": [
+            {
+                "title": "SMR Research",
+                "url": "https://example.com/smr-paper",
+                "content": "Consensus engines replicate operations across state machines.",
+            }
+        ],
+    }
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_tavily_client)
+
+    mock_cf_client = AsyncMock()
+    mock_cf_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "Key Findings: State machine replication requires deterministic execution and consensus (https://example.com/smr-paper)."
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request(
+            "POST",
+            "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run/@cf/meta/llama-3.1-8b-instruct",
+        ),
+    )
+    mock_cf_client.post.return_value = mock_cf_response
+
+    inference_provider = CloudflareInferenceProvider(
+        account_id="acc-1",
+        api_token="tok-1",
+        client=mock_cf_client,
+    )
+
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    processor = ResearchProcessor(
+        "research-agent-1",
+        bus,
+        executor,
+        result_store=store,
+        inference_provider=inference_provider,
+    )
+    task = TaskRequested.create("Survey state machine replication")
+
+    await processor.run_once(task)
+
+    assert task.task_id in store.saved
+    saved = store.saved[task.task_id]
+    assert "Key Findings: State machine replication" in saved.output
+    assert "https://example.com/smr-paper" in saved.output
+    assert saved.acknowledged is True
+    assert len(bus.published) == 2
+    assert bus.published[0].state == "working"
+    assert bus.published[1].state == "idle"
+    assert "Completed: Key Findings" in bus.published[1].detail
+
+
+# --- Main Service Wiring Tests for Cloudflare ---
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_cloudflare_missing_credentials_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "cloudflare")
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AI_API_TOKEN", raising=False)
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls:
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(
+            ValueError, match="CLOUDFLARE_ACCOUNT_ID environment variable is required"
+        ):
+            await run_research_agent()
+
+        mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_cloudflare_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "stub")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acc-main-test")
+    monkeypatch.setenv("CLOUDFLARE_AI_API_TOKEN", "tok-main-test")
+
+    with (
+        patch("research_agent.main.RedisBus") as mock_bus_cls,
+        patch("research_agent.main.ResearchProcessor") as mock_processor_cls,
+    ):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_processor_cls.assert_called_once()
+        _, kwargs = mock_processor_cls.call_args
+        assert kwargs.get("result_store") == mock_bus
+        provider = kwargs.get("inference_provider")
+        assert isinstance(provider, CloudflareInferenceProvider)
+        assert provider._account_id == "acc-main-test"
+        assert provider._api_token == "tok-main-test"
+        assert provider.model == DEFAULT_CLOUDFLARE_AI_MODEL
+
 
 
 
