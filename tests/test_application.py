@@ -151,6 +151,25 @@ async def test_submit_task_automatic_routing_general() -> None:
 
 
 @pytest.mark.anyio
+async def test_submit_task_routing_v2_freshness_and_explanatory() -> None:
+    queue = FakeTaskQueue()
+    use_case = SubmitTask(queue)
+
+    # Freshness prompt automatically resolves to RESEARCH
+    task_research = await use_case.execute(
+        "What are the latest developments in battery technology?"
+    )
+    assert queue.enqueued[0] == (task_research, AgentCapability.RESEARCH)
+
+    # General explanatory prompt automatically resolves to GENERAL
+    task_general = await use_case.execute(
+        "Explain the difference between containers and virtual machines."
+    )
+    assert queue.enqueued[1] == (task_general, AgentCapability.GENERAL)
+
+
+
+@pytest.mark.anyio
 async def test_submit_task_preserves_explicit_capability_override() -> None:
     queue = FakeTaskQueue()
     use_case = SubmitTask(queue)
