@@ -8,6 +8,7 @@ from .availability import (
     evaluate_availability,
     parse_timestamp,
 )
+from .candidates import AgentCandidate
 from .capabilities import AgentCapabilityMetadata
 from .messages import AgentEvent, TaskRequested
 from .results import TaskResult
@@ -24,6 +25,7 @@ from .version import __version__
 __all__ = [
     "AgentAvailability",
     "AgentAvailabilityState",
+    "AgentCandidate",
     "AgentCapabilityMetadata",
     "AgentEvent",
     "AgentExecutionState",
