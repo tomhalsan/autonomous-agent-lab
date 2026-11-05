@@ -14,6 +14,7 @@ from orchestrator.application.ports import (
     TaskQueue,
 )
 from orchestrator.application.queries import (
+    FindCandidatesByCapability,
     GetAgentStates,
     GetRecentEvents,
     GetTaskResult,
@@ -64,6 +65,15 @@ async def task_result(task_id: str, request: Request) -> dict[str, Any]:
     return result
 
 
+async def candidates(capability: str, request: Request) -> list[dict[str, Any]]:
+    find_candidates: FindCandidatesByCapability = request.app.state.find_candidates
+    try:
+        candidate_list = await find_candidates.execute(capability)
+        return [c.to_dict() for c in candidate_list]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 class NoOpResultReader:
     async def get_result(self, task_id: str) -> dict[str, Any] | None:
         return None
@@ -95,6 +105,7 @@ def create_app(
     get_agent_states = GetAgentStates(reader)
     get_recent_events = GetRecentEvents(reader)
     get_task_result = GetTaskResult(results)
+    find_candidates = FindCandidatesByCapability(reader)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -110,6 +121,7 @@ def create_app(
     app.state.get_agent_states = get_agent_states
     app.state.get_recent_events = get_recent_events
     app.state.get_task_result = get_task_result
+    app.state.find_candidates = find_candidates
 
     app.add_api_route("/health", health, methods=["GET"])
     app.add_api_route("/", dashboard, methods=["GET"], response_class=HTMLResponse)
@@ -117,6 +129,7 @@ def create_app(
     app.add_api_route("/api/agents", agents, methods=["GET"])
     app.add_api_route("/api/events", events, methods=["GET"])
     app.add_api_route("/api/tasks/{task_id}/result", task_result, methods=["GET"])
+    app.add_api_route("/api/candidates", candidates, methods=["GET"])
 
     return app
 

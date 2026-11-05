@@ -8,7 +8,7 @@ from .availability import (
     evaluate_availability,
     parse_timestamp,
 )
-from .capability import AgentCapability, AgentCapabilityMetadata
+from .capability import AgentCandidate, AgentCapability, AgentCapabilityMetadata
 from .router import (
     DEFAULT_RESEARCH_KEYWORDS,
     RESEARCH_INTENT_PATTERNS,
@@ -22,6 +22,7 @@ __all__ = [
     "RESEARCH_INTENT_PATTERNS",
     "AgentAvailability",
     "AgentAvailabilityState",
+    "AgentCandidate",
     "AgentCapability",
     "AgentCapabilityMetadata",
     "AgentExecutionState",
