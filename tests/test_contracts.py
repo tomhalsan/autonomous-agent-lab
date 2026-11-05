@@ -1,5 +1,5 @@
 import pytest
-from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested
+from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested, TaskResult
 
 
 def test_task_message_round_trip() -> None:
@@ -55,3 +55,29 @@ def test_agent_capability_metadata_rejects_sensitive_keys(bad_key: str) -> None:
             capabilities=["research"],
             providers={bad_key: "confidential_value"},
         )
+
+
+def test_task_result_round_trip() -> None:
+    original = TaskResult(
+        task_id="task-general-1",
+        output="Completed general task execution",
+        status="completed",
+        acknowledged=True,
+    )
+    restored = TaskResult.from_json(original.to_json())
+    assert restored == original
+    assert restored.task_id == "task-general-1"
+    assert restored.output == "Completed general task execution"
+    assert restored.status == "completed"
+    assert restored.acknowledged is True
+
+
+def test_task_result_rejects_empty_task_id() -> None:
+    with pytest.raises(ValueError, match="task_id must not be empty"):
+        TaskResult(task_id="   ", output="some output")
+
+
+def test_task_result_rejects_empty_status() -> None:
+    with pytest.raises(ValueError, match="status must not be empty"):
+        TaskResult(task_id="task-123", output="some output", status="   ")
+

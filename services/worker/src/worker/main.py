@@ -21,7 +21,7 @@ async def run_worker() -> None:
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     task_queue = os.getenv("TASK_QUEUE", "agent.tasks.general")
     bus = RedisBus(redis_url, queue_name=task_queue)
-    processor = TaskProcessor(agent_id, bus)
+    processor = TaskProcessor(agent_id, bus, result_store=bus)
 
     metadata = AgentCapabilityMetadata(
         agent_id=agent_id,
