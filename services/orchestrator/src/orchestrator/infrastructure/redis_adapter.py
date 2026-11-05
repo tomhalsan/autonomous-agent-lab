@@ -57,9 +57,33 @@ class RedisGateway:
 
         return None
 
-    async def agents(self) -> list[dict[str, str]]:
+    async def agents(self) -> list[dict[str, Any]]:
         ids = await self._client.smembers("agent.ids")
-        return [await self._client.hgetall(f"agent.state:{agent_id}") for agent_id in sorted(ids)]
+        agents_list: list[dict[str, Any]] = []
+        for agent_id in sorted(ids):
+            data = await self._client.hgetall(f"agent.state:{agent_id}")
+            if not data:
+                continue
+            entry: dict[str, Any] = dict(data)
+
+            if "capabilities" in entry and isinstance(entry["capabilities"], str):
+                try:
+                    entry["capabilities"] = json.loads(entry["capabilities"])
+                except (json.JSONDecodeError, TypeError):
+                    entry["capabilities"] = [entry["capabilities"]]
+            elif "capabilities" not in entry:
+                entry["capabilities"] = []
+
+            if "providers" in entry and isinstance(entry["providers"], str):
+                try:
+                    entry["providers"] = json.loads(entry["providers"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif "providers" not in entry:
+                entry["providers"] = {}
+
+            agents_list.append(entry)
+        return agents_list
 
     async def events(self, limit: int = 50) -> list[dict[str, str]]:
         rows = await self._client.xrevrange("agent.events", count=limit)

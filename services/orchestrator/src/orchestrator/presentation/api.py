@@ -45,7 +45,7 @@ async def create_task(value: TaskInput, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-async def agents(request: Request) -> list[dict[str, str]]:
+async def agents(request: Request) -> list[dict[str, Any]]:
     get_agent_states: GetAgentStates = request.app.state.get_agent_states
     return await get_agent_states.execute()
 

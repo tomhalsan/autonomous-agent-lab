@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 
-from agent_contracts import AgentEvent
+from agent_contracts import AgentCapabilityMetadata, AgentEvent
 
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
 from research_agent.infrastructure.executor_factory import create_research_executor
@@ -36,6 +36,16 @@ async def run_research_agent() -> None:
         inference_provider=inference_provider,
     )
 
+    metadata = AgentCapabilityMetadata(
+        agent_id=agent_id,
+        agent_type="research-agent",
+        capabilities=["research"],
+        providers={
+            "research_executor": executor_name,
+            "inference_provider": inference_provider_name,
+        },
+    )
+
     logger.info(
         "Initializing research agent %s on queue %s with executor %s and inference provider %s...",
         agent_id,
@@ -45,6 +55,7 @@ async def run_research_agent() -> None:
     )
 
     try:
+        await bus.register(metadata)
         await bus.publish(AgentEvent.create(agent_id, "idle", "Waiting for work"))
         logger.info("Research agent %s registered and waiting for tasks", agent_id)
 

@@ -7,7 +7,7 @@ class GetAgentStates:
     def __init__(self, reader: StateReader) -> None:
         self._reader = reader
 
-    async def execute(self) -> list[dict[str, str]]:
+    async def execute(self) -> list[dict[str, Any]]:
         return await self._reader.agents()
 
 

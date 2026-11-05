@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from agent_contracts import AgentEvent, TaskRequested
+from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested
 
 from research_agent.domain.models import ResearchResult, SynthesisResult
 
@@ -8,6 +8,7 @@ from research_agent.domain.models import ResearchResult, SynthesisResult
 class MessageBus(Protocol):
     async def next_task(self) -> TaskRequested: ...
     async def publish(self, event: AgentEvent) -> None: ...
+    async def register(self, metadata: AgentCapabilityMetadata) -> None: ...
 
 
 class ResearchExecutor(Protocol):

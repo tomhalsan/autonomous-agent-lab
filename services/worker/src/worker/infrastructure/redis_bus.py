@@ -1,9 +1,10 @@
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Coroutine
 
 import redis.asyncio as redis
-from agent_contracts import AgentEvent, TaskRequested
+from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,23 @@ class RedisBus:
             if res is not None:
                 _, value = res
                 return TaskRequested.from_json(value)
+
+    async def register(self, metadata: AgentCapabilityMetadata) -> None:
+        mapping = {
+            "agent_id": metadata.agent_id,
+            "agent_type": metadata.agent_type,
+            "capabilities": json.dumps(metadata.capabilities),
+            "providers": json.dumps(metadata.providers),
+            "version": str(metadata.version),
+        }
+        for k, v in metadata.providers.items():
+            mapping[k] = str(v)
+
+        async def _write():
+            await self.client.sadd("agent.ids", metadata.agent_id)
+            await self.client.hset(f"agent.state:{metadata.agent_id}", mapping=mapping)
+
+        await retry_with_backoff(_write)
 
     async def publish(self, event: AgentEvent) -> None:
         mapping = {

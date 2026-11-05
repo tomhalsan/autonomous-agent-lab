@@ -191,3 +191,50 @@ async def test_get_task_result_endpoint_not_found() -> None:
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "Task 'unknown-id' not found"
+
+
+@pytest.mark.anyio
+async def test_agents_endpoint_returns_capability_metadata() -> None:
+    fake_reader = FakeStateReader(
+        agents_data=[
+            {
+                "agent_id": "research-agent-1",
+                "agent_type": "research-agent",
+                "capabilities": ["research"],
+                "providers": {
+                    "research_executor": "tavily",
+                    "inference_provider": "cloudflare",
+                },
+                "research_executor": "tavily",
+                "inference_provider": "cloudflare",
+                "state": "idle",
+                "detail": "Waiting for work",
+            },
+            {
+                "agent_id": "worker-1",
+                "agent_type": "worker",
+                "capabilities": ["general"],
+                "providers": {},
+                "state": "idle",
+                "detail": "Waiting for work",
+            },
+        ]
+    )
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+
+    res = await agents(request=req)
+    assert len(res) == 2
+    assert res[0]["agent_id"] == "research-agent-1"
+    assert res[0]["capabilities"] == ["research"]
+    assert res[0]["providers"]["research_executor"] == "tavily"
+    assert res[0]["providers"]["inference_provider"] == "cloudflare"
+    assert res[0]["state"] == "idle"
+
+    assert res[1]["agent_id"] == "worker-1"
+    assert res[1]["capabilities"] == ["general"]
+    assert res[1]["state"] == "idle"
+

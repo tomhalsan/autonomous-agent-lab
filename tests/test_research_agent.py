@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from agent_contracts import AgentEvent, TaskRequested
+from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested
 from orchestrator.application.queries import GetAgentStates, GetRecentEvents
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
 from research_agent.domain.models import ResearchResult, SynthesisResult
@@ -22,6 +22,10 @@ from research_agent.infrastructure.tavily_executor import TavilyResearchExecutor
 class FakeMessageBus:
     def __init__(self) -> None:
         self.published: list[AgentEvent] = []
+        self.registered_metadata: AgentCapabilityMetadata | None = None
+
+    async def register(self, metadata: AgentCapabilityMetadata) -> None:
+        self.registered_metadata = metadata
 
     async def publish(self, event: AgentEvent) -> None:
         self.published.append(event)
@@ -1400,6 +1404,116 @@ async def test_run_research_agent_cloudflare_success(
         assert provider._account_id == "acc-main-test"
         assert provider._api_token == "tok-main-test"
         assert provider.model == DEFAULT_CLOUDFLARE_AI_MODEL
+
+
+# --- Capability Metadata Registration Tests ---
+
+
+@pytest.mark.anyio
+async def test_research_agent_redis_bus_register() -> None:
+    bus = RedisBus("redis://localhost:6379/0", queue_name="agent.tasks.research")
+    bus.client.sadd = AsyncMock()  # type: ignore[method-assign]
+    bus.client.hset = AsyncMock()  # type: ignore[method-assign]
+
+    metadata = AgentCapabilityMetadata(
+        agent_id="research-agent-1",
+        capabilities=["research"],
+        agent_type="research-agent",
+        providers={"research_executor": "tavily", "inference_provider": "cloudflare"},
+    )
+
+    await bus.register(metadata)
+
+    bus.client.sadd.assert_awaited_once_with("agent.ids", "research-agent-1")
+    bus.client.hset.assert_awaited_once()
+    key, kwargs = bus.client.hset.call_args[0][0], bus.client.hset.call_args[1]
+    assert key == "agent.state:research-agent-1"
+    mapping = kwargs["mapping"]
+    assert mapping["agent_id"] == "research-agent-1"
+    assert mapping["agent_type"] == "research-agent"
+    assert mapping["capabilities"] == '["research"]'
+    assert mapping["research_executor"] == "tavily"
+    assert mapping["inference_provider"] == "cloudflare"
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_registers_capability_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_ID", "research-agent-custom")
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "stub")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub")
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls, patch(
+        "research_agent.main.ResearchProcessor"
+    ):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_bus.register.assert_awaited_once()
+        metadata = mock_bus.register.call_args[0][0]
+        assert isinstance(metadata, AgentCapabilityMetadata)
+        assert metadata.agent_id == "research-agent-custom"
+        assert metadata.capabilities == ["research"]
+        assert metadata.agent_type == "research-agent"
+        assert metadata.providers["research_executor"] == "stub"
+        assert metadata.providers["inference_provider"] == "stub"
+
+        mock_bus.publish.assert_awaited_once()
+        event = mock_bus.publish.call_args[0][0]
+        assert event.agent_id == "research-agent-custom"
+        assert event.state == "idle"
+
+
+@pytest.mark.anyio
+async def test_research_agent_metadata_does_not_expose_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_tavily = "tvly-secret-key-12345"
+    secret_cf_token = "cf-token-secret-67890"
+    secret_cf_acc = "cf-account-id-abcdef"
+
+    monkeypatch.setenv("AGENT_ID", "research-agent-secure")
+    monkeypatch.setenv("RESEARCH_EXECUTOR", "tavily")
+    monkeypatch.setenv("TAVILY_API_KEY", secret_tavily)
+    monkeypatch.setenv("INFERENCE_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", secret_cf_acc)
+    monkeypatch.setenv("CLOUDFLARE_AI_API_TOKEN", secret_cf_token)
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls, patch(
+        "research_agent.main.ResearchProcessor"
+    ):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_bus.register.assert_awaited_once()
+        metadata = mock_bus.register.call_args[0][0]
+
+        # Ensure values in metadata.providers are strictly provider names
+        assert metadata.providers == {
+            "research_executor": "tavily",
+            "inference_provider": "cloudflare",
+        }
+
+        # Serialized dict and json must not contain any of the secrets
+        meta_dict = metadata.to_dict()
+        meta_json = metadata.to_json()
+        for secret in (secret_tavily, secret_cf_token, secret_cf_acc):
+            assert secret not in meta_json
+            assert secret not in str(meta_dict)
+
 
 
 
