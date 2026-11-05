@@ -238,3 +238,78 @@ async def test_agents_endpoint_returns_capability_metadata() -> None:
     assert res[1]["capabilities"] == ["general"]
     assert res[1]["state"] == "idle"
 
+
+@pytest.mark.anyio
+async def test_dashboard_endpoint_serves_console() -> None:
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        task_queue=FakeTaskQueue(),
+        state_reader=FakeStateReader(),
+    )
+    assert app is not None
+    html_content = await dashboard()
+    assert "<!doctype html>" in html_content
+    assert "Autonomous Agent Lab" in html_content
+    assert "A generic platform for experimenting with autonomous-agent patterns." in html_content
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_contains_required_console_elements() -> None:
+    html = await dashboard()
+
+    # Form and inputs
+    assert '<form id="task">' in html
+    assert '<textarea' in html
+    assert 'id="prompt"' in html
+    assert 'id="submit-btn"' in html
+    assert 'id="submit-error"' in html
+
+    # Tracking and results
+    assert 'id="active-task-id"' in html
+    assert 'id="task-routing-status"' in html
+    assert 'id="task-progress-bar"' in html
+    assert 'id="result-box"' in html
+    assert 'id="result-content"' in html
+    assert 'id="copy-result-btn"' in html
+    assert 'id="clear-task-btn"' in html
+
+    # Observatory panels
+    assert 'id="agents"' in html
+    assert 'id="events"' in html
+    assert 'Available Agents' in html
+    assert 'Activity Timeline' in html
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_accessibility_and_security_attributes() -> None:
+    html = await dashboard()
+
+    # Accessibility: labels and aria-live regions
+    assert '<label for="prompt">' in html
+    assert 'aria-live="polite"' in html
+    assert 'role="alert"' in html
+    assert 'prefers-reduced-motion' in html
+
+    # Security: rel attributes on external links and protocol validation
+    assert 'target="_blank"' in html
+    assert 'rel="noopener noreferrer"' in html
+    # Protocol restriction strictly to http or https in safe link formatting
+    assert 'https?:\\/\\/' in html or 'https?://' in html
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_does_not_contain_credential_field_names() -> None:
+    html = await dashboard()
+    sensitive_keys = [
+        "api_key",
+        "tavily_api_key",
+        "auth_token",
+        "account_id",
+        "user_password",
+        "cf_account_id",
+        "cf_api_token",
+    ]
+    for key in sensitive_keys:
+        assert key not in html, f"Found sensitive key '{key}' in dashboard HTML/JS"
+
+

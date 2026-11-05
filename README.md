@@ -25,6 +25,22 @@ The orchestrator accepts a task, Redis transports it, and a worker processes it 
 
 From another computer on your LAN, use `http://<windows-host-ip>:8080` after allowing TCP 8080 through the Windows firewall. Do not expose Redis directly.
 
+## Prototype Console
+
+The Prototype Console provides a unified, approachable browser interface (`GET /`) for demonstrating and interacting with the lab:
+
+- **Task Submission & Observability**: Enter natural-language prompts with client-side validation and live progress feedback.
+- **Automatic Capability Routing**: Agent selection is fully automatic—the platform analyzes prompt requirements on the backend and dispatches to either the General Worker or Research Agent without requiring manual agent selection.
+- **Result Presentation**: View synthesized research output with formatted headings, numbered findings, preserved line breaks, and safe clickable links (`http`/`https` only, `rel="noopener noreferrer"`). Includes quick "Copy Result" and "New Task" workflows.
+- **Available Agents Registry**: Inspect registered autonomous agents, their operational state (`idle`, `working`, `error`), active task assignments, and configured providers (e.g., Tavily retrieval, Cloudflare inference).
+- **Activity Timeline**: Monitor live operational transitions and task events emitted asynchronously over Redis.
+- **Server-Side Credential Isolation**: All provider keys and tokens remain strictly server-side within container environments and are never transmitted to or stored within the browser console.
+
+To access the console:
+1. Start the stack: `docker compose up --build -d`
+2. Open `http://localhost:8080` in any modern web browser.
+
+
 ## Quality checks
 
 ```bash
