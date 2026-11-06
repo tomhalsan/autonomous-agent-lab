@@ -46,7 +46,7 @@ The platform can receive a task, route the work through its messaging infrastruc
 
 # v0.2.0 — Specialized Autonomous Agent
 
-**Status: Current**
+**Status: Complete**
 
 ### Goal
 
@@ -95,7 +95,7 @@ The platform identifies the required capability, delegates the work to the Resea
 
 # v0.3.0 — Dynamic Orchestration
 
-**Status: Planned**
+**Status: Current**
 
 ### Goal
 
@@ -423,7 +423,7 @@ Examples:
 
 # Current Position
 
-**Current milestone: v0.2.0 — Specialized Autonomous Agent**
+**Current milestone: v0.3.0 — Dynamic Orchestration**
 
 Completed:
 
@@ -438,6 +438,6 @@ Foundation
 
 Next major target:
 
-**v0.3.0 — Dynamic Orchestration**
+**v0.4.0 — Resilient Multi-Provider Inference**
 
-The next phase will focus on teaching the orchestrator to use runtime capability information when deciding where work should be delegated.
+The next phase will focus on allowing agents to use different inference resources without becoming dependent on a single model provider or execution environment.
