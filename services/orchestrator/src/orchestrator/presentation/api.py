@@ -8,7 +8,9 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from orchestrator.application.ports import (
+    CandidateFinder,
     CapabilityRouter,
+    EventPublisher,
     ResultReader,
     StateReader,
     TaskQueue,
@@ -21,7 +23,10 @@ from orchestrator.application.queries import (
 )
 from orchestrator.application.use_cases import SubmitTask
 from orchestrator.config import Settings
-from orchestrator.domain.capability import AgentCapability
+from orchestrator.domain.capability import (
+    AgentCapability,
+    CapabilityUnavailableError,
+)
 from orchestrator.infrastructure.redis_adapter import RedisGateway
 
 
@@ -43,6 +48,15 @@ async def create_task(value: TaskInput, request: Request) -> dict[str, str]:
     try:
         task = await submit_task.execute(value.prompt, capability=value.capability)
         return {"task_id": task.task_id, "status": "accepted"}
+    except CapabilityUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "capability_unavailable",
+                "capability": str(exc.capability),
+                "message": str(exc.message),
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -86,6 +100,9 @@ def create_app(
     state_reader: StateReader | None = None,
     result_reader: ResultReader | None = None,
     router: CapabilityRouter | None = None,
+    candidate_finder: CandidateFinder | None = None,
+    event_publisher: EventPublisher | None = None,
+    enforce_availability: bool | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
 
@@ -100,12 +117,24 @@ def create_app(
     queue = task_queue or gateway
     reader = state_reader or gateway
     results = result_reader or gateway or NoOpResultReader()
+    events_out = event_publisher or gateway
 
-    submit_task = SubmitTask(queue, router=router)
-    get_agent_states = GetAgentStates(reader)
-    get_recent_events = GetRecentEvents(reader)
+    should_enforce = enforce_availability if enforce_availability is not None else (gateway is not None)
+    resolved_finder = candidate_finder
+    if resolved_finder is None and should_enforce and reader is not None:
+        resolved_finder = FindCandidatesByCapability(reader)
+
+    find_candidates_query = resolved_finder or (FindCandidatesByCapability(reader) if reader else None)
+
+    submit_task = SubmitTask(
+        queue,
+        router=router,
+        candidate_finder=resolved_finder,
+        events=events_out,
+    )
+    get_agent_states = GetAgentStates(reader) if reader else None
+    get_recent_events = GetRecentEvents(reader) if reader else None
     get_task_result = GetTaskResult(results)
-    find_candidates = FindCandidatesByCapability(reader)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -121,7 +150,7 @@ def create_app(
     app.state.get_agent_states = get_agent_states
     app.state.get_recent_events = get_recent_events
     app.state.get_task_result = get_task_result
-    app.state.find_candidates = find_candidates
+    app.state.find_candidates = find_candidates_query
 
     app.add_api_route("/health", health, methods=["GET"])
     app.add_api_route("/", dashboard, methods=["GET"], response_class=HTMLResponse)

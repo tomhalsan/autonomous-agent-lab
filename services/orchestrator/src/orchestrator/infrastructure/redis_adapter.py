@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 import redis.asyncio as redis
-from agent_contracts import TaskRequested
+from agent_contracts import AgentEvent, TaskRequested
 
 from orchestrator.domain.capability import AgentCapability
 
@@ -88,6 +88,13 @@ class RedisGateway:
     async def events(self, limit: int = 50) -> list[dict[str, str]]:
         rows = await self._client.xrevrange("agent.events", count=limit)
         return [dict(fields, event_id=event_id) for event_id, fields in rows]
+
+    async def publish(self, event: AgentEvent) -> None:
+        mapping = {
+            key: "" if value is None else str(value)
+            for key, value in event.to_dict().items()
+        }
+        await self._client.xadd("agent.events", mapping, maxlen=500, approximate=True)
 
     async def aclose(self) -> None:
         await self._client.aclose()

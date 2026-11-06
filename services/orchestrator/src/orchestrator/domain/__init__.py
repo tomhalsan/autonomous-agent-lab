@@ -8,7 +8,12 @@ from .availability import (
     evaluate_availability,
     parse_timestamp,
 )
-from .capability import AgentCandidate, AgentCapability, AgentCapabilityMetadata
+from .capability import (
+    AgentCandidate,
+    AgentCapability,
+    AgentCapabilityMetadata,
+    CapabilityUnavailableError,
+)
 from .router import (
     DEFAULT_RESEARCH_KEYWORDS,
     RESEARCH_INTENT_PATTERNS,
@@ -27,6 +32,7 @@ __all__ = [
     "AgentCapabilityMetadata",
     "AgentExecutionState",
     "AgentHeartbeat",
+    "CapabilityUnavailableError",
     "DeterministicCapabilityRouter",
     "LivenessPolicy",
     "ResearchIntentCategory",

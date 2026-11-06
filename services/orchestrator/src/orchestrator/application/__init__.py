@@ -1,4 +1,11 @@
-from .ports import CapabilityRouter, ResultReader, StateReader, TaskQueue
+from .ports import (
+    CandidateFinder,
+    CapabilityRouter,
+    EventPublisher,
+    ResultReader,
+    StateReader,
+    TaskQueue,
+)
 from .queries import (
     FindCandidatesByCapability,
     GetAgentStates,
@@ -9,7 +16,9 @@ from .queries import (
 from .use_cases import SubmitTask
 
 __all__ = [
+    "CandidateFinder",
     "CapabilityRouter",
+    "EventPublisher",
     "FindCandidatesByCapability",
     "GetAgentStates",
     "GetRecentEvents",
