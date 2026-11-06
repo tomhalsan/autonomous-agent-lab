@@ -450,6 +450,177 @@
       100% { transform: translateX(100%); }
     }
 
+    /* Dynamic Routing Pipeline */
+    .routing-pipeline {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .pipeline-stepper {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 4px 0;
+      flex-wrap: wrap;
+    }
+
+    .pipeline-step {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 4px 10px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      transition: all 0.2s ease;
+    }
+
+    .pipeline-step.step-active {
+      border-color: var(--accent-cyan);
+      color: var(--text-main);
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .pipeline-step.step-success {
+      border-color: rgba(52, 211, 153, 0.4);
+      color: var(--state-idle);
+      background: var(--state-idle-bg);
+    }
+
+    .pipeline-step.step-failed {
+      border-color: rgba(248, 113, 113, 0.4);
+      color: var(--state-error);
+      background: var(--state-error-bg);
+    }
+
+    .step-arrow {
+      color: var(--text-faint);
+      font-size: 0.75rem;
+      user-select: none;
+    }
+
+    .step-icon {
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    .step-label {
+      font-weight: 600;
+      color: inherit;
+    }
+
+    .step-val {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .routing-rationale {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      background: var(--bg-canvas);
+      border: 1px solid var(--border-subtle);
+      border-left: 3px solid var(--accent-cyan);
+      border-radius: 6px;
+      padding: 8px 12px;
+      line-height: 1.5;
+    }
+
+    .routing-rationale.failed {
+      border-left-color: var(--state-error);
+      background: rgba(248, 113, 113, 0.06);
+    }
+
+    .routing-rationale-title {
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 2px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .routing-diagnostics {
+      font-size: 0.75rem;
+      color: var(--text-faint);
+    }
+
+    .routing-diag-summary {
+      cursor: pointer;
+      font-weight: 500;
+      color: var(--accent-cyan);
+      user-select: none;
+      padding: 2px 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .routing-diag-summary:hover {
+      text-decoration: underline;
+    }
+
+    .routing-diag-content {
+      margin-top: 8px;
+      padding: 10px;
+      background: var(--bg-canvas);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+
+    .diag-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.75rem;
+      font-family: var(--font-sans);
+    }
+
+    .diag-table th {
+      text-align: left;
+      padding: 6px 8px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-subtle);
+      font-weight: 600;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .diag-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+    }
+
+    .diag-tag {
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.07);
+    }
+
+    .diag-tag.eligible {
+      color: var(--state-idle);
+      background: var(--state-idle-bg);
+    }
+
+    .diag-tag.ineligible {
+      color: var(--state-error);
+      background: var(--state-error-bg);
+    }
+
     .result-container {
       background: var(--bg-input);
       border: 1px solid var(--border-subtle);
@@ -884,6 +1055,16 @@
             <div id="task-progress-bar" class="progress-bar-container" style="display: none;" role="progressbar" aria-valuemin="0" aria-valuemax="100">
               <div class="progress-bar-fill"></div>
             </div>
+
+            <!-- Dynamic Routing Pipeline Panel -->
+            <div id="task-routing-pipeline" class="routing-pipeline" style="display: none;" aria-live="polite">
+              <div class="pipeline-stepper" id="pipeline-stepper"></div>
+              <div class="routing-rationale" id="routing-rationale"></div>
+              <details class="routing-diagnostics" id="routing-diagnostics">
+                <summary class="routing-diag-summary" id="routing-diag-summary">Inspect candidate evaluation &amp; diagnostics</summary>
+                <div class="routing-diag-content" id="routing-diag-content"></div>
+              </details>
+            </div>
           </div>
 
           <div class="result-container" id="result-box">
@@ -1055,6 +1236,12 @@
     const copyResultBtn = document.getElementById('copy-result-btn');
     const clearTaskBtn = document.getElementById('clear-task-btn');
 
+    const routingPipelineEl = document.getElementById('task-routing-pipeline');
+    const pipelineStepperEl = document.getElementById('pipeline-stepper');
+    const routingRationaleEl = document.getElementById('routing-rationale');
+    const routingDiagnosticsEl = document.getElementById('routing-diagnostics');
+    const routingDiagContentEl = document.getElementById('routing-diag-content');
+
     const agentsContainer = document.getElementById('agents');
     const eventsContainer = document.getElementById('events');
     const systemDot = document.getElementById('system-status-dot');
@@ -1062,6 +1249,7 @@
 
     // --- State Variables ---
     let activeTaskId = null;
+    let currentRoutingDecision = null;
     let pollTimer = null;
     let refreshInterval = null;
     let pollAttempts = 0;
@@ -1116,11 +1304,13 @@
     clearTaskBtn.addEventListener('click', () => {
       stopResultPolling();
       activeTaskId = null;
+      currentRoutingDecision = null;
       lastRawResultOutput = '';
       activeTaskIdEl.textContent = 'None';
       copyTaskIdBtn.style.display = 'none';
       progressBarEl.style.display = 'none';
       routingStatusEl.innerHTML = '<span>Ready for task submission</span>';
+      resetRoutingPipeline();
       resultContentEl.innerHTML = '<span class="result-placeholder">Submitted task output and research findings will appear here.</span>';
       copyResultBtn.disabled = true;
       promptInput.value = '';
@@ -1131,6 +1321,196 @@
       submitBtnText.textContent = 'Submit Task';
       promptInput.focus();
     });
+
+    function resetRoutingPipeline() {
+      routingPipelineEl.style.display = 'none';
+      pipelineStepperEl.innerHTML = '';
+      routingRationaleEl.innerHTML = '';
+      routingRationaleEl.className = 'routing-rationale';
+      routingDiagContentEl.innerHTML = '';
+      routingDiagnosticsEl.open = false;
+    }
+
+    async function fetchRoutingDecision(taskId) {
+      if (!taskId) return null;
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/routing`);
+        if (res.ok) {
+          const decision = await res.json();
+          currentRoutingDecision = decision;
+          renderRoutingPipeline(decision, false);
+          return decision;
+        }
+      } catch (err) {
+        console.warn('Error fetching routing decision:', err);
+      }
+      return null;
+    }
+
+    function renderRoutingPipeline(decision, isCompleted) {
+      if (!decision) return;
+      routingPipelineEl.style.display = 'flex';
+
+      const selectedAgentId = decision.selected_agent_id || '';
+      const selectedName = selectedAgentId ? friendlyAgentName(selectedAgentId) : 'None';
+      const capName = (decision.required_capabilities && decision.required_capabilities[0])
+        || decision.prompt_classification
+        || 'general';
+      const candidates = decision.candidates_evaluated || [];
+      const numCandidates = candidates.length;
+      const numEligible = candidates.filter(c => c.is_eligible).length;
+
+      // Pipeline Stepper (Task Submitted -> Capability Detected -> Candidates Evaluated -> Agent Selected -> Execution)
+      pipelineStepperEl.innerHTML = `
+        <div class="pipeline-step step-success">
+          <span class="step-icon">✓</span>
+          <span class="step-label">Submitted</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="pipeline-step step-success">
+          <span class="step-icon">🎯</span>
+          <span class="step-label">Capability:</span>
+          <span class="step-val">${esc(capName.toUpperCase())}</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="pipeline-step step-success">
+          <span class="step-icon">👥</span>
+          <span class="step-label">Candidates:</span>
+          <span class="step-val">${numCandidates} (${numEligible} eligible)</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="pipeline-step step-success">
+          <span class="step-icon">🤖</span>
+          <span class="step-label">Selected:</span>
+          <span class="step-val">${esc(selectedName)}</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="pipeline-step ${isCompleted ? 'step-success' : 'step-active'}">
+          ${isCompleted ? '<span class="step-icon">✓</span><span class="step-label">Result Synthesized</span>' : '<span class="pulse-dot"></span><span class="step-label">Processing</span>'}
+        </div>
+      `;
+
+      // Routing Rationale Callout
+      routingRationaleEl.className = 'routing-rationale';
+      routingRationaleEl.innerHTML = `
+        <div class="routing-rationale-title">
+          <span>💡 Routing Decision:</span>
+          <strong>${esc(selectedName)}</strong>
+          <span class="step-val">${esc(selectedAgentId || 'unknown')}</span>
+        </div>
+        <div>${esc(decision.rationale || 'Selected via deterministic capability routing.')}</div>
+      `;
+
+      // Technical Diagnostics Disclosure
+      let diagHtml = `
+        <div style="margin-bottom: 8px; display: flex; gap: 14px; flex-wrap: wrap;">
+          <span><strong>Dispatch Target:</strong> <code>${esc(decision.dispatch_target || 'N/A')}</code></span>
+          <span><strong>Intent Classification:</strong> <code>${esc(decision.prompt_classification || 'N/A')}</code></span>
+          <span><strong>Timestamp:</strong> <code>${esc(formatTime(decision.decision_timestamp))}</code></span>
+        </div>
+      `;
+
+      if (candidates.length > 0) {
+        diagHtml += `
+          <table class="diag-table">
+            <thead>
+              <tr>
+                <th>Agent ID</th>
+                <th>Type</th>
+                <th>Capabilities</th>
+                <th>Availability</th>
+                <th>Status</th>
+                <th>Decision</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+        for (const c of candidates) {
+          const isSelected = c.agent_id === selectedAgentId;
+          const caps = Array.isArray(c.capabilities) ? c.capabilities.join(', ') : String(c.capabilities || '');
+          const stateStr = c.availability_state || c.execution_state || 'ready';
+          diagHtml += `
+            <tr style="${isSelected ? 'background: rgba(56, 189, 248, 0.08); font-weight: 500;' : ''}">
+              <td><code>${esc(c.agent_id)}</code></td>
+              <td>${esc(c.agent_type || 'worker')}</td>
+              <td><code>${esc(caps)}</code></td>
+              <td>${esc(stateStr)}</td>
+              <td><span class="diag-tag ${c.is_eligible ? 'eligible' : 'ineligible'}">${c.is_eligible ? 'Eligible' : 'Ineligible'}</span></td>
+              <td>${isSelected ? '<strong style="color: var(--accent-cyan);">Selected ✓</strong>' : '<span style="color: var(--text-faint);">Candidate</span>'}</td>
+            </tr>
+          `;
+        }
+        diagHtml += `</tbody></table>`;
+      } else {
+        diagHtml += `<div style="color: var(--text-faint); font-style: italic;">No candidate agents evaluated.</div>`;
+      }
+      routingDiagContentEl.innerHTML = diagHtml;
+    }
+
+    function renderRoutingUnavailable(capability, message, taskId) {
+      routingPipelineEl.style.display = 'flex';
+      const capName = (capability || 'Required').toUpperCase();
+
+      // Stepper showing failure at candidate/dispatch stage
+      pipelineStepperEl.innerHTML = `
+        <div class="pipeline-step step-success">
+          <span class="step-icon">✓</span>
+          <span class="step-label">Submitted</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="pipeline-step step-active">
+          <span class="step-icon">🎯</span>
+          <span class="step-label">Capability:</span>
+          <span class="step-val">${esc(capName)}</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="pipeline-step step-failed">
+          <span class="step-icon">✕</span>
+          <span class="step-label">0 Eligible Candidates</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="pipeline-step step-failed">
+          <span class="step-icon">✕</span>
+          <span class="step-label">Routing Failed</span>
+        </div>
+      `;
+
+      // Rationale Box styled as failed
+      routingRationaleEl.className = 'routing-rationale failed';
+      routingRationaleEl.innerHTML = `
+        <div class="routing-rationale-title" style="color: var(--state-error);">
+          <span>✕ Capability Unavailable:</span>
+          <strong>${esc(capability)}</strong>
+        </div>
+        <div>${esc(message || `No eligible agent is currently available for capability '${capability}'.`)}</div>
+      `;
+
+      // Diagnostics
+      routingDiagContentEl.innerHTML = `
+        <div style="line-height: 1.6;">
+          <p style="margin: 0 0 6px 0;"><strong>Routing Failure Analysis:</strong> The task required capability <code>${esc(capability)}</code>, but no active agent registered with the orchestrator is currently advertising this capability with a fresh heartbeat.</p>
+          <p style="margin: 0; color: var(--text-muted);">Please inspect the <strong>Available Agents</strong> panel to verify registered nodes, or launch a worker providing the <code>${esc(capability)}</code> capability.</p>
+        </div>
+      `;
+
+      // Update status banner
+      routingStatusEl.innerHTML = `<span style="color: var(--state-error);">✕ Routing Failed — Capability '${esc(capability)}' Unavailable</span>`;
+
+      // Render helpful guide in the results box
+      resultContentEl.innerHTML = `
+        <div class="unavailable-error-box" style="padding: 14px; border-radius: 8px; background: rgba(248, 113, 113, 0.08); border: 1px solid rgba(248, 113, 113, 0.25);">
+          <h4 style="margin: 0 0 8px 0; color: var(--state-error); font-size: 0.95rem; display: flex; align-items: center; gap: 8px;">
+            <span>⚠️</span> Capability Unavailable: ${esc(capability)}
+          </h4>
+          <p style="margin: 0 0 8px 0; font-size: 0.875rem; color: var(--text-main);">
+            ${esc(message || `No eligible agent is currently available for capability '${capability}'.`)}
+          </p>
+          <p style="margin: 0; font-size: 0.8125rem; color: var(--text-muted);">
+            Check the <strong>Available Agents</strong> observatory on the right to see registered agents and their advertised capabilities.
+          </p>
+        </div>
+      `;
+    }
 
     function setFormSubmitting(submitting) {
       promptInput.disabled = submitting;
@@ -1153,16 +1533,29 @@
 
       if (status === 'completed') {
         progressBarEl.style.display = 'none';
-        // Determine whether research agent or worker handled it based on events
+        // Determine whether research agent or worker handled it based on events or routing decision
         const matchingEv = knownEvents.find(e => e.task_id === activeTaskId && e.state === 'idle');
-        const agentName = matchingEv ? friendlyAgentName(matchingEv.agent_id) : 'Agent';
+        const agentName = currentRoutingDecision && currentRoutingDecision.selected_agent_id
+          ? friendlyAgentName(currentRoutingDecision.selected_agent_id)
+          : (matchingEv ? friendlyAgentName(matchingEv.agent_id) : 'Agent');
         routingStatusEl.innerHTML = `<span style="color: var(--state-idle);">✓ ${esc(agentName)} completed this task</span>`;
+        if (currentRoutingDecision) {
+          renderRoutingPipeline(currentRoutingDecision, true);
+        }
         return;
       }
 
       if (status === 'failed') {
         progressBarEl.style.display = 'none';
         routingStatusEl.innerHTML = `<span style="color: var(--state-error);">✕ Task execution error: ${esc(extraNote || 'Check event log')}</span>`;
+        return;
+      }
+
+      // If we already have a recorded routing decision, use its selected agent
+      if (currentRoutingDecision && currentRoutingDecision.selected_agent_id) {
+        const name = friendlyAgentName(currentRoutingDecision.selected_agent_id);
+        progressBarEl.style.display = 'block';
+        routingStatusEl.innerHTML = `<span class="pulse-dot"></span><span>${esc(name)} is processing this task</span>`;
         return;
       }
 
@@ -1198,6 +1591,11 @@
 
     async function pollTaskResult(taskId) {
       if (!taskId || taskId !== activeTaskId) return;
+
+      // Lazy-fetch routing decision if not yet loaded
+      if (!currentRoutingDecision && taskId) {
+        fetchRoutingDecision(taskId);
+      }
 
       pollAttempts++;
       if (pollAttempts > MAX_POLL_ATTEMPTS) {
@@ -1266,14 +1664,39 @@
 
         if (!response.ok) {
           let errDetail = 'Task submission failed';
+          let errJson = null;
           try {
-            const errJson = await response.json();
+            errJson = await response.json();
             if (errJson && typeof errJson.detail === 'object' && errJson.detail !== null) {
               errDetail = errJson.detail.message || JSON.stringify(errJson.detail);
             } else if (errJson && errJson.detail) {
               errDetail = String(errJson.detail);
             }
           } catch {}
+
+          if (errJson && errJson.detail && errJson.detail.error === 'capability_unavailable') {
+            const cap = errJson.detail.capability || 'required capability';
+            const msg = errJson.detail.message || errDetail;
+            const rejTaskId = errJson.detail.task_id || null;
+            if (rejTaskId) {
+              activeTaskId = rejTaskId;
+              activeTaskIdEl.textContent = rejTaskId;
+              copyTaskIdBtn.style.display = 'inline-flex';
+            }
+            renderRoutingUnavailable(cap, msg, rejTaskId);
+            if (rejTaskId) {
+              fetchRoutingDecision(rejTaskId).then(dec => {
+                if (dec) {
+                  currentRoutingDecision = dec;
+                  renderRoutingUnavailable(cap, dec.rationale || msg, rejTaskId);
+                }
+              });
+            }
+            submitError.textContent = `Capability Unavailable: ${errDetail}`;
+            submitError.style.display = 'block';
+            return;
+          }
+
           throw new Error(errDetail);
         }
 
@@ -1281,6 +1704,7 @@
         activeTaskId = data.task_id;
         pollAttempts = 0;
         lastRawResultOutput = '';
+        currentRoutingDecision = null;
 
         // Update UI for active task
         activeTaskIdEl.textContent = activeTaskId;
@@ -1289,6 +1713,15 @@
         resultContentEl.innerHTML = '<span class="result-placeholder">Task accepted. Processing and synthesizing response...</span>';
         progressBarEl.style.display = 'block';
         updateRoutingObservation('pending');
+
+        // Immediately fetch and display dynamic routing decision from #7
+        fetchRoutingDecision(activeTaskId).then(decision => {
+          if (decision) {
+            currentRoutingDecision = decision;
+            const agentName = friendlyAgentName(decision.selected_agent_id);
+            routingStatusEl.innerHTML = `<span class="pulse-dot"></span><span>Routed to ${esc(agentName)} (${esc(decision.selected_agent_id)})</span>`;
+          }
+        });
 
         // Start result polling
         pollTaskResult(activeTaskId);

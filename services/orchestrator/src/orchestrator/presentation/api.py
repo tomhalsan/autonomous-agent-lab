@@ -54,13 +54,16 @@ async def create_task(value: TaskInput, request: Request) -> dict[str, str]:
         task = await submit_task.execute(value.prompt, capability=value.capability)
         return {"task_id": task.task_id, "status": "accepted"}
     except CapabilityUnavailableError as exc:
+        detail: dict[str, Any] = {
+            "error": "capability_unavailable",
+            "capability": str(exc.capability),
+            "message": str(exc.message),
+        }
+        if exc.task_id:
+            detail["task_id"] = exc.task_id
         raise HTTPException(
             status_code=503,
-            detail={
-                "error": "capability_unavailable",
-                "capability": str(exc.capability),
-                "message": str(exc.message),
-            },
+            detail=detail,
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
