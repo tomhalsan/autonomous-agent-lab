@@ -411,7 +411,16 @@ def evaluate_agent_record(
 ) -> AgentAvailability:
     """Evaluate an agent's availability from a stored registration/event dictionary."""
     agent_id = str(record.get("agent_id", "")).strip() or None
-    raw_timestamp = record.get("updated_at") or record.get("occurred_at")
+    t_updated = record.get("updated_at")
+    t_occurred = record.get("occurred_at")
+    raw_timestamp = t_updated or t_occurred
+    if t_updated and t_occurred and t_updated != t_occurred:
+        try:
+            dt_up = parse_timestamp(t_updated)
+            dt_occ = parse_timestamp(t_occurred)
+            raw_timestamp = t_updated if dt_up >= dt_occ else t_occurred
+        except (ValueError, TypeError):
+            raw_timestamp = t_updated or t_occurred
     raw_state = record.get("state", "idle")
 
     if not raw_timestamp:
