@@ -336,7 +336,7 @@ async def test_dashboard_html_contains_required_console_elements() -> None:
     assert 'id="result-box"' in html
     assert 'id="result-content"' in html
     assert 'id="copy-result-btn"' in html
-    assert 'id="clear-task-btn"' in html
+    assert 'id="clear-task-btn"' not in html
 
     # Observatory panels
     assert 'id="agents"' in html
@@ -404,7 +404,6 @@ async def test_dashboard_html_contains_routing_progression_elements() -> None:
     assert "/api/tasks/${encodeURIComponent(taskId)}/routing" in html or "/api/tasks/" in html
     assert "renderRoutingPipeline" in html
     assert "renderRoutingUnavailable" in html
-    assert "resetRoutingPipeline" in html
 
     # Progression steps
     assert "Submitted" in html

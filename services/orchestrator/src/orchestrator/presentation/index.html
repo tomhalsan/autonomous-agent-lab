@@ -1076,7 +1076,6 @@
 
           <div class="result-actions">
             <button type="button" id="copy-result-btn" class="btn-secondary" disabled>Copy Result</button>
-            <button type="button" id="clear-task-btn" class="btn-secondary">New Task</button>
           </div>
         </section>
       </div>
@@ -1236,7 +1235,6 @@
     const progressBarEl = document.getElementById('task-progress-bar');
     const resultContentEl = document.getElementById('result-content');
     const copyResultBtn = document.getElementById('copy-result-btn');
-    const clearTaskBtn = document.getElementById('clear-task-btn');
 
     const routingPipelineEl = document.getElementById('task-routing-pipeline');
     const pipelineStepperEl = document.getElementById('pipeline-stepper');
@@ -1309,38 +1307,6 @@
         console.error('Failed to copy result:', err);
       }
     });
-
-    // New Task / Clear
-    clearTaskBtn.addEventListener('click', () => {
-      stopResultPolling();
-      activeTaskId = null;
-      currentRoutingDecision = null;
-      lastRawResultOutput = '';
-      activeTaskIdEl.textContent = 'None';
-      copyTaskIdBtn.style.display = 'none';
-      progressBarEl.style.display = 'none';
-      routingStatusEl.innerHTML = '<span>Ready for task submission</span>';
-      resetRoutingPipeline();
-      resultContentEl.innerHTML = '<span class="result-placeholder">Submitted task output and research findings will appear here.</span>';
-      copyResultBtn.disabled = true;
-      promptInput.value = '';
-      promptCount.textContent = '0 / 2000';
-      submitError.style.display = 'none';
-      promptInput.disabled = false;
-      submitBtn.disabled = false;
-      clearPromptBtn.disabled = false;
-      submitBtnText.textContent = 'Submit Task';
-      promptInput.focus();
-    });
-
-    function resetRoutingPipeline() {
-      routingPipelineEl.style.display = 'none';
-      pipelineStepperEl.innerHTML = '';
-      routingRationaleEl.innerHTML = '';
-      routingRationaleEl.className = 'routing-rationale';
-      routingDiagContentEl.innerHTML = '';
-      routingDiagnosticsEl.open = false;
-    }
 
     async function fetchRoutingDecision(taskId) {
       if (!taskId) return null;
