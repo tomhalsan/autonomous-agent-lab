@@ -1028,6 +1028,7 @@
               <button type="submit" id="submit-btn" class="btn-primary">
                 <span id="submit-btn-text">Submit Task</span>
               </button>
+              <button type="button" id="clear-prompt-btn" class="btn-secondary">Clear</button>
             </div>
 
             <div id="submit-error" class="error-msg" role="alert" style="display: none;"></div>
@@ -1075,7 +1076,6 @@
 
           <div class="result-actions">
             <button type="button" id="copy-result-btn" class="btn-secondary" disabled>Copy Result</button>
-            <button type="button" id="clear-task-btn" class="btn-secondary">New Task</button>
           </div>
         </section>
       </div>
@@ -1225,6 +1225,7 @@
     const promptInput = document.getElementById('prompt');
     const promptCount = document.getElementById('prompt-count');
     const submitBtn = document.getElementById('submit-btn');
+    const clearPromptBtn = document.getElementById('clear-prompt-btn');
     const submitBtnText = document.getElementById('submit-btn-text');
     const submitError = document.getElementById('submit-error');
 
@@ -1234,7 +1235,6 @@
     const progressBarEl = document.getElementById('task-progress-bar');
     const resultContentEl = document.getElementById('result-content');
     const copyResultBtn = document.getElementById('copy-result-btn');
-    const clearTaskBtn = document.getElementById('clear-task-btn');
 
     const routingPipelineEl = document.getElementById('task-routing-pipeline');
     const pipelineStepperEl = document.getElementById('pipeline-stepper');
@@ -1274,6 +1274,14 @@
       });
     });
 
+    // Clear prompt input
+    clearPromptBtn.addEventListener('click', () => {
+      promptInput.value = '';
+      promptCount.textContent = '0 / 2000';
+      submitError.style.display = 'none';
+      promptInput.focus();
+    });
+
     // Copy Task ID
     copyTaskIdBtn.addEventListener('click', async () => {
       if (!activeTaskId) return;
@@ -1299,37 +1307,6 @@
         console.error('Failed to copy result:', err);
       }
     });
-
-    // New Task / Clear
-    clearTaskBtn.addEventListener('click', () => {
-      stopResultPolling();
-      activeTaskId = null;
-      currentRoutingDecision = null;
-      lastRawResultOutput = '';
-      activeTaskIdEl.textContent = 'None';
-      copyTaskIdBtn.style.display = 'none';
-      progressBarEl.style.display = 'none';
-      routingStatusEl.innerHTML = '<span>Ready for task submission</span>';
-      resetRoutingPipeline();
-      resultContentEl.innerHTML = '<span class="result-placeholder">Submitted task output and research findings will appear here.</span>';
-      copyResultBtn.disabled = true;
-      promptInput.value = '';
-      promptCount.textContent = '0 / 2000';
-      submitError.style.display = 'none';
-      promptInput.disabled = false;
-      submitBtn.disabled = false;
-      submitBtnText.textContent = 'Submit Task';
-      promptInput.focus();
-    });
-
-    function resetRoutingPipeline() {
-      routingPipelineEl.style.display = 'none';
-      pipelineStepperEl.innerHTML = '';
-      routingRationaleEl.innerHTML = '';
-      routingRationaleEl.className = 'routing-rationale';
-      routingDiagContentEl.innerHTML = '';
-      routingDiagnosticsEl.open = false;
-    }
 
     async function fetchRoutingDecision(taskId) {
       if (!taskId) return null;
@@ -1515,6 +1492,7 @@
     function setFormSubmitting(submitting) {
       promptInput.disabled = submitting;
       submitBtn.disabled = submitting;
+      clearPromptBtn.disabled = submitting;
       submitBtnText.textContent = submitting ? 'Submitting...' : 'Submit Task';
     }
 

@@ -326,6 +326,7 @@ async def test_dashboard_html_contains_required_console_elements() -> None:
     assert '<textarea' in html
     assert 'id="prompt"' in html
     assert 'id="submit-btn"' in html
+    assert 'id="clear-prompt-btn"' in html
     assert 'id="submit-error"' in html
 
     # Tracking and results
@@ -335,7 +336,7 @@ async def test_dashboard_html_contains_required_console_elements() -> None:
     assert 'id="result-box"' in html
     assert 'id="result-content"' in html
     assert 'id="copy-result-btn"' in html
-    assert 'id="clear-task-btn"' in html
+    assert 'id="clear-task-btn"' not in html
 
     # Observatory panels
     assert 'id="agents"' in html
@@ -403,7 +404,6 @@ async def test_dashboard_html_contains_routing_progression_elements() -> None:
     assert "/api/tasks/${encodeURIComponent(taskId)}/routing" in html or "/api/tasks/" in html
     assert "renderRoutingPipeline" in html
     assert "renderRoutingUnavailable" in html
-    assert "resetRoutingPipeline" in html
 
     # Progression steps
     assert "Submitted" in html
@@ -502,4 +502,41 @@ async def test_presentation_task_routing_endpoint_not_found() -> None:
 
     assert exc_info.value.status_code == 404
     assert "not found" in exc_info.value.detail.lower()
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_prompt_clear_button_spec() -> None:
+    html = await dashboard()
+
+    # Clear button must exist beside submit button with explicit non-submitting type
+    assert 'id="clear-prompt-btn"' in html
+    assert '<button type="button" id="clear-prompt-btn" class="btn-secondary">Clear</button>' in html
+
+    # Verify script handles clearing prompt input and resetting counter without submitting
+    assert "clearPromptBtn = document.getElementById('clear-prompt-btn')" in html
+    assert "clearPromptBtn.addEventListener('click'" in html
+    assert "promptInput.value = ''" in html
+    assert "promptCount.textContent = '0 / 2000'" in html
+    assert "promptInput.focus()" in html
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_clear_button_does_not_clear_task_state_or_observability() -> None:
+    html = await dashboard()
+
+    # The prompt clear handler must be scoped only to prompt input, counter, and focus.
+    # It must NOT reset or clear activeTaskId, result-content, routing pipeline, agents, or events.
+    clear_btn_block = html.split("clearPromptBtn.addEventListener('click'")[1].split("});")[0]
+
+    assert "promptInput.value = ''" in clear_btn_block
+    assert "promptCount.textContent = '0 / 2000'" in clear_btn_block
+    assert "promptInput.focus()" in clear_btn_block
+
+    # Assert it does NOT touch task results or routing or timeline
+    assert "activeTaskId" not in clear_btn_block
+    assert "resultContentEl" not in clear_btn_block
+    assert "resetRoutingPipeline" not in clear_btn_block
+    assert "stopResultPolling" not in clear_btn_block
+    assert "agentsContainer" not in clear_btn_block
+    assert "eventsContainer" not in clear_btn_block
 
