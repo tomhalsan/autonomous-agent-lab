@@ -54,6 +54,62 @@ async def test_dashboard_displays_authoritative_version() -> None:
 
 
 @pytest.mark.anyio
+async def test_dashboard_displays_primary_logo() -> None:
+    html = await dashboard()
+    assert '<img src="/static/logo.png"' in html
+    assert 'class="brand-logo"' in html
+    assert 'alt="Autonomous Agent Lab logo"' in html
+    assert 'class="brand-group"' in html
+
+
+@pytest.mark.anyio
+async def test_static_logo_endpoint_serves_image() -> None:
+    import httpx
+
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        res = await client.get("/static/logo.png")
+        assert res.status_code == 200
+        assert res.headers["content-type"] == "image/png"
+        assert len(res.content) > 0
+
+
+@pytest.mark.anyio
+async def test_dashboard_references_favicon() -> None:
+    html = await dashboard()
+    assert 'rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png"' in html
+    assert 'rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png"' in html
+    assert 'rel="shortcut icon" href="/static/favicon.ico"' in html
+    assert 'rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png"' in html
+
+
+@pytest.mark.anyio
+async def test_favicon_endpoints_serve_assets() -> None:
+    import httpx
+
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Static mount serving
+        res_png = await client.get("/static/favicon-32x32.png")
+        assert res_png.status_code == 200
+        assert res_png.headers["content-type"] == "image/png"
+        assert len(res_png.content) > 0
+
+        res_ico_static = await client.get("/static/favicon.ico")
+        assert res_ico_static.status_code == 200
+        assert len(res_ico_static.content) > 0
+
+        # Dedicated root favicon.ico route serving
+        res_ico_root = await client.get("/favicon.ico")
+        assert res_ico_root.status_code == 200
+        assert len(res_ico_root.content) > 0
+
+
+@pytest.mark.anyio
 async def test_health_endpoint() -> None:
     res = await health()
     assert res == {"status": "ok"}

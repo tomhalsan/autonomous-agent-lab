@@ -4,7 +4,8 @@ from typing import Any
 
 from agent_contracts import __version__
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from orchestrator.application.ports import (
@@ -159,6 +160,20 @@ def create_app(
     app.state.get_recent_events = get_recent_events
     app.state.get_task_result = get_task_result
     app.state.find_candidates = find_candidates_query
+
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+        favicon_file = static_dir / "favicon.ico"
+        if favicon_file.exists():
+
+            async def favicon() -> FileResponse:
+                return FileResponse(favicon_file)
+
+            app.add_api_route(
+                "/favicon.ico", favicon, methods=["GET"], include_in_schema=False
+            )
 
     app.add_api_route("/health", health, methods=["GET"])
     app.add_api_route("/", dashboard, methods=["GET"], response_class=HTMLResponse)
