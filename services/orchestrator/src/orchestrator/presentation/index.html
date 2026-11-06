@@ -1224,7 +1224,11 @@
           let errDetail = 'Task submission failed';
           try {
             const errJson = await response.json();
-            errDetail = errJson.detail || errDetail;
+            if (errJson && typeof errJson.detail === 'object' && errJson.detail !== null) {
+              errDetail = errJson.detail.message || JSON.stringify(errJson.detail);
+            } else if (errJson && errJson.detail) {
+              errDetail = String(errJson.detail);
+            }
           } catch {}
           throw new Error(errDetail);
         }

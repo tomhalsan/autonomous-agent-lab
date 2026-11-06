@@ -7,6 +7,7 @@ import redis.asyncio as redis
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
+    AgentHeartbeat,
     TaskRequested,
     TaskResult,
 )
@@ -45,6 +46,7 @@ class RedisBus:
     def __init__(self, url: str, queue_name: str = "agent.tasks.general") -> None:
         self.client = redis.from_url(url, decode_responses=True)
         self.queue_name = queue_name
+        self.current_state: str = "idle"
 
     async def next_task(self) -> TaskRequested:
         async def _fetch():
@@ -76,15 +78,28 @@ class RedisBus:
         await retry_with_backoff(_write)
 
     async def publish(self, event: AgentEvent) -> None:
+        self.current_state = event.state
         mapping = {
             key: "" if value is None else str(value)
             for key, value in event.to_dict().items()
         }
+        mapping["updated_at"] = event.occurred_at
 
         async def _write():
             await self.client.sadd("agent.ids", event.agent_id)
             await self.client.hset(f"agent.state:{event.agent_id}", mapping=mapping)
             await self.client.xadd("agent.events", mapping, maxlen=500, approximate=True)
+
+        await retry_with_backoff(_write)
+
+    async def heartbeat(self, heartbeat: AgentHeartbeat) -> None:
+        mapping = {
+            "updated_at": heartbeat.occurred_at,
+        }
+
+        async def _write():
+            await self.client.sadd("agent.ids", heartbeat.agent_id)
+            await self.client.hset(f"agent.state:{heartbeat.agent_id}", mapping=mapping)
 
         await retry_with_backoff(_write)
 
