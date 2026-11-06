@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 import redis.asyncio as redis
-from agent_contracts import AgentEvent, TaskRequested
+from agent_contracts import AgentEvent, RoutingDecision, TaskRequested
 
 from orchestrator.domain.capability import AgentCapability
 
@@ -95,11 +95,42 @@ class RedisGateway:
         rows = await self._client.xrevrange("agent.events", count=limit)
         return [dict(fields, event_id=event_id) for event_id, fields in rows]
 
+    async def record_routing_decision(self, decision: RoutingDecision) -> None:
+        await self._client.set(
+            f"task.routing:{decision.task_id}",
+            decision.to_json(),
+        )
+
+    async def routing_decision(self, task_id: str) -> dict[str, Any] | None:
+        raw_decision = await self._client.get(f"task.routing:{task_id}")
+        if raw_decision is not None:
+            try:
+                return json.loads(raw_decision)
+            except (json.JSONDecodeError, TypeError):
+                return None
+
+        events = await self.events(limit=100)
+        for e in events:
+            if e.get("task_id") == task_id and e.get("routing_decision"):
+                raw_rd = e["routing_decision"]
+                if isinstance(raw_rd, dict):
+                    return raw_rd
+                try:
+                    return json.loads(raw_rd)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        return None
+
     async def publish(self, event: AgentEvent) -> None:
-        mapping = {
-            key: "" if value is None else str(value)
-            for key, value in event.to_dict().items()
-        }
+        mapping = {}
+        for key, value in event.to_dict().items():
+            if value is None:
+                mapping[key] = ""
+            elif isinstance(value, (dict, list)):
+                mapping[key] = json.dumps(value)
+            else:
+                mapping[key] = str(value)
         await self._client.xadd("agent.events", mapping, maxlen=500, approximate=True)
 
     async def aclose(self) -> None:

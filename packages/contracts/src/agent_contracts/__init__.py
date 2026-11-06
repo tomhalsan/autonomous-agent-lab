@@ -13,6 +13,7 @@ from .capabilities import AgentCapabilityMetadata
 from .heartbeat import HeartbeatRunner, parse_heartbeat_interval
 from .messages import AgentEvent, TaskRequested
 from .results import TaskResult
+from .routing import RoutingDecision
 from .tools import (
     Tool,
     ToolDefinition,
@@ -33,6 +34,7 @@ __all__ = [
     "AgentHeartbeat",
     "HeartbeatRunner",
     "LivenessPolicy",
+    "RoutingDecision",
     "TaskRequested",
     "TaskResult",
     "Tool",

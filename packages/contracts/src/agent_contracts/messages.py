@@ -1,6 +1,7 @@
 import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 
@@ -41,11 +42,17 @@ class AgentEvent:
     detail: str
     occurred_at: str
     task_id: str | None = None
+    routing_decision: dict[str, Any] | None = None
     version: int = 1
 
     @classmethod
     def create(
-        cls, agent_id: str, state: str, detail: str, task_id: str | None = None
+        cls,
+        agent_id: str,
+        state: str,
+        detail: str,
+        task_id: str | None = None,
+        routing_decision: dict[str, Any] | None = None,
     ) -> "AgentEvent":
         return cls(
             agent_id=agent_id,
@@ -53,10 +60,14 @@ class AgentEvent:
             detail=detail,
             occurred_at=now_iso(),
             task_id=task_id,
+            routing_decision=routing_decision,
         )
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        data = asdict(self)
+        if self.routing_decision is None:
+            data.pop("routing_decision", None)
+        return data
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
