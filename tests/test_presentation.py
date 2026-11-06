@@ -377,3 +377,129 @@ async def test_dashboard_html_does_not_contain_credential_field_names() -> None:
         assert key not in html, f"Found sensitive key '{key}' in dashboard HTML/JS"
 
 
+# ==============================================================================
+# Issue #8: Dynamic Routing Decision Display in Prototype Console Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_contains_routing_progression_elements() -> None:
+    html = await dashboard()
+
+    # Core routing pipeline containers
+    assert 'id="task-routing-pipeline"' in html
+    assert 'class="routing-pipeline"' in html
+    assert 'id="pipeline-stepper"' in html
+    assert 'class="pipeline-stepper"' in html
+    assert 'id="routing-rationale"' in html
+    assert 'class="routing-rationale"' in html
+    assert 'id="routing-diagnostics"' in html
+    assert 'class="routing-diagnostics"' in html
+    assert 'id="routing-diag-summary"' in html
+    assert 'id="routing-diag-content"' in html
+
+    # Conceptual progression representation in script
+    assert "fetchRoutingDecision" in html
+    assert "/api/tasks/${encodeURIComponent(taskId)}/routing" in html or "/api/tasks/" in html
+    assert "renderRoutingPipeline" in html
+    assert "renderRoutingUnavailable" in html
+    assert "resetRoutingPipeline" in html
+
+    # Progression steps
+    assert "Submitted" in html
+    assert "Capability:" in html
+    assert "Candidates:" in html
+    assert "Selected:" in html
+    assert "Result Synthesized" in html
+
+    # Candidate evaluation table structure
+    assert "diag-table" in html
+    assert "Candidate Agent" in html or "Agent ID" in html
+
+
+@pytest.mark.anyio
+async def test_unavailable_capability_503_response_includes_task_id() -> None:
+    fake_queue = FakeTaskQueue()
+    app = create_app(
+        task_queue=fake_queue,
+        state_reader=FakeStateReader(agents_data=[]),
+        enforce_availability=True,
+    )
+    req = Request({"type": "http", "app": app})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_task(TaskInput(prompt="perform specialized research"), request=req)
+
+    assert exc_info.value.status_code == 503
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail["error"] == "capability_unavailable"
+    assert detail["capability"] == "research"
+    assert "No eligible agent" in detail["message"]
+    assert "task_id" in detail
+    assert detail["task_id"] is not None
+    assert len(detail["task_id"]) > 0
+
+
+@pytest.mark.anyio
+async def test_presentation_task_routing_endpoint_serves_routing_decision() -> None:
+    from orchestrator.presentation.api import task_routing
+
+    decision_payload = {
+        "task_id": "task-route-1",
+        "prompt_classification": "research",
+        "required_capabilities": ["research"],
+        "candidates_evaluated": [
+            {
+                "agent_id": "research-agent-1",
+                "agent_type": "research-agent",
+                "capabilities": ["research"],
+                "execution_state": "idle",
+                "availability_state": "ready",
+                "dispatch_target": "agent.tasks.research",
+                "is_eligible": True,
+            }
+        ],
+        "selected_agent_id": "research-agent-1",
+        "dispatch_target": "agent.tasks.research",
+        "rationale": "Selected agent 'research-agent-1' for capability 'research'",
+        "decision_timestamp": "2026-11-06T05:30:00Z",
+    }
+    fake_reader = FakeStateReader(
+        routing_decisions={"task-route-1": decision_payload}
+    )
+
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+
+    result = await task_routing("task-route-1", request=req)
+    assert result["task_id"] == "task-route-1"
+    assert result["prompt_classification"] == "research"
+    assert result["selected_agent_id"] == "research-agent-1"
+    assert result["dispatch_target"] == "agent.tasks.research"
+    assert len(result["candidates_evaluated"]) == 1
+    assert result["candidates_evaluated"][0]["agent_id"] == "research-agent-1"
+    assert result["candidates_evaluated"][0]["is_eligible"] is True
+    assert "Selected agent 'research-agent-1'" in result["rationale"]
+
+
+@pytest.mark.anyio
+async def test_presentation_task_routing_endpoint_not_found() -> None:
+    from orchestrator.presentation.api import task_routing
+
+    fake_reader = FakeStateReader()
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await task_routing("task-nonexistent", request=req)
+
+    assert exc_info.value.status_code == 404
+    assert "not found" in exc_info.value.detail.lower()
+
