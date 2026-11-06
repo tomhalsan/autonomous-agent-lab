@@ -3,7 +3,12 @@ import logging
 import os
 import sys
 
-from agent_contracts import AgentCapabilityMetadata, AgentEvent
+from agent_contracts import (
+    AgentCapabilityMetadata,
+    AgentEvent,
+    HeartbeatRunner,
+    parse_heartbeat_interval,
+)
 
 from worker.application.processor import TaskExecutionError, TaskProcessor
 from worker.infrastructure.inference_factory import create_inference_provider
@@ -17,11 +22,16 @@ logging.basicConfig(
 logger = logging.getLogger("worker")
 
 
-async def run_worker() -> None:
+async def run_worker(heartbeat_interval: float | None = None) -> None:
     agent_id = os.getenv("AGENT_ID", "worker-1")
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     task_queue = os.getenv("TASK_QUEUE", "agent.tasks.general")
     inference_provider_name = os.getenv("INFERENCE_PROVIDER", "stub")
+    interval = (
+        heartbeat_interval
+        if heartbeat_interval is not None
+        else parse_heartbeat_interval(os.getenv("HEARTBEAT_INTERVAL_SECONDS"))
+    )
 
     inference_provider = create_inference_provider(inference_provider_name)
     bus = RedisBus(redis_url, queue_name=task_queue)
@@ -42,16 +52,25 @@ async def run_worker() -> None:
         dispatch_target=task_queue,
     )
 
+    heartbeat_runner = HeartbeatRunner(
+        agent_id=agent_id,
+        publish_heartbeat=bus.heartbeat,
+        get_state=lambda: bus.current_state,
+        interval_seconds=interval,
+    )
+
     logger.info(
-        "Initializing worker %s on queue %s with inference provider %s...",
+        "Initializing worker %s on queue %s with inference provider %s (heartbeat: %.1fs)...",
         agent_id,
         task_queue,
         inference_provider_name,
+        interval,
     )
 
     try:
         await bus.register(metadata)
         await bus.publish(AgentEvent.create(agent_id, "idle", "Waiting for work"))
+        heartbeat_runner.start()
         logger.info("Worker %s registered and waiting for tasks", agent_id)
 
         while True:
@@ -67,6 +86,7 @@ async def run_worker() -> None:
                 )
     finally:
         logger.info("Shutting down worker %s, closing bus...", agent_id)
+        await heartbeat_runner.stop()
         await bus.aclose()
         logger.info("Worker %s shutdown complete", agent_id)
 

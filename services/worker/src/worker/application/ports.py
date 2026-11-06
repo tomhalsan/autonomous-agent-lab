@@ -3,6 +3,7 @@ from typing import Protocol
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
+    AgentHeartbeat,
     TaskRequested,
     TaskResult,
 )
@@ -12,6 +13,7 @@ class MessageBus(Protocol):
     async def next_task(self) -> TaskRequested: ...
     async def publish(self, event: AgentEvent) -> None: ...
     async def register(self, metadata: AgentCapabilityMetadata) -> None: ...
+    async def heartbeat(self, heartbeat: AgentHeartbeat) -> None: ...
 
 
 class ResultStore(Protocol):
