@@ -4,12 +4,18 @@
 
 **Autonomous Agent Lab** is an independent, host-agnostic experimental testbed designed for research into:
 * Autonomous agent state machines and lifecycles.
-* Asynchronous message-driven agent-to-agent communication.
-* Orchestration and task dispatching.
-* Containerized execution isolation.
+* Asynchronous message-driven agent-to-agent communication and task dispatching.
+* Dynamic capability-based routing and candidate discovery with liveness evaluation.
+* Specialized multi-agent execution (General Worker and Grounded Research Agent).
 * Model Context Protocol (MCP) and tool integrations.
-* Persistent state storage and observability.
-* Eventual multi-agent collaboration across independent services.
+* Persistent state storage, decision recording, and real-time observability.
+* Clean Architecture concentric boundaries and credential isolation.
+
+### Authoritative Architecture Diagrams
+* **Standalone Vector SVG**: [docs/architecture.svg](architecture.svg) — Slide-grade vector diagram rendered directly below; optimized for 30-second architectural comprehension on high-resolution displays and slides.
+* **Editable Draw.io XML**: [docs/architecture.drawio](architecture.drawio) — Authoritative diagram model for iterative design, compatible with [draw.io](https://app.diagrams.net/) and the VS Code Draw.io extension (`hediet.vscode-drawio`).
+
+![Autonomous Agent Lab System Architecture](architecture.svg)
 
 ### Explicit Independence
 This repository is completely greenfield and independent. It maintains no coupling, shared code, or inherited assumptions from any external codebase or predecessor project.
@@ -19,74 +25,42 @@ This repository is completely greenfield and independent. It maintains no coupli
 ## 2. Hosting & Deployment Models
 
 ### Current Hosting Model
-* **Host OS**: Windows 11
-* **Execution Environment**: WSL2 (Ubuntu 26.04)
-* **Runtime Containerization**: Docker Compose
-* **Network Topology**: Single bridge network (`agent_net`) with port mapping for the presentation dashboard (`8080:8080`) and internal DNS routing (`orchestrator`, `worker`, `redis`).
+* **Runtime Containerization**: Docker Compose (`compose.yaml`).
+* **Network Topology**: Single bridge network (`agent_net`) with port mapping for the presentation dashboard (`8080:8080`) and internal DNS routing (`orchestrator`, `worker`, `research-agent`, `redis`).
+* **Container Inventory**:
+  1. `orchestrator`: Presentation API and dynamic capability orchestration engine.
+  2. `worker`: General computation agent (`worker-1`) consuming `agent.tasks.general`.
+  3. `research-agent`: Specialized autonomous research agent (`research-agent-1`) consuming `agent.tasks.research`.
+  4. `redis`: Append-Only File (AOF) state, message queue, and stream hub (`redis:7-alpine`).
+  5. `cloudflared`: Optional secure tunnel container for zero-port-forward remote ingress.
 
-### Future Hosting Model (Architectural Goal)
-* **Target Environment**: Standalone Linux mini PC running Docker Compose.
-* **Portability Strategy**: Container images and configuration are fully host-agnostic, using POSIX path conventions, standard environment variable overrides, and internal container networking.
-* **Portability Caveats**: Portability to a physical Linux mini PC is an architectural design goal, not a zero-effort automatic deployment. Deploying to physical hardware will require provisioning host directories, firewall permissions, physical networking, and environment variable configuration.
+### External System Boundaries
+* **Tavily Search API**: Grounded web search retrieval (`https://api.tavily.com/search`).
+* **Cloudflare Workers AI**: Serverless LLM synthesis (`@cf/meta/llama-3.1-8b-instruct`) with strict output token budget.
 
 ---
 
 ## 3. Clean Architecture & Layer Boundaries
 
-The codebase enforces strict concentric layering with inward-pointing dependencies.
+The codebase strictly enforces Clean Architecture concentric layering with inward-pointing dependencies. The application core remains 100% decoupled from web frameworks, storage engines, and external AI providers. The authoritative system architecture diagram above illustrates how these concentric rings map onto runtime services, messaging paths, and external providers.
 
-```mermaid
-flowchart TD
-    subgraph Presentation ["Presentation Layer"]
-        UI["Browser Dashboard (HTML/JS)"]
-        API["FastAPI App (Endpoints)"]
-    end
+### Architectural Layering & Dependency Inversion
 
-    subgraph Application ["Application Layer"]
-        Cmd["Commands (SubmitTask)"]
-        Query["Queries (GetAgentStates, GetRecentEvents)"]
-        Proc["Processors (TaskProcessor)"]
-        Ports["Ports / Protocols (TaskQueue, StateReader, MessageBus)"]
-    end
-
-    subgraph Domain ["Domain Layer"]
-        Entities["Entities & Invariants (Task)"]
-    end
-
-    subgraph Infrastructure ["Infrastructure Layer"]
-        RedisGw["RedisGateway (Orchestrator)"]
-        RedisBus["RedisBus (Worker)"]
-        RedisServer[("Redis Server (Lists, Hashes, Streams)")]
-    end
-
-    subgraph SharedContracts ["Shared Contracts (agent_contracts)"]
-        Contracts["TaskRequested, AgentEvent (v1)"]
-    end
-
-    UI -->|HTTP / JSON| API
-    API -->|Invokes| Cmd
-    API -->|Invokes| Query
-    Cmd -->|Validates| Entities
-    Cmd -->|Enqueues via| Ports
-    Query -->|Reads via| Ports
-    Proc -->|Consumes & Publishes via| Ports
-    Ports -.->|Implemented by| RedisGw
-    Ports -.->|Implemented by| RedisBus
-    RedisGw -->|TCP / Redis Protocol| RedisServer
-    RedisBus -->|TCP / Redis Protocol| RedisServer
-    Cmd -.->|Constructs| Contracts
-    Proc -.->|Consumes & Emits| Contracts
-```
+1. **Domain Layer (Center Ring)**: Pure business logic and domain invariants. Encapsulates intent routing rules (`DeterministicCapabilityRouter`), capability classifications (`AgentCapability`), and candidate selection policies (`DeterministicSelectionPolicy`). Contains zero dependencies on infrastructure, databases, or frameworks.
+2. **Application Layer (Use Cases & Ports)**: Orchestrates business flows (`SubmitTask`, `GetRoutingDecision`, `FindCandidatesByCapability`). Declares abstract Ports (Protocols) such as `TaskDispatcher`, `TaskQueue`, `StateReader`, `RoutingRecorder`, `ResultReader`, and `EventPublisher`. Does not know about Redis, HTTP, or external cloud providers.
+3. **Infrastructure Layer (Adapters)**: Implements application ports with concrete technologies. `RedisGateway` connects the orchestrator to Redis data structures; `RedisBus` connects workers to dispatch queues; `TavilySearchExecutor` and `CloudflareInferenceProvider` adapt external APIs.
+4. **Presentation Layer (Outer Ring)**: Exposes FastAPI REST endpoints (`/api/tasks`, `/api/tasks/{id}/routing`, `/api/tasks/{id}/result`, `/api/agents`, `/api/events`) and serves the Prototype Console single-page web application. Interacts exclusively with Application use cases and queries.
+5. **Shared Contracts (`agent_contracts`)**: Cross-boundary data primitives (`TaskRequested`, `TaskResult`, `RoutingDecision`, `CandidateEvaluation`, `AgentHeartbeat`, `AgentEvent`, `AgentCandidate`, `AgentAvailability`, `LivenessPolicy`). Technology-neutral dataclasses with strict versioning and automated credential sanitization.
 
 ### Layer Definitions & Invariants
 
 | Layer | Components | Inward Dependencies | Disallowed Dependencies |
 | :--- | :--- | :--- | :--- |
-| **Domain** | Entities, value objects, business validation invariants (`orchestrator.domain.task.Task`). | Standard library only. | **Zero** external libraries. No FastAPI, Redis, Docker, or databases. |
-| **Application** | Use case commands (`SubmitTask`), queries (`GetAgentStates`, `GetRecentEvents`), abstract ports/protocols (`TaskQueue`, `StateReader`, `MessageBus`), processors (`TaskProcessor`), typed exceptions (`TaskExecutionError`). | Domain models, standard library, shared contracts. | Concrete infrastructure adapters, database drivers, web frameworks (`redis`, `fastapi`). |
-| **Infrastructure** | Concrete adapters implementing ports (`RedisGateway`, `RedisBus`), transport backoff policies (`retry_with_backoff`), external clients. | Application ports, shared contracts, third-party drivers (`redis.asyncio`). | Presentation layer, domain bypass. |
-| **Presentation** | HTTP endpoints, static dashboard serving, request parsing (`TaskInput`), response formatting. | Application use cases and queries, standard library, FastAPI/Pydantic. | Direct access to concrete infrastructure adapters; presentation must never query `RedisGateway` directly. |
-| **Shared Contracts** | Cross-boundary message definitions (`TaskRequested`, `AgentEvent`). | Standard library (`dataclasses`, `json`, `uuid`, `datetime`). | Infrastructure details, service-internal logic, database formatting rules. |
+| **Domain** | Entities (`Task`), Capability enums (`AgentCapability`), Intent routers (`DeterministicCapabilityRouter`), Selection policies (`DeterministicSelectionPolicy`), Domain errors (`CapabilityUnavailableError`). | Standard library only. | **Zero** external libraries. No FastAPI, Redis, Docker, Tavily, or Cloudflare. |
+| **Application** | Use cases (`SubmitTask`), queries (`GetRoutingDecision`, `FindCandidatesByCapability`, `GetAgentStates`, `GetRecentEvents`, `GetTaskResult`), abstract ports/protocols (`TaskDispatcher`, `TaskQueue`, `StateReader`, `ResultReader`, `RoutingRecorder`, `EventPublisher`). | Domain models, standard library, shared contracts. | Concrete infrastructure adapters, database drivers, web frameworks (`redis`, `fastapi`, `httpx`). |
+| **Infrastructure** | Concrete adapters implementing ports (`RedisGateway`, `RedisBus`), external client executors (`TavilySearchExecutor`, `CloudflareInferenceProvider`), factory helpers (`create_research_executor`, `create_inference_provider`). | Application ports, shared contracts, third-party drivers (`redis.asyncio`, `httpx`). | Presentation layer, domain bypass. |
+| **Presentation** | HTTP REST endpoints (`api.py`), static Prototype Console dashboard (`index.html`), request schemas (`TaskInput`), response serialization. | Application use cases and queries, standard library, FastAPI/Pydantic. | Direct access to concrete infrastructure adapters; presentation must never query `RedisGateway` directly. |
+| **Shared Contracts** | Cross-boundary primitives (`TaskRequested`, `RoutingDecision`, `CandidateEvaluation`, `TaskResult`, `AgentEvent`, `AgentHeartbeat`, `AgentCandidate`, `AgentAvailability`, `LivenessPolicy`). | Standard library (`dataclasses`, `json`, `uuid`, `datetime`). | Infrastructure details, service-internal logic, database formatting rules. |
 
 ---
 
@@ -95,49 +69,95 @@ flowchart TD
 The application adheres to the **Composition Root pattern** rather than scattering dependency decorators across routes:
 
 * **Factory Function**: The orchestrator presentation layer exposes `create_app(settings, gateway, task_queue, state_reader) -> FastAPI`.
-* **Central Wiring**: The composition root constructs concrete infrastructure adapters (`RedisGateway`), wires them into application commands (`SubmitTask`) and queries (`GetAgentStates`, `GetRecentEvents`), and attaches them to `app.state`.
+* **Central Wiring**: The composition root constructs concrete infrastructure adapters (`RedisGateway`), wires them into application commands (`SubmitTask`) and queries (`GetAgentStates`, `GetRecentEvents`, `GetRoutingDecision`, `GetTaskResult`), and attaches them to `app.state`.
 * **Resource Lifecycle**: FastAPI's `lifespan` context manager governs connection pools, guaranteeing that `gateway.aclose()` executes gracefully during SIGTERM/shutdown.
 * **Test Isolation**: Tests instantiate `create_app()` passing lightweight in-memory fake adapters, running full endpoint validation without connecting to Redis or binding ports.
 
 ---
 
-## 5. Service Communication & Contract Purity
+## 5. End-to-End Orchestration & Execution Flows
+
+### Flow 1: Task Submission & Capability Routing
+1. **Submission**: The operator submits a task prompt via the Prototype Console or `POST /api/tasks`.
+2. **Intent Classification**: `SubmitTask` use case invokes `DeterministicCapabilityRouter` to determine the required capability:
+   - Keywords matching research/investigation (e.g. *research, investigate, compare, analyze*) resolve to `AgentCapability.RESEARCH`.
+   - General computation tasks resolve to `AgentCapability.GENERAL`.
+3. **Candidate Discovery & Liveness Check**: `SubmitTask` invokes `CandidateFinder` (`FindCandidatesByCapability`), which queries registered agents from `agent.registry:*` and evaluates their latest pulse in `agent.heartbeat:*` using `LivenessPolicy` (must be `READY` and heartbeat fresher than stale threshold).
+4. **Agent Selection**:
+   - If eligible candidates exist, `DeterministicSelectionPolicy` deterministically selects the optimal candidate based on heartbeat freshness and agent ID.
+   - If zero eligible candidates exist, `RoutingDecision` is recorded as rejected, an error event is emitted, and `CapabilityUnavailableError` is raised (HTTP 503).
+5. **Decision Recording**: `SubmitTask` constructs a structured, immutable `RoutingDecision` capturing the task ID, prompt classification, required capabilities, candidate evaluations, selected agent ID, dispatch target queue, and selection rationale. It persists this record via `RoutingRecorder.record_routing_decision()` to `task.routing:{task_id}`.
+6. **Task Dispatch**: `SubmitTask` dispatches `TaskRequested` to the selected candidate's advertised target queue (e.g. `agent.tasks.research` or `agent.tasks.general`) via `TaskDispatcher`.
+
+### Flow 2: Worker Execution & Grounded Research Synthesis
+1. **Task Dequeue**: The target agent's `RedisBus` performs an atomic `BLPOP` on its queue.
+2. **State Transition**: The agent transitions its state hash from `idle` to `working` and publishes an operational `working` event to `agent.events`.
+3. **Execution**:
+   - **General Worker (`worker-1`)**: Processes the prompt using its configured `InferenceProvider`.
+   - **Research Agent (`research-agent-1`)**:
+     a. **Retrieval**: Queries `TavilySearchExecutor` (`https://api.tavily.com/search`) for grounded web content and source URLs.
+     b. **Context Formatting**: Assembles grounded search evidence into an explicit token-budgeted prompt.
+     c. **LLM Synthesis**: Calls `CloudflareInferenceProvider` (`@cf/meta/llama-3.1-8b-instruct`) with strict instructions to generate structured findings and concise source citations.
+     d. **Truncation Detection**: Checks completion metadata and response boundaries to prevent silent mid-sentence truncation.
+4. **Result Storage**: The agent constructs a `TaskResult` (`status="completed"`, `output=...`) and persists it to `task.result:{task_id}`.
+5. **State Reset**: The agent transitions its state back to `idle` (`Waiting for work`) and publishes an `idle` event to `agent.events`.
+
+### Flow 3: Observability & Console Presentation
+1. **Routing Progression**: The Prototype Console immediately queries `GET /api/tasks/{task_id}/routing` upon submission and renders a 5-step visual pipeline:
+   $$\text{Submitted} \longrightarrow \text{Capability: RESEARCH} \longrightarrow \text{Candidates Evaluated} \longrightarrow \text{Selected Agent} \longrightarrow \text{Execution}$$
+2. **Rationale & Diagnostics**: The console displays the decision rationale and an expandable disclosure with candidate evaluation telemetry (Agent ID, Type, Capabilities, Status, Eligibility).
+3. **Result Polling**: The console polls `GET /api/tasks/{task_id}/result` until completed, then formats the output with clickable, secure source links.
+4. **Unavailable Capabilities**: If rejected with HTTP 503, the console displays the progression failure, missing capability, and troubleshooting guidance.
+
+---
+
+## 6. Service Communication & Contract Purity
 
 ### Network Boundaries
-1. Deployable services (`services/orchestrator`, `services/worker`) are isolated containers.
-2. Direct Python imports across service boundaries are strictly forbidden. One service must never import from another service's internal tree.
-3. Inter-service communication occurs exclusively through explicit asynchronous message passing over Redis.
+1. Deployable services (`services/orchestrator`, `services/worker`, `services/research_agent`) are isolated containers on Docker network `agent_net`.
+2. Direct Python imports across service boundaries are strictly forbidden. One service must never import from another service's internal code tree.
+3. Inter-service communication occurs exclusively through explicit asynchronous message passing and key-value state over Redis.
 
 ### Shared Contract Purity
-* Shared contracts live in `packages/contracts/src/agent_contracts`.
+* Shared contracts reside in `packages/contracts/src/agent_contracts`.
 * Contracts are strictly versioned (`version: int = 1`).
 * Contracts expose technology-neutral representations (`to_dict()`, `to_json()`, `from_dict()`, `from_json()`).
-* **Storage Independence**: Serialization idiosyncrasies (e.g. converting `None` to empty strings for Redis hashes) are forbidden in contracts and are encapsulated within the corresponding infrastructure adapter (`RedisBus`).
+* **Security & Credential Isolation**:
+  - Contracts enforce recursive sanitization against disallowed metadata keys (`api_key`, `secret`, `token`, `password`, `auth`).
+  - Provider tokens (`TAVILY_API_KEY`, `CLOUDFLARE_AI_API_TOKEN`) are strictly confined to worker container environments; they are never passed through contracts, stored in Redis, or returned to the browser.
 
 ---
 
-## 6. Container Design & Persistence Principles
+## 7. Container Design & Persistence Principles
 
 ### Container Disposability
-* Application containers do not own authoritative durable state and are designed to be disposable. However, under the current `BLPOP` delivery model, in-flight tasks can currently be lost if a worker container crashes or is terminated during processing.
-* Durable state is strictly externalized to the Redis persistence volume (`redis_data`).
-* Redis is configured with Append-Only File persistence (`--appendonly yes`) to provide persistence across container replacement and restart, without claiming guaranteed durability or backup.
+* Application containers do not own authoritative durable state and are designed to be disposable.
+* Durable state is externalized to the Redis persistence volume (`redis_data`).
+* Redis is configured with Append-Only File persistence (`--appendonly yes`) to provide persistence across container replacement and restart.
 
-### Security Boundary Note
-* **Current Implementation**: Service containers currently execute under the default container user (`root`).
-* **Future Hardening**: Adding a dedicated unprivileged user (`USER appuser`) and dropping Linux capabilities is planned for subsequent security hardening cycles.
+### Redis Key Namespace Structure
+
+| Key Pattern | Data Structure | Purpose |
+| :--- | :--- | :--- |
+| `agent.tasks.general` | Redis List (FIFO) | Dispatch queue for General Worker (`RPUSH` / `BLPOP`). |
+| `agent.tasks.research` | Redis List (FIFO) | Dispatch queue for Research Agent (`RPUSH` / `BLPOP`). |
+| `agent.registry:{agent_id}` | Redis String / Hash | Static agent registration, capabilities, and target queue. |
+| `agent.heartbeat:{agent_id}` | Redis String / JSON | Periodic liveness pulse, execution state, and ISO timestamp. |
+| `task.routing:{task_id}` | Redis String / JSON | Structured `RoutingDecision` record (candidates, target, rationale). |
+| `task.result:{task_id}` | Redis String / JSON | Durable `TaskResult` record (status, synthesized output, completion time). |
+| `agent.events` | Redis Stream (`XADD`) | Chronological operational audit log (maxlen=500). |
 
 ---
 
-## 7. Agent State Machine & Error Recovery
+## 8. Agent State Machine & Error Recovery
 
-The worker enforces an explicit state machine for task execution:
+The agents enforce an explicit state machine for task execution:
 
 ```text
        ┌──────────┐
        │   idle   │◄─────────────────────────────┐
        └────┬─────┘                              │
-            │ (Picks up task)                    │
+            │ (Picks up task via BLPOP)          │
             ▼                                    │
        ┌──────────┐                              │
        │ working  │                              │
@@ -152,59 +172,38 @@ The worker enforces an explicit state machine for task execution:
 ```
 
 1. **State vs. Event History**:
-   * Current agent state is maintained in a Redis Hash (`agent.state:{agent_id}`).
+   * Current agent state is maintained in a Redis Hash / Heartbeat (`agent.heartbeat:{agent_id}`).
    * The complete chronological audit log is appended to a Redis Stream (`agent.events`).
 2. **Failure Recovery**:
-   * When task processing raises an exception, the worker appends an `error` event to `agent.events` retaining the failed `task_id` and error description.
-   * Crucially, the worker's current state hash is immediately transitioned back to `idle` (`Waiting for work`), ensuring the worker does not remain permanently trapped in an error status and can process subsequent tasks.
-3. **Distinguishing Defects from Task Failures**:
-   * Expected task processing failures raise `TaskExecutionError` which is caught, logged as a warning, and reported as an agent event.
-   * Truly unexpected programming defects (e.g. `TypeError`, syntax errors) or system interrupts (`CancelledError`) are not masked and bubble up to prevent zombie execution.
-4. **Transport Resilience**:
-   * Redis operations are wrapped in `retry_with_backoff[T]` with capped exponential backoff (max 5 retries, 5.0s maximum delay).
-   * Only transport errors (`ConnectionError`, `TimeoutError`, `OSError`) are retried. Non-transport bugs fail immediately.
-
----
-
-## 8. Evolution Towards Multi-Agent Routing (Agent #2)
-
-### Current Implementation
-* **Single FIFO Queue**: Tasks are dispatched to a single Redis list (`agent.tasks`) using `RPUSH` and consumed via `BLPOP`.
-* **Competing Consumers**: Multiple worker replicas currently act as competing consumers on the same queue (homogeneous horizontal scaling only).
-* **Delivery Semantics**: Tasks are removed atomically upon dequeue (`BLPOP`); there is currently no acknowledgment or dead-letter queue.
-
-### Future Architecture (Planned for Agent #2)
-To support heterogeneous agents (e.g., specialized Agent #2) and agent-to-agent delegation:
-1. **Message Routing Metadata**: Contracts must be extended with routing headers:
-   * `target_agent_id: str | None` (directed addressing vs. broadcast).
-   * `sender_id: str | None` (originating agent/service).
-   * `correlation_id: str | None` (tracing conversational turns or parent task workflows).
-   * `task_type: str` (specialized capability dispatching).
-2. **At-Least-Once Delivery**: Transition from raw lists to Redis Consumer Groups (`XREADGROUP` / `XACK`) or explicit visibility timeouts to prevent task loss on container crash.
+   * When task processing raises an exception, the agent appends an `error` event to `agent.events` retaining the failed `task_id` and error description.
+   * Crucially, the agent transitions its status back to `idle` (`Waiting for work`), ensuring the worker does not remain permanently trapped in an error status and can process subsequent tasks.
+3. **Transport Resilience**:
+   * Redis operations are wrapped in exponential backoff policies (`retry_with_backoff[T]`).
+   * Only transport errors (`ConnectionError`, `TimeoutError`, `OSError`) are retried. Non-transport defects fail immediately.
 
 ---
 
 ## 9. Observability & Logging Standards
 
 * **Standard Output**: All logs are emitted to `sys.stdout` via standard Python `logging`.
-* **Current Log Format**: Standard text logging using `%(asctime)s [%(levelname)s] %(name)s: %(message)s`. Structured JSON or machine-readable correlated logging is identified as a possible planned evolution rather than a current capability.
+* **Format**: Standard text logging using `%(asctime)s [%(levelname)s] %(name)s: %(message)s`.
 * **Log Levels**:
   * `INFO`: Process startup, registration, task dispatch, task completion.
   * `WARNING`: Handled task execution failures, recoverable transport retries.
   * `ERROR` / `CRITICAL`: Unrecoverable transport exhaustion, application exit.
-* **Correlated Telemetry**: Task IDs and Agent IDs are explicitly logged at dispatch and completion boundaries.
+* **Correlated Telemetry**: Task IDs and Agent IDs are explicitly logged at dispatch, routing, and completion boundaries.
 
 ---
 
 ## 10. Testing Strategy by Layer
 
-Testing follows the pyramid structure and relies on zero live infrastructure for automated execution:
+Testing follows the pyramid structure and relies on zero live infrastructure or cloud accounts:
 
-* **Domain Unit Tests** (`tests/test_domain.py`): Pure invariant tests verifying constraints (e.g. empty prompt rejection, length boundaries).
-* **Application Unit Tests** (`tests/test_application.py`): Use case and query validation using lightweight in-memory test doubles (`FakeTaskQueue`, `FakeStateReader`).
-* **Contract Tests** (`tests/test_contracts.py`): Round-trip JSON and dictionary serialization/deserialization verification.
-* **Worker Unit Tests** (`tests/test_worker.py`): Verification of worker state progression (`working` → `idle` and `working` → `error` → `idle`), retry backoff policies, and non-retry of programming defects using `FakeMessageBus`.
-* **Presentation Tests** (`tests/test_presentation.py`): Endpoint testing using `create_app()` configured with in-memory test doubles—validating HTTP inputs, status codes, and query limit bounds without live Redis connections.
+* **Domain Unit Tests** (`tests/test_domain.py`, `tests/test_routing_decision.py`): Invariant tests verifying prompt boundaries, intent routing, selection policies, and sensitive key scrubbing.
+* **Application Unit Tests** (`tests/test_application.py`, `tests/test_runtime_dispatch.py`, `tests/test_unavailable_capability.py`): Command and query validation using lightweight in-memory test doubles (`FakeTaskQueue`, `FakeStateReader`, `FakeCandidateFinder`).
+* **Contract Tests** (`tests/test_contracts.py`): Round-trip JSON and dictionary serialization/deserialization verification across all shared contracts.
+* **Worker & Research Agent Tests** (`tests/test_worker.py`, `tests/test_research_agent.py`): Verification of worker state progression (`working` → `idle`), research retrieval, Cloudflare synthesis, and truncation guard handling using mocked executors.
+* **Presentation Tests** (`tests/test_presentation.py`): Endpoint testing using `create_app()` configured with in-memory test doubles—validating HTML structure, progression elements, HTTP 503 error schemas, and routing endpoint responses without live Redis connections.
 
 ---
 
@@ -213,13 +212,13 @@ Testing follows the pyramid structure and relies on zero live infrastructure for
 ### Python Runtime Alignment
 * **Standard Rule**: **Use one explicitly supported Python minor version across local development, tests, and service containers.**
 * **Authoritative Runtime**: **Python 3.12** (`>=3.12,<3.13`).
-* **Parity**: Local WSL virtual environment, Orchestrator Docker container, and Worker Docker container all execute on CPython 3.12.x to prevent standard library and coroutine deprecation drift.
+* **Parity**: Local virtual environment, Orchestrator container, Worker container, and Research Agent container all execute on CPython 3.12.x to prevent standard library drift.
 
 ### Dependency Management
 * **Service Runtime Isolation**: Each service strictly maintains its own runtime dependencies in `services/<service>/requirements.txt`. Orchestrator web dependencies must never leak into worker containers.
 * **Development Manifest**: The root `requirements-dev.txt` references all service manifests via `-r` and layers development/test tools (`pytest`, `anyio`, `ruff`).
 * **Single Command Setup**: A clean checkout is provisioned locally via `python -m pip install -r requirements-dev.txt` or `make dev-install`.
-* **Root `pyproject.toml` Role**: Acts strictly as workspace and tool configuration (`[tool.pytest.ini_options]`, `[tool.ruff]`, `requires-python`). It is intentionally not an installable package distribution.
+* **Root `pyproject.toml` Role**: Acts strictly as workspace and tool configuration (`[tool.pytest.ini_options]`, `[tool.ruff]`, `requires-python`).
 
 ---
 
@@ -229,14 +228,14 @@ To preserve architectural simplicity and prevent speculative complexity, the fol
 
 | Deferred Technology | Reason for Deferral |
 | :--- | :--- |
-| **Relational Database (PostgreSQL)** | Redis AOF persistence completely satisfies current task queue, agent state, and event log needs. Relational storage will only be considered when complex multi-table querying or durability constraints require it. |
-| **Heavy Message Brokers (Kafka, RabbitMQ)** | Redis Lists and Streams are more than sufficient for single-host laboratory workloads without introducing JVM or Erlang cluster management. |
+| **Relational Database (PostgreSQL)** | Redis AOF persistence completely satisfies current task queue, agent state, decision logging, and event stream needs. Relational storage will only be considered when complex multi-table analytical querying or relational durability requires it. |
+| **Heavy Message Brokers (Kafka, RabbitMQ)** | Redis Lists and Streams are more than sufficient for current laboratory workloads without introducing JVM or Erlang cluster management. |
 | **Kubernetes / Nomad** | Docker Compose bridge networking (`agent_net`) provides sufficient service discovery and container lifecycle management. |
-| **Distributed APM (Jaeger, Prometheus, OTel)** | Stdout logging and Redis stream inspection satisfy current observability requirements without external telemetry collectors. |
+| **Distributed APM (Jaeger, Prometheus, OTel)** | Stdout logging, routing diagnostic models, and Redis stream inspection satisfy current observability requirements without external telemetry collectors. |
 | **Third-Party Agent Frameworks (LangChain, AutoGen, CrewAI)** | Agent prompt loops, state machines, and tool invocations must remain explicit Python domain code. External frameworks introduce heavy dependency churn and obfuscate boundary contracts. |
 
 ---
 
 ## 13. Governance: Modifying Architectural Boundaries
 
-> **Mandatory Rule**: Significant architectural decisions (such as altering layer boundaries, introducing shared cross-service dependencies, bypassing ports/adapters, adding infrastructure services, or updating communication contracts) **require an explicit Architecture Decision Record (ADR) stored under `docs/adr/`** before implementation, rather than documenting ADRs inside this specification.
+> **Mandatory Rule**: Significant architectural decisions (such as altering layer boundaries, introducing shared cross-service dependencies, bypassing ports/adapters, adding infrastructure services, or updating communication contracts) **require an explicit Architecture Decision Record (ADR) stored under `docs/adr/`** before implementation.
