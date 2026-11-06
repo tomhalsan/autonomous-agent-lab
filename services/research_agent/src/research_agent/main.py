@@ -44,6 +44,7 @@ async def run_research_agent() -> None:
             "research_executor": executor_name,
             "inference_provider": inference_provider_name,
         },
+        dispatch_target=task_queue,
     )
 
     logger.info(

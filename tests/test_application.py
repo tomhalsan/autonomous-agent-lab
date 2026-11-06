@@ -14,12 +14,23 @@ from orchestrator.domain.capability import AgentCapability
 class FakeTaskQueue:
     def __init__(self) -> None:
         self.enqueued: list[tuple[TaskRequested, AgentCapability]] = []
+        self.dispatches: list[tuple[TaskRequested, str]] = []
 
     async def enqueue(
         self,
         task: TaskRequested,
         capability: AgentCapability = AgentCapability.GENERAL,
+        target: str | None = None,
     ) -> None:
+        self.enqueued.append((task, capability))
+        if target:
+            self.dispatches.append((task, target))
+
+    async def dispatch(self, task: TaskRequested, target: str) -> None:
+        self.dispatches.append((task, target))
+        capability = (
+            AgentCapability.RESEARCH if "research" in target else AgentCapability.GENERAL
+        )
         self.enqueued.append((task, capability))
 
 class FakeStateReader:

@@ -16,6 +16,7 @@ class AgentCandidate:
     agent_type: str = "agent"
     execution_state: AgentExecutionState = AgentExecutionState.IDLE
     providers: dict[str, str] = field(default_factory=dict)
+    dispatch_target: str | None = None
     version: int = 1
 
     def __post_init__(self) -> None:
@@ -28,6 +29,15 @@ class AgentCandidate:
         for cap in self.capabilities:
             if not isinstance(cap, str) or not cap.strip():
                 raise ValueError("Capability entries must be non-empty strings")
+
+        if self.dispatch_target is not None:
+            if not isinstance(self.dispatch_target, str) or not self.dispatch_target.strip():
+                raise ValueError("dispatch_target must be a non-empty string if provided")
+            for disallowed in DISALLOWED_METADATA_KEYS:
+                if disallowed in self.dispatch_target.lower():
+                    raise ValueError(
+                        f"Sensitive key {disallowed!r} must not be exposed in dispatch_target"
+                    )
 
         if isinstance(self.execution_state, str) and not isinstance(
             self.execution_state, AgentExecutionState
@@ -59,7 +69,7 @@ class AgentCandidate:
                     )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "agent_id": self.agent_id,
             "agent_type": self.agent_type,
             "capabilities": list(self.capabilities),
@@ -68,6 +78,9 @@ class AgentCandidate:
             "providers": dict(self.providers),
             "version": self.version,
         }
+        if self.dispatch_target is not None:
+            data["dispatch_target"] = self.dispatch_target
+        return data
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
@@ -87,6 +100,11 @@ class AgentCandidate:
             execution_state=AgentExecutionState.from_str(str(data.get("execution_state", "idle"))),
             availability=availability,
             providers=dict(data.get("providers", {})),
+            dispatch_target=(
+                str(data["dispatch_target"]).strip()
+                if data.get("dispatch_target") is not None
+                else None
+            ),
             version=int(data.get("version", 1)),
         )
 

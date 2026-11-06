@@ -16,19 +16,25 @@ class RedisGateway:
     def __init__(self, url: str) -> None:
         self._client = redis.from_url(url, decode_responses=True)
 
-    async def enqueue(
-        self,
-        task: TaskRequested,
-        capability: AgentCapability = AgentCapability.GENERAL,
-    ) -> None:
-        queue_name = CAPABILITY_QUEUE_MAP.get(capability)
-        if not queue_name:
-            raise ValueError(f"Unknown capability: {capability}")
+    async def dispatch(self, task: TaskRequested, target: str) -> None:
+        if not target or not isinstance(target, str) or not target.strip():
+            raise ValueError("Dispatch target must be a non-empty string")
         await self._client.set(
             f"task.status:{task.task_id}",
             json.dumps({"task_id": task.task_id, "status": "pending"}),
         )
-        await self._client.rpush(queue_name, task.to_json())
+        await self._client.rpush(target.strip(), task.to_json())
+
+    async def enqueue(
+        self,
+        task: TaskRequested,
+        capability: AgentCapability = AgentCapability.GENERAL,
+        target: str | None = None,
+    ) -> None:
+        queue_name = target or CAPABILITY_QUEUE_MAP.get(capability)
+        if not queue_name:
+            raise ValueError(f"Unknown capability: {capability}")
+        await self.dispatch(task, queue_name)
 
     async def get_result(self, task_id: str) -> dict[str, Any] | None:
         raw_result = await self._client.get(f"task.result:{task_id}")

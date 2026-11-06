@@ -4,23 +4,39 @@ from agent_contracts import AgentEvent, TaskRequested
 
 from orchestrator.domain.capability import AgentCapability, CapabilityUnavailableError
 from orchestrator.domain.router import DeterministicCapabilityRouter
+from orchestrator.domain.selection import (
+    CandidateSelectionPolicy,
+    DeterministicSelectionPolicy,
+)
 from orchestrator.domain.task import Task
 
-from .ports import CandidateFinder, CapabilityRouter, EventPublisher, TaskQueue
+from .ports import (
+    CandidateFinder,
+    CapabilityRouter,
+    EventPublisher,
+    TaskDispatcher,
+    TaskQueue,
+)
 
 
 class SubmitTask:
     def __init__(
         self,
-        queue: TaskQueue,
+        queue: TaskQueue | TaskDispatcher | None = None,
         router: CapabilityRouter | None = None,
         candidate_finder: CandidateFinder | None = None,
         events: EventPublisher | None = None,
+        selection_policy: CandidateSelectionPolicy | None = None,
+        dispatcher: TaskDispatcher | None = None,
     ) -> None:
-        self._queue = queue
+        self._dispatcher: TaskDispatcher | None = dispatcher or (
+            queue if isinstance(queue, TaskDispatcher) else None
+        )
+        self._queue: TaskQueue | None = queue if isinstance(queue, TaskQueue) else None
         self._router = router or DeterministicCapabilityRouter()
         self._candidate_finder = candidate_finder
         self._events = events
+        self._selection_policy = selection_policy or DeterministicSelectionPolicy()
 
     async def execute(
         self,
@@ -55,6 +71,33 @@ class SubmitTask:
                     task_id=rejection_task_id,
                 )
 
-        message = TaskRequested.create(task.prompt)
-        await self._queue.enqueue(message, resolved_capability)
-        return message
+            selected_candidate = self._selection_policy.select(candidates)
+            target = selected_candidate.dispatch_target
+
+            if not target or not isinstance(target, str) or not target.strip():
+                raise ValueError(
+                    f"Selected candidate '{selected_candidate.agent_id}' does not have a valid dispatch target advertised"
+                )
+
+            clean_target = target.strip()
+            message = TaskRequested.create(task.prompt)
+
+            if self._dispatcher is not None:
+                await self._dispatcher.dispatch(message, clean_target)
+                return message
+
+            # Preserve backward compatibility only where required for older isolated test doubles
+            # that implement TaskQueue but not TaskDispatcher
+            if self._queue is not None:
+                await self._queue.enqueue(message, resolved_capability, target=clean_target)
+                return message
+
+            raise RuntimeError("No task dispatcher or queue configured for dispatch")
+
+        # Non-dynamic fallback path (candidate_finder is None) - for backward compatibility with older isolated tests
+        if self._queue is not None:
+            message = TaskRequested.create(task.prompt)
+            await self._queue.enqueue(message, resolved_capability)
+            return message
+
+        raise RuntimeError("No task queue configured for legacy enqueue")

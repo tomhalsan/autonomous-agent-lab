@@ -39,6 +39,7 @@ async def run_worker() -> None:
         providers={
             "inference_provider": inference_provider_name,
         },
+        dispatch_target=task_queue,
     )
 
     logger.info(

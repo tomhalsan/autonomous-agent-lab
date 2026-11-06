@@ -1,15 +1,26 @@
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from agent_contracts import AgentCandidate, AgentEvent, TaskRequested
 
 from orchestrator.domain.capability import AgentCapability
 
 
+@runtime_checkable
 class TaskQueue(Protocol):
     async def enqueue(
         self,
         task: TaskRequested,
         capability: AgentCapability = AgentCapability.GENERAL,
+        target: str | None = None,
+    ) -> None: ...
+
+
+@runtime_checkable
+class TaskDispatcher(Protocol):
+    async def dispatch(
+        self,
+        task: TaskRequested,
+        target: str,
     ) -> None: ...
 
 
