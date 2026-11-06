@@ -38,9 +38,11 @@ class FakeStateReader:
         self,
         agents_data: list[dict[str, str]] | None = None,
         events_data: list[dict[str, str]] | None = None,
+        routing_decisions: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.agents_data = agents_data or []
         self.events_data = events_data or []
+        self.routing_decisions = routing_decisions or {}
         self.last_events_limit: int | None = None
 
     async def agents(self) -> list[dict[str, str]]:
@@ -49,6 +51,17 @@ class FakeStateReader:
     async def events(self, limit: int = 50) -> list[dict[str, str]]:
         self.last_events_limit = limit
         return self.events_data[:limit]
+
+    async def routing_decision(self, task_id: str) -> dict[str, Any] | None:
+        if task_id in self.routing_decisions:
+            return self.routing_decisions[task_id]
+        for event in self.events_data:
+            if event.get("task_id") == task_id and event.get("routing_decision"):
+                rd = event["routing_decision"]
+                import json
+
+                return json.loads(rd) if isinstance(rd, str) else rd
+        return None
 
 
 class FakeResultReader:

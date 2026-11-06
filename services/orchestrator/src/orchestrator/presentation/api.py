@@ -13,6 +13,7 @@ from orchestrator.application.ports import (
     CapabilityRouter,
     EventPublisher,
     ResultReader,
+    RoutingRecorder,
     StateReader,
     TaskDispatcher,
     TaskQueue,
@@ -21,6 +22,7 @@ from orchestrator.application.queries import (
     FindCandidatesByCapability,
     GetAgentStates,
     GetRecentEvents,
+    GetRoutingDecision,
     GetTaskResult,
 )
 from orchestrator.application.use_cases import SubmitTask
@@ -82,6 +84,18 @@ async def task_result(task_id: str, request: Request) -> dict[str, Any]:
     return result
 
 
+async def task_routing(task_id: str, request: Request) -> dict[str, Any]:
+    get_routing_decision: GetRoutingDecision | None = request.app.state.get_routing_decision
+    if get_routing_decision is None:
+        raise HTTPException(status_code=503, detail="Routing decision reader not configured")
+    decision = await get_routing_decision.execute(task_id)
+    if decision is None:
+        raise HTTPException(
+            status_code=404, detail=f"Routing decision for task '{task_id}' not found"
+        )
+    return decision
+
+
 async def candidates(capability: str, request: Request) -> list[dict[str, Any]]:
     find_candidates: FindCandidatesByCapability = request.app.state.find_candidates
     try:
@@ -108,6 +122,7 @@ def create_app(
     event_publisher: EventPublisher | None = None,
     enforce_availability: bool | None = None,
     selection_policy: CandidateSelectionPolicy | None = None,
+    routing_recorder: RoutingRecorder | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
 
@@ -125,6 +140,9 @@ def create_app(
     reader = state_reader or gateway
     results = result_reader or gateway or NoOpResultReader()
     events_out = event_publisher or gateway
+    routing_recorder_client = routing_recorder or (
+        gateway if isinstance(gateway, RoutingRecorder) else None
+    )
 
     should_enforce = enforce_availability if enforce_availability is not None else (gateway is not None)
     resolved_finder = candidate_finder
@@ -140,10 +158,12 @@ def create_app(
         candidate_finder=resolved_finder,
         events=events_out,
         selection_policy=selection_policy,
+        routing_recorder=routing_recorder_client,
     )
     get_agent_states = GetAgentStates(reader) if reader else None
     get_recent_events = GetRecentEvents(reader) if reader else None
     get_task_result = GetTaskResult(results)
+    get_routing_decision = GetRoutingDecision(reader) if reader else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -159,6 +179,7 @@ def create_app(
     app.state.get_agent_states = get_agent_states
     app.state.get_recent_events = get_recent_events
     app.state.get_task_result = get_task_result
+    app.state.get_routing_decision = get_routing_decision
     app.state.find_candidates = find_candidates_query
 
     static_dir = Path(__file__).parent / "static"
@@ -181,6 +202,7 @@ def create_app(
     app.add_api_route("/api/agents", agents, methods=["GET"])
     app.add_api_route("/api/events", events, methods=["GET"])
     app.add_api_route("/api/tasks/{task_id}/result", task_result, methods=["GET"])
+    app.add_api_route("/api/tasks/{task_id}/routing", task_routing, methods=["GET"])
     app.add_api_route("/api/candidates", candidates, methods=["GET"])
 
     return app
