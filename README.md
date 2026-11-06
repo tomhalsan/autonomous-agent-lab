@@ -26,7 +26,7 @@ Dependency direction is inward: presentation/infrastructure -> application -> do
 
 From another computer on your LAN, use `http://<windows-host-ip>:8080` after allowing TCP 8080 through the Windows firewall. Do not expose Redis directly.
 
-## Prototype Console (v0.2.0)
+## Prototype Console (v0.3.0)
 
 The Prototype Console provides a unified, approachable browser interface (`GET /`) for demonstrating and interacting with the lab:
 
