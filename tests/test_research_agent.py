@@ -4,9 +4,17 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested
+from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested, TaskResult
 from orchestrator.application.queries import GetAgentStates, GetRecentEvents
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
+from research_agent.domain.evaluator import EvidenceEvaluator
+from research_agent.domain.evidence import (
+    AuthorityTier,
+    CandidateEvidence,
+    EvaluatedEvidence,
+    FilterReason,
+    SourceType,
+)
 from research_agent.domain.models import ResearchResult, SynthesisResult
 from research_agent.infrastructure.cloudflare_inference import (
     DEFAULT_CLOUDFLARE_AI_MODEL,
@@ -1755,7 +1763,868 @@ async def test_research_agent_metadata_does_not_expose_secrets(
             assert secret not in str(meta_dict)
 
 
+# --- Issue #9: Research Evidence Quality and Authority Evaluation Tests ---
 
 
+def test_evidence_evaluator_prioritizes_high_authority_domains() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://medium.com/@random_user/consensus-post",
+            title="My thoughts on consensus",
+            content="Raft and Paxos are consensus algorithms used in distributed databases.",
+            raw_score=0.7,
+        ),
+        CandidateEvidence(
+            url="https://docs.python.org/3/library/consensus.html",
+            title="Asyncio Distributed Consensus Documentation",
+            content="Official Python documentation for distributed consensus and state verification primitives.",
+            raw_score=0.75,
+        ),
+        CandidateEvidence(
+            url="https://csail.mit.edu/research/consensus-study",
+            title="Distributed Consensus Verification",
+            content="Formal verification of Paxos and Raft consensus algorithms in academic distributed systems.",
+            raw_score=0.8,
+        ),
+        CandidateEvidence(
+            url="https://techblog.io/raft-explained",
+            title="Raft Algorithm Explained",
+            content="A clear explanation of how distributed nodes reach consensus with Raft leader election.",
+            raw_score=0.72,
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="distributed consensus verification")
+
+    retained = [r for r in results if r.retained]
+    assert len(retained) == 4
+
+    # Top sources must be the institutional (MIT .edu) and official documentation (docs.python.org)
+    top_domains = [r.domain for r in retained[:2]]
+    assert "csail.mit.edu" in top_domains
+    assert "docs.python.org" in top_domains
+
+    # Check authority classifications
+    mit_res = next(r for r in retained if r.domain == "csail.mit.edu")
+    assert mit_res.authority_tier == AuthorityTier.HIGH
+    assert mit_res.source_type == SourceType.ACADEMIC_GOV
+    assert "institutional-domain" in mit_res.quality_signals
+
+    doc_res = next(r for r in retained if r.domain == "docs.python.org")
+    assert doc_res.authority_tier == AuthorityTier.HIGH
+    assert doc_res.source_type == SourceType.OFFICIAL_DOCS
+    assert "official-documentation" in doc_res.quality_signals
+
+    # Neutral sources are lower rank but still retained
+    neutral_res = next(r for r in retained if r.domain == "techblog.io")
+    assert neutral_res.authority_tier == AuthorityTier.MEDIUM or neutral_res.authority_tier == AuthorityTier.NEUTRAL
+    assert neutral_res.retained is True
+    assert mit_res.rank_score > neutral_res.rank_score
+
+
+def test_evidence_evaluator_filters_promotional_and_spam_content() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        # Promotional affiliate query parameter
+        CandidateEvidence(
+            url="https://reviewsite.com/best-tools?aff=affiliate123&utm_medium=affiliate",
+            title="Best Distributed Tools Review",
+            content="Here is a breakdown of top consensus tools for your engineering stack.",
+        ),
+        # Commercial promotional call-to-action in text
+        CandidateEvidence(
+            url="https://deals.example.com/cloud-special",
+            title="Consensus Software - Buy Now for 50% Off",
+            content="Exclusive discount! Buy now and save with our special promo code for distributed database licenses.",
+        ),
+        # Known low-value domain
+        CandidateEvidence(
+            url="https://coupons.com/deal/database-software",
+            title="Coupons and Promo Codes for Distributed Databases",
+            content="Find the lowest price guarantee and promotional discounts on database subscriptions.",
+        ),
+        # Legitimate technical content
+        CandidateEvidence(
+            url="https://ietf.org/rfc/rfc9999.txt",
+            title="RFC 9999 - State Machine Replication Protocol",
+            content="This document specifies state machine replication and consensus requirements for resilient networks.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="state machine replication consensus")
+
+    retained = [r for r in results if r.retained]
+    filtered = [r for r in results if not r.retained]
+
+    # Only the IETF standards RFC should be retained
+    assert len(retained) == 1
+    assert retained[0].domain == "ietf.org"
+    assert retained[0].authority_tier == AuthorityTier.HIGH
+
+    # All three promotional sources must be filtered with FilterReason.PROMOTIONAL
+    assert len(filtered) == 3
+    for f in filtered:
+        assert f.retained is False
+        assert f.filter_reason == FilterReason.PROMOTIONAL
+        assert "Filtered: Detected promotional marketing" in f.rationale
+
+
+def test_evidence_evaluator_preserves_neutral_and_unknown_domains() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://indie-dev.net/post/distributed-systems",
+            title="Notes on Building Distributed Systems",
+            content="Personal engineering notes discussing quorum, consensus, and network partitions.",
+        ),
+        CandidateEvidence(
+            url="https://software-journal.com/paxos-in-practice",
+            title="Paxos in Practical Engineering",
+            content="Case study of deploying Paxos consensus across multi-datacenter clusters.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="distributed consensus quorum")
+
+    # Neutral / unknown commercial domains must NOT be automatically rejected
+    assert len(results) == 2
+    for r in results:
+        assert r.retained is True
+        assert r.authority_tier == AuthorityTier.NEUTRAL or r.authority_tier == AuthorityTier.MEDIUM
+        assert r.filter_reason is None
+        assert "Retained" in r.rationale
+
+
+def test_evidence_evaluator_handles_duplicate_urls_and_content() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://example.com/raft-paper",
+            title="Raft Consensus Paper",
+            content="In Search of an Understandable Consensus Algorithm by Diego Ongaro and John Ousterhout.",
+        ),
+        # Duplicate URL (with trailing slash)
+        CandidateEvidence(
+            url="https://example.com/raft-paper/",
+            title="Raft Consensus Paper (Copy)",
+            content="Identical paper copy discussing Raft consensus algorithm.",
+        ),
+        # Different URL but duplicate snippet content
+        CandidateEvidence(
+            url="https://mirror.org/paper-mirror",
+            title="Mirror of Raft Consensus Paper",
+            content="In Search of an Understandable Consensus Algorithm by Diego Ongaro and John Ousterhout.",
+        ),
+        # Distinct content
+        CandidateEvidence(
+            url="https://example.org/paxos-paper",
+            title="Paxos Algorithm Overview",
+            content="Leslie Lamport's seminal work on Paxos consensus and fault tolerance in asynchronous systems.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="raft consensus algorithm")
+
+    retained = [r for r in results if r.retained]
+    filtered = [r for r in results if not r.retained]
+
+    # Two distinct papers retained
+    assert len(retained) == 2
+    # Two duplicates filtered with FilterReason.DUPLICATE
+    assert len(filtered) == 2
+    for f in filtered:
+        assert f.filter_reason == FilterReason.DUPLICATE
+        assert "Duplicate" in f.rationale
+
+
+def test_evidence_evaluator_handles_missing_metadata_conservatively() -> None:
+    evaluator = EvidenceEvaluator()
+    candidate = CandidateEvidence(
+        url="https://unknown-engineering.org/consensus-notes",
+        title="Consensus Notes",
+        content="Overview of leader election and log replication in distributed state machines.",
+        raw_score=None,
+        published_date=None,
+    )
+
+    results = evaluator.evaluate([candidate], query="consensus leader election")
+    assert len(results) == 1
+    res = results[0]
+
+    assert res.retained is True
+    assert res.recency_indicator == "unknown"
+    assert 0.0 < res.rank_score < 1.0
+    assert "recency:unknown" in res.quality_signals
+    # Must not crash or invent a published date
+    assert "published" not in res.rationale.lower()
+
+
+def test_evidence_evaluator_filters_malformed_and_unsafe_urls() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="javascript:alert('malicious')",
+            title="Malicious Link",
+            content="Some technical content here describing distributed consensus.",
+        ),
+        CandidateEvidence(
+            url="https://admin:supersecret@cluster.internal/status",
+            title="Private Cluster Status",
+            content="Internal status of node consensus and leader heartbeats.",
+        ),
+        CandidateEvidence(
+            url="http://127.0.0.1:8080/data",
+            title="Localhost Endpoint",
+            content="Local data dump on node consensus.",
+        ),
+        CandidateEvidence(
+            url="https://valid-site.org/consensus",
+            title="Valid Technical Analysis",
+            content="Discussion of consensus protocols and network partitions.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="consensus protocol")
+
+    retained = [r for r in results if r.retained]
+    filtered = [r for r in results if not r.retained]
+
+    assert len(retained) == 1
+    assert retained[0].domain == "valid-site.org"
+
+    assert len(filtered) == 3
+    for f in filtered:
+        assert f.filter_reason == FilterReason.MALFORMED_URL
+
+    # Verify userinfo was redacted
+    credential_item = next(f for f in filtered if "supersecret" not in f.url)
+    assert "supersecret" not in credential_item.url
+    assert "supersecret" not in credential_item.rationale
+
+
+def test_evidence_evaluator_diversity_capping() -> None:
+    evaluator = EvidenceEvaluator(max_per_root_domain=2)
+    candidates = [
+        CandidateEvidence(
+            url=f"https://blog.techcorp.com/article-{i}",
+            title=f"TechCorp Consensus Guide Part {i}",
+            content=f"Detailed article {i} covering consensus mechanisms, raft, and fault tolerance.",
+        )
+        for i in range(1, 5)
+    ]
+
+    results = evaluator.evaluate(candidates, query="consensus raft")
+
+    retained = [r for r in results if r.retained]
+    filtered = [r for r in results if not r.retained]
+
+    # Exactly 2 retained from techcorp.com, 2 capped
+    assert len(retained) == 2
+    assert len(filtered) == 2
+    for f in filtered:
+        assert f.filter_reason == FilterReason.DOMAIN_CAP_EXCEEDED
+        assert "techcorp.com" in f.rationale
+
+
+def test_evidence_evaluator_cross_domain_keyword_overlap_detection() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://first-lab.org/raft",
+            title="Raft Algorithm Specification",
+            content="Raft solves consensus using replicated logs and leader election.",
+        ),
+        CandidateEvidence(
+            url="https://second-institute.edu/distributed-systems",
+            title="Replicated Logs and Consensus",
+            content="Study of replicated logs and leader election in distributed state machines.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="replicated logs leader election consensus")
+
+    assert len(results) == 2
+    for r in results:
+        assert r.retained is True
+        assert r.cross_domain_overlap_count > 0
+        assert any("cross-domain-keyword-overlap" in sig for sig in r.quality_signals)
+        assert "cross-domain keyword overlap" in r.rationale
+
+
+def test_evidence_evaluator_deterministic_ordering_for_equivalent_evidence() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://b-source.com/consensus",
+            title="Consensus Guide B",
+            content="First distinct engineering overview of distributed consensus algorithms.",
+        ),
+        CandidateEvidence(
+            url="https://a-source.com/consensus",
+            title="Consensus Guide A",
+            content="Second distinct engineering overview of distributed consensus algorithms.",
+        ),
+    ]
+
+    results1 = evaluator.evaluate(candidates, query="distributed consensus")
+    results2 = evaluator.evaluate(candidates, query="distributed consensus")
+
+    assert [r.url for r in results1] == [r.url for r in results2]
+    # Domain tie-break puts a-source.com before b-source.com
+    assert results1[0].domain == "a-source.com"
+    assert results1[1].domain == "b-source.com"
+
+
+def test_evaluated_evidence_serialization_and_credential_sanitization() -> None:
+    item = EvaluatedEvidence(
+        url="https://docs.python.org/3/library/asyncio.html",
+        title="Asyncio Docs",
+        content="Python asynchronous framework.",
+        domain="docs.python.org",
+        authority_tier=AuthorityTier.HIGH,
+        source_type=SourceType.OFFICIAL_DOCS,
+        quality_signals=("official-documentation", "high-relevance"),
+        relevance_signal="high",
+        recency_indicator="recent",
+        rank_score=0.92,
+        retained=True,
+        filter_reason=None,
+        rationale="Retained: Official documentation.",
+        cross_domain_overlap_count=2,
+    )
+
+    data = item.to_dict()
+    assert data["authority_tier"] == "high"
+    assert data["source_type"] == "official_docs"
+    assert data["rank_score"] == 0.92
+    assert data["retained"] is True
+    assert data["cross_domain_overlap_count"] == 2
+
+    # Ensure no credentials or disallowed tokens in serialized dictionary
+    disallowed_keys = {"api_key", "secret", "token", "password", "auth"}
+    assert not any(k in disallowed_keys for k in data)
+
+    # Round-trip through from_dict
+    restored = EvaluatedEvidence.from_dict(data)
+    assert restored.url == item.url
+    assert restored.domain == item.domain
+    assert restored.authority_tier == AuthorityTier.HIGH
+    assert restored.source_type == SourceType.OFFICIAL_DOCS
+    assert restored.quality_signals == item.quality_signals
+    assert restored.rank_score == item.rank_score
+    assert restored.retained is True
+    assert restored.cross_domain_overlap_count == 2
+
+
+@pytest.mark.anyio
+async def test_tavily_executor_filters_promotional_and_prioritizes_authority() -> None:
+    mock_client = AsyncMock()
+    mock_client.search.return_value = {
+        "query": "Research consensus protocols",
+        "results": [
+            {
+                "title": "Special Deal - 50% Off Database Licenses",
+                "url": "https://promo-deals.com/buy-now?aff=affiliate_partner",
+                "content": "Buy now and save! Best price guarantee on database tools with our promo code.",
+            },
+            {
+                "title": "IETF RFC - State Machine Replication Protocol",
+                "url": "https://ietf.org/rfc/rfc9999.txt",
+                "content": "Standard specification for fault-tolerant consensus protocols and replicated state machines.",
+                "score": 0.88,
+            },
+            {
+                "title": "Independent Developer Blog on Consensus",
+                "url": "https://tech-notes.io/distributed-consensus",
+                "content": "Practical analysis of Paxos and Raft consensus protocols under latency and network partitions.",
+                "score": 0.75,
+            },
+            {
+                "title": "Duplicate Link to RFC",
+                "url": "https://ietf.org/rfc/rfc9999.txt",
+                "content": "Standard specification for fault-tolerant consensus protocols.",
+            },
+        ],
+    }
+
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_client)
+    task = TaskRequested.create("Research consensus protocols")
+
+    result = await executor.execute(task)
+
+    # 1. Output must contain only retained sources
+    assert "promo-deals.com" not in result.output
+    assert "Buy now" not in result.output
+    assert "ietf.org" in result.output
+    assert "tech-notes.io" in result.output
+
+    # 2. Output must format domain-quality indicators alongside URLs
+    assert "Authority: high (standards)" in result.output
+    assert "Domain: ietf.org" in result.output
+    assert "Domain: tech-notes.io" in result.output
+
+    # 3. High-authority source is prioritized as [1]
+    lines = result.output.split("\n")
+    source_lines = [l for l in lines if l.startswith(("[1]", "[2]"))]
+    assert "[1] IETF RFC" in source_lines[0]
+    assert "[2] Independent Developer Blog" in source_lines[1]
+
+    # 4. Structured sources are preserved on ResearchResult
+    assert len(result.sources) == 4
+    retained_sources = result.retained_sources
+    assert len(retained_sources) == 2
+    assert retained_sources[0].domain == "ietf.org"
+    assert retained_sources[0].authority_tier == AuthorityTier.HIGH
+
+    filtered_sources = [s for s in result.sources if not s.retained]
+    assert len(filtered_sources) == 2
+    reasons = {s.filter_reason for s in filtered_sources}
+    assert FilterReason.PROMOTIONAL in reasons
+    assert FilterReason.DUPLICATE in reasons
+
+
+@pytest.mark.anyio
+async def test_tavily_executor_all_sources_filtered_yields_explanatory_message() -> None:
+    mock_client = AsyncMock()
+    mock_client.search.return_value = {
+        "query": "Research best database",
+        "results": [
+            {
+                "title": "Affiliate Review Site",
+                "url": "https://spammydeals.com/best-databases?aff=partner_tag",
+                "content": "Order now with our discount code for maximum savings on databases.",
+            }
+        ],
+    }
+
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_client)
+    task = TaskRequested.create("Research best database")
+
+    result = await executor.execute(task)
+
+    assert "No verified research evidence passed quality criteria" in result.output
+    assert len(result.sources) == 1
+    assert result.sources[0].retained is False
+    assert result.sources[0].filter_reason == FilterReason.PROMOTIONAL
+
+
+@pytest.mark.anyio
+async def test_research_processor_preserves_sources_through_synthesis_and_saves_to_redis() -> None:
+    mock_tavily = AsyncMock()
+    mock_tavily.search.return_value = {
+        "query": "Compare Raft and Paxos",
+        "results": [
+            {
+                "title": "Raft Consensus Algorithm",
+                "url": "https://raft.github.io",
+                "content": "Raft is an understandable consensus algorithm designed as an alternative to Paxos.",
+                "score": 0.85,
+            },
+            {
+                "title": "Buy Raft License",
+                "url": "https://deals.example.com/buy-now?aff=test",
+                "content": "Special promo code for Raft book purchase.",
+            },
+        ],
+    }
+
+    mock_inference = AsyncMock()
+    mock_inference.synthesize.return_value = SynthesisResult(
+        question="Compare Raft and Paxos",
+        content="Key Findings:\n1. Raft uses leader election and replicated logs.\n\nSources:\n- https://raft.github.io",
+        evidence="Grounded evidence snippet",
+        provider="cloudflare",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        truncated=False,
+    )
+
+    fake_bus = FakeMessageBus()
+    fake_store = FakeResultStore()
+    executor = TavilyResearchExecutor(api_key="tvly-mock", client=mock_tavily)
+
+    processor = ResearchProcessor(
+        agent_id="research-agent-1",
+        bus=fake_bus,
+        executor=executor,
+        result_store=fake_store,
+        inference_provider=mock_inference,
+    )
+
+    task = TaskRequested.create("Compare Raft and Paxos")
+    await processor.run_once(task)
+
+    # 1. Synthesis only received evidence containing retained sources (no promotional content)
+    mock_inference.synthesize.assert_awaited_once()
+    evidence_sent_to_llm = mock_inference.synthesize.call_args[1]["evidence"]
+    assert "https://raft.github.io" in evidence_sent_to_llm
+    assert "deals.example.com" not in evidence_sent_to_llm
+    assert "Authority: " in evidence_sent_to_llm
+
+    # 2. ResultStore saved ResearchResult with output AND structured evaluated sources
+    assert task.task_id in fake_store.saved
+    saved_result = fake_store.saved[task.task_id]
+    assert "Key Findings:" in saved_result.output
+    assert len(saved_result.sources) == 2
+    assert len(saved_result.retained_sources) == 1
+    assert saved_result.retained_sources[0].domain == "raft.github.io"
+
+
+def test_task_result_contract_round_trip_with_sources() -> None:
+    sources = [
+        {
+            "url": "https://raft.github.io",
+            "domain": "raft.github.io",
+            "authority_tier": "high",
+            "source_type": "official_docs",
+            "quality_signals": ["official-documentation", "high-relevance"],
+            "rank_score": 0.88,
+            "retained": True,
+            "rationale": "Retained: High-authority official documentation.",
+        }
+    ]
+
+    original = TaskResult(
+        task_id="task-research-1",
+        output="Synthesized research findings",
+        status="completed",
+        acknowledged=True,
+        sources=sources,
+    )
+
+    serialized = original.to_json()
+    restored = TaskResult.from_json(serialized)
+
+    assert restored.task_id == original.task_id
+    assert restored.output == original.output
+    assert restored.status == original.status
+    assert restored.sources == sources
+
+
+def test_evidence_evaluator_uses_per_item_raw_score_in_phase_3_regardless_of_order() -> None:
+    evaluator = EvidenceEvaluator()
+    cand_high = CandidateEvidence(
+        url="https://alpha-site.com/consensus",
+        title="Consensus Overview Alpha",
+        content="Alpha lab findings on distributed consensus protocols and state replication.",
+        raw_score=0.95,
+    )
+    cand_low = CandidateEvidence(
+        url="https://beta-site.com/consensus",
+        title="Consensus Overview Beta",
+        content="Beta engineering analysis of distributed consensus protocols and cluster nodes.",
+        raw_score=0.10,
+    )
+
+    # In [cand_high, cand_low], cand_low is evaluated last in Phase 1
+    res_hl = evaluator.evaluate([cand_high, cand_low], query="distributed consensus protocols")
+    # In [cand_low, cand_high], cand_high is evaluated last in Phase 1
+    res_lh = evaluator.evaluate([cand_low, cand_high], query="distributed consensus protocols")
+
+    # Both items must be retained (distinct content)
+    assert len(res_hl) == 2
+    assert len(res_lh) == 2
+
+    # cand_high must have a higher rank_score than cand_low due to its own raw_score
+    item_high = next(r for r in res_hl if r.url == cand_high.url)
+    item_low = next(r for r in res_hl if r.url == cand_low.url)
+    assert item_high.rank_score > item_low.rank_score
+
+    # Crucially, evaluation must be strictly order-invariant (Phase 3 must not use stale loop variable)
+    assert [r.url for r in res_hl] == [r.url for r in res_lh]
+    assert [r.rank_score for r in res_hl] == [r.rank_score for r in res_lh]
+    assert res_hl[0].url == cand_high.url
+
+
+def test_evidence_evaluator_does_not_filter_legitimate_ref_query_params() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://github.com/kubernetes/kubernetes/blob/main/README.md?ref=badge_shield",
+            title="Kubernetes Readme",
+            content="Production-grade container orchestration and cluster management documentation.",
+        ),
+        CandidateEvidence(
+            url="https://stackoverflow.com/questions/12345/consensus?ref=hot",
+            title="StackOverflow Consensus Discussion",
+            content="Detailed community explanation of Raft leader election and split votes.",
+        ),
+        CandidateEvidence(
+            url="https://docs.python.org/3/library/asyncio.html?ref=sidebar",
+            title="Asyncio Documentation",
+            content="Official documentation for asynchronous tasks and event loops in Python.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="kubernetes consensus asyncio")
+    retained = [r for r in results if r.retained]
+    filtered = [r for r in results if not r.retained]
+
+    # All three legitimate sources with ?ref= must be retained (not flagged as promotional)
+    assert len(retained) == 3
+    assert len(filtered) == 0
+
+
+def test_evidence_evaluator_rejects_untrusted_docs_and_developer_subdomains_from_high_authority() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://docs.unknown-startup.xyz/api",
+            title="Startup API",
+            content="Overview of startup API endpoints for data storage.",
+        ),
+        CandidateEvidence(
+            url="https://developer.untrusted-example.com/guide",
+            title="Untrusted Developer Guide",
+            content="Developer guide for distributed database connections.",
+        ),
+        CandidateEvidence(
+            url="https://docs.python.org/3/library/sqlite3.html",
+            title="Python SQLite Documentation",
+            content="Official documentation for the sqlite3 module in standard library.",
+        ),
+        CandidateEvidence(
+            url="https://developer.mozilla.org/en-US/docs/Web/API",
+            title="MDN Web Docs API",
+            content="Official web standards documentation for browser APIs.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="api documentation distributed")
+
+    startup_res = next(r for r in results if r.domain == "docs.unknown-startup.xyz")
+    untrusted_res = next(r for r in results if r.domain == "developer.untrusted-example.com")
+    python_res = next(r for r in results if r.domain == "docs.python.org")
+    mdn_res = next(r for r in results if r.domain == "developer.mozilla.org")
+
+    # Untrusted subdomains must receive NEUTRAL authority (not elevated to HIGH)
+    assert startup_res.authority_tier == AuthorityTier.NEUTRAL
+    assert startup_res.source_type == SourceType.GENERAL_EDITORIAL
+    assert untrusted_res.authority_tier == AuthorityTier.NEUTRAL
+    assert untrusted_res.source_type == SourceType.GENERAL_EDITORIAL
+
+    # Explicit trusted official docs domains must still receive HIGH authority
+    assert python_res.authority_tier == AuthorityTier.HIGH
+    assert python_res.source_type == SourceType.OFFICIAL_DOCS
+    assert mdn_res.authority_tier == AuthorityTier.HIGH
+    assert mdn_res.source_type == SourceType.OFFICIAL_DOCS
+
+
+def test_evidence_evaluator_does_not_infer_recency_from_content_numbers() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://standards.org/rfc2025",
+            title="RFC 2025",
+            content="RFC 2025 specifies state machine replication protocols for clusters.",
+            published_date=None,
+        ),
+        CandidateEvidence(
+            url="https://network-guide.org/ports",
+            title="Port Numbers",
+            content="Port 2025 is reserved for consensus heartbeats across nodes.",
+            published_date=None,
+        ),
+        CandidateEvidence(
+            url="https://benchmarks.org/nodes",
+            title="Benchmark 2025 Nodes",
+            content="We benchmarked 2025 concurrent connections under peak cluster load.",
+            published_date=None,
+        ),
+        CandidateEvidence(
+            url="https://actual-date.org/paper",
+            title="Current Research Paper",
+            content="Discussion of state machine replication.",
+            published_date="2025-06-15",
+        ),
+        CandidateEvidence(
+            url="https://historical-date.org/paper",
+            title="Historical Research Paper",
+            content="Foundational Paxos consensus discussion.",
+            published_date="1998-05-01",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="state machine replication consensus")
+
+    rfc_res = next(r for r in results if "rfc2025" in r.url)
+    port_res = next(r for r in results if "ports" in r.url)
+    bench_res = next(r for r in results if "benchmarks" in r.url)
+    recent_res = next(r for r in results if "actual-date" in r.url)
+    hist_res = next(r for r in results if "historical-date" in r.url)
+
+    # Content-based numbers like RFC 2025, Port 2025 must NOT produce "recent"
+    assert rfc_res.recency_indicator == "unknown"
+    assert port_res.recency_indicator == "unknown"
+    assert bench_res.recency_indicator == "unknown"
+
+    # Explicit metadata must be parsed correctly
+    assert recent_res.recency_indicator == "recent"
+    assert hist_res.recency_indicator == "historical"
+
+
+def test_evidence_evaluator_does_not_elevate_unlisted_org_io_dev_tlds() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://unlisted-blog.org/consensus",
+            title="Unlisted Org Blog",
+            content="First distinct perspective on consensus protocols and state machine replication.",
+        ),
+        CandidateEvidence(
+            url="https://unlisted-project.io/consensus",
+            title="Unlisted IO Project",
+            content="Second distinct perspective on consensus protocols and network partitions.",
+        ),
+        CandidateEvidence(
+            url="https://unlisted-developer.dev/consensus",
+            title="Unlisted Dev Portfolio",
+            content="Third distinct perspective on distributed consensus implementations.",
+        ),
+        CandidateEvidence(
+            url="https://standard-blog.com/consensus",
+            title="Standard Com Blog",
+            content="Fourth distinct perspective on raft and paxos algorithms.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="consensus protocols state machine replication")
+
+    for r in results:
+        # None of these unlisted TLDs should be elevated to MEDIUM or TECHNICAL_REFERENCE
+        assert r.authority_tier == AuthorityTier.NEUTRAL
+        assert r.source_type == SourceType.GENERAL_EDITORIAL
+        assert "developer-web-tld" not in r.quality_signals
+
+
+def test_evidence_evaluator_compound_domain_diversity_capping() -> None:
+    evaluator = EvidenceEvaluator(max_per_root_domain=2)
+    candidates = [
+        # Two distinct .co.uk domains (must not be collapsed into "co.uk")
+        CandidateEvidence(
+            url="https://www.bbc.co.uk/news/technology-1",
+            title="BBC Tech Article 1",
+            content="UK national broadcaster reporting on distributed database consensus.",
+        ),
+        CandidateEvidence(
+            url="https://www.bbc.co.uk/news/technology-2",
+            title="BBC Tech Article 2",
+            content="UK national broadcaster reporting on distributed system consensus reliability.",
+        ),
+        CandidateEvidence(
+            url="https://www.bbc.co.uk/news/technology-3",
+            title="BBC Tech Article 3",
+            content="Third UK article on consensus protocols.",
+        ),
+        CandidateEvidence(
+            url="https://www.theguardian.co.uk/technology/article-1",
+            title="Guardian Article 1",
+            content="Separate UK newspaper reporting on distributed database consensus.",
+        ),
+        # Two distinct .ac.uk academic domains
+        CandidateEvidence(
+            url="https://research.ox.ac.uk/consensus-paper",
+            title="Oxford Consensus Research",
+            content="Oxford University research into replicated state machine consensus algorithms.",
+        ),
+        CandidateEvidence(
+            url="https://cl.cam.ac.uk/consensus-spec",
+            title="Cambridge Consensus Research",
+            content="Cambridge Computer Lab study on Paxos and Raft consensus performance.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="distributed database consensus")
+
+    retained = [r for r in results if r.retained]
+    filtered = [r for r in results if not r.retained]
+
+    # bbc.co.uk has 2 retained and 1 capped
+    bbc_retained = [r for r in retained if "bbc.co.uk" in r.domain]
+    assert len(bbc_retained) == 2
+
+    # theguardian.co.uk has its own independent cap slot and is retained
+    guardian_retained = [r for r in retained if "theguardian.co.uk" in r.domain]
+    assert len(guardian_retained) == 1
+
+    # ox.ac.uk and cam.ac.uk each have their own independent cap slots and are both retained
+    ox_retained = [r for r in retained if "ox.ac.uk" in r.domain]
+    cam_retained = [r for r in retained if "cam.ac.uk" in r.domain]
+    assert len(ox_retained) == 1
+    assert len(cam_retained) == 1
+
+    # The 3rd bbc.co.uk article was capped for exceeding max_per_root_domain
+    assert len(filtered) == 1
+    assert filtered[0].filter_reason == FilterReason.DOMAIN_CAP_EXCEEDED
+    assert "bbc.co.uk" in filtered[0].rationale
+
+
+def test_evaluated_evidence_from_dict_handles_unknown_enum_values_gracefully() -> None:
+    data = {
+        "url": "https://example.com/test",
+        "title": "Example",
+        "content": "Content snippet.",
+        "domain": "example.com",
+        "authority_tier": "unheard_of_authority",
+        "source_type": "alien_source_type",
+        "filter_reason": "unknown_filter_reason",
+    }
+
+    restored = EvaluatedEvidence.from_dict(data)
+    assert restored.authority_tier == AuthorityTier.NEUTRAL
+    assert restored.source_type == SourceType.UNKNOWN
+    assert restored.filter_reason is None
+
+
+def test_evaluated_evidence_from_dict_backward_compatible_with_corroboration_count_key() -> None:
+    data = {
+        "url": "https://example.com/test",
+        "title": "Example",
+        "content": "Content snippet.",
+        "domain": "example.com",
+        "corroboration_count": 4,
+    }
+
+    restored = EvaluatedEvidence.from_dict(data)
+    assert restored.cross_domain_overlap_count == 4
+
+
+def test_evidence_evaluator_preserves_conflicting_perspectives_without_forcing_consensus() -> None:
+    evaluator = EvidenceEvaluator()
+    candidates = [
+        CandidateEvidence(
+            url="https://pro-raft-research.org/study",
+            title="Why Raft is Preferable to Paxos",
+            content="Raft is superior for practical systems because leader election and log replication are understandable and maintainable.",
+        ),
+        CandidateEvidence(
+            url="https://pro-paxos-research.org/study",
+            title="Why Multi-Paxos Outperforms Raft",
+            content="Paxos is superior for high throughput systems because leader-less variants avoid leader bottleneck and minimize latency.",
+        ),
+    ]
+
+    results = evaluator.evaluate(candidates, query="raft versus paxos consensus superiority")
+
+    # Both conflicting viewpoints must be retained without filtering
+    retained = [r for r in results if r.retained]
+    assert len(retained) == 2
+    domains = {r.domain for r in retained}
+    assert "pro-raft-research.org" in domains
+    assert "pro-paxos-research.org" in domains
+
+
+def test_task_result_backward_compatibility_with_pre_issue_9_payload() -> None:
+    legacy_json = (
+        '{"task_id": "task-legacy-1", "output": "Legacy output without sources", '
+        '"status": "completed", "acknowledged": true}'
+    )
+
+    restored = TaskResult.from_json(legacy_json)
+    assert restored.task_id == "task-legacy-1"
+    assert restored.output == "Legacy output without sources"
+    assert restored.status == "completed"
+    assert restored.acknowledged is True
+    assert restored.sources is None
 
 

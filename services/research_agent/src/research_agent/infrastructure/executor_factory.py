@@ -1,6 +1,7 @@
 import os
 
 from research_agent.application.ports import ResearchExecutor
+from research_agent.domain.evaluator import EvidenceEvaluator
 from research_agent.infrastructure.stub_executor import StubResearchExecutor
 from research_agent.infrastructure.tavily_executor import TavilyResearchExecutor
 
@@ -8,6 +9,7 @@ from research_agent.infrastructure.tavily_executor import TavilyResearchExecutor
 def create_research_executor(
     name: str | None = None,
     api_key: str | None = None,
+    evaluator: EvidenceEvaluator | None = None,
 ) -> ResearchExecutor:
     """Instantiate a ResearchExecutor based on the provided name or RESEARCH_EXECUTOR env var.
 
@@ -28,9 +30,11 @@ def create_research_executor(
             raise ValueError(
                 "TAVILY_API_KEY environment variable is required when RESEARCH_EXECUTOR is 'tavily'"
             )
-        return TavilyResearchExecutor(api_key=resolved_key.strip())
+        return TavilyResearchExecutor(
+            api_key=resolved_key.strip(),
+            evaluator=evaluator,
+        )
 
     raise ValueError(
         f"Unsupported research executor: {raw_name!r}. Supported executors: ['stub', 'tavily']"
     )
-

@@ -8,6 +8,7 @@ class TaskResult:
     output: str
     status: str = "completed"
     acknowledged: bool = True
+    sources: list[dict[str, object]] | None = None
 
     def __post_init__(self) -> None:
         if not self.task_id.strip():
@@ -23,11 +24,17 @@ class TaskResult:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "TaskResult":
+        raw_sources = data.get("sources")
+        sources_list: list[dict[str, object]] | None = None
+        if isinstance(raw_sources, list):
+            sources_list = [s for s in raw_sources if isinstance(s, dict)]
+
         return cls(
             task_id=str(data["task_id"]),
             output=str(data["output"]),
             status=str(data.get("status", "completed")),
             acknowledged=bool(data.get("acknowledged", True)),
+            sources=sources_list,
         )
 
     @classmethod
