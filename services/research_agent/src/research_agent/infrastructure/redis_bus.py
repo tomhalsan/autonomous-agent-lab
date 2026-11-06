@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Coroutine
+from typing import Any
 
 import redis.asyncio as redis
 from agent_contracts import (
@@ -105,13 +106,15 @@ class RedisBus:
         await retry_with_backoff(_write)
 
     async def save(self, result: ResearchResult) -> None:
-        data = {
+        data: dict[str, Any] = {
             "task_id": result.task_id,
             "status": "completed",
             "output": result.output,
             "acknowledged": result.acknowledged,
             "truncated": result.truncated,
         }
+        if result.sources:
+            data["sources"] = [s.to_dict() for s in result.sources]
 
         async def _write():
             await self.client.set(f"task.result:{result.task_id}", json.dumps(data))

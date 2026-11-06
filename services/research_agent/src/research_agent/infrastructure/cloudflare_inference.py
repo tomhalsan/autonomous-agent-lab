@@ -18,11 +18,13 @@ SYSTEM_PROMPT = (
     "into a concise, factual, and well-structured answer.\n\n"
     "Strict instructions:\n"
     "1. Answer the research question directly and concisely.\n"
-    "2. Rely exclusively on the provided grounded evidence. Do not invent, extrapolate, or assume unsupported facts.\n"
+    "2. Rely exclusively on the provided grounded evidence. Do not invent, extrapolate, or assume unsupported facts. "
+    "Consider the source-quality indicators (e.g. authority tier, cross-domain keyword overlap) when evaluating evidence strength, "
+    "without assuming high-ranked sources are infallible. Treat keyword overlap across domains as a retrieval signal rather than factual proof or consensus agreement.\n"
     "3. Answer only the requested number of findings. Clearly identify key findings: include one concise explanation per finding, and include a short key finding per item only if space permits. Avoid adding extra findings beyond the requested count, and do not add an unrequested 'Additionally' section.\n"
     "4. Preserve and source relevant URLs from the evidence where available, finishing with a concise Sources section.\n"
     "5. If the provided evidence is insufficient, contradictory, or empty, explicitly state that the evidence "
-    "is insufficient to fully answer the question."
+    "is insufficient to fully answer the question, or represent competing perspectives rather than forcing consensus."
 )
 
 
@@ -120,7 +122,9 @@ class CloudflareInferenceProvider:
             "- Answer only the requested number of findings.\n"
             "- Include one concise explanation per finding (and a short key finding per item only if space permits).\n"
             "- Avoid adding extra findings beyond the requested count, and do not add an unrequested 'Additionally' section.\n"
-            "- Finish with a concise Sources section citing URLs from the evidence."
+            "- Finish with a concise Sources section citing URLs from the evidence.\n"
+            "- If evidence presents conflicting perspectives, articulate the disagreement rather than forcing consensus.\n"
+            "- Treat cross-domain keyword overlap as a retrieval signal; preserve conflicting claims rather than assuming consensus."
         )
         return {
             "messages": [
