@@ -4,6 +4,7 @@ from .ports import (
     EventPublisher,
     ResultReader,
     StateReader,
+    TaskDispatcher,
     TaskQueue,
 )
 from .queries import (
@@ -27,6 +28,7 @@ __all__ = [
     "ResultReader",
     "StateReader",
     "SubmitTask",
+    "TaskDispatcher",
     "TaskQueue",
 ]
 

@@ -13,6 +13,7 @@ from orchestrator.application.ports import (
     EventPublisher,
     ResultReader,
     StateReader,
+    TaskDispatcher,
     TaskQueue,
 )
 from orchestrator.application.queries import (
@@ -27,6 +28,7 @@ from orchestrator.domain.capability import (
     AgentCapability,
     CapabilityUnavailableError,
 )
+from orchestrator.domain.selection import CandidateSelectionPolicy
 from orchestrator.infrastructure.redis_adapter import RedisGateway
 
 
@@ -97,24 +99,28 @@ def create_app(
     settings: Settings | None = None,
     gateway: RedisGateway | None = None,
     task_queue: TaskQueue | None = None,
+    dispatcher: TaskDispatcher | None = None,
     state_reader: StateReader | None = None,
     result_reader: ResultReader | None = None,
     router: CapabilityRouter | None = None,
     candidate_finder: CandidateFinder | None = None,
     event_publisher: EventPublisher | None = None,
     enforce_availability: bool | None = None,
+    selection_policy: CandidateSelectionPolicy | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
 
     if (
         gateway is None
         and task_queue is None
+        and dispatcher is None
         and state_reader is None
         and result_reader is None
     ):
         gateway = RedisGateway(resolved_settings.redis_url)
 
     queue = task_queue or gateway
+    dispatch_client = dispatcher or (gateway if isinstance(gateway, TaskDispatcher) else None)
     reader = state_reader or gateway
     results = result_reader or gateway or NoOpResultReader()
     events_out = event_publisher or gateway
@@ -127,10 +133,12 @@ def create_app(
     find_candidates_query = resolved_finder or (FindCandidatesByCapability(reader) if reader else None)
 
     submit_task = SubmitTask(
-        queue,
+        queue=queue,
+        dispatcher=dispatch_client,
         router=router,
         candidate_finder=resolved_finder,
         events=events_out,
+        selection_policy=selection_policy,
     )
     get_agent_states = GetAgentStates(reader) if reader else None
     get_recent_events = GetRecentEvents(reader) if reader else None

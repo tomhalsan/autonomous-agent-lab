@@ -125,6 +125,8 @@ class FindCandidatesByCapability:
                         continue
                     sanitized_providers[k_str] = str(v)
 
+            raw_dispatch_target = entry.get("dispatch_target")
+
             candidates.append(
                 AgentCandidate(
                     agent_id=str(raw_agent_id).strip(),
@@ -133,6 +135,11 @@ class FindCandidatesByCapability:
                     execution_state=availability.execution_state,
                     availability=availability,
                     providers=sanitized_providers,
+                    dispatch_target=(
+                        str(raw_dispatch_target).strip()
+                        if raw_dispatch_target
+                        else None
+                    ),
                 )
             )
 

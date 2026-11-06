@@ -55,6 +55,7 @@ def make_candidate(
     capability: str,
     state: AgentAvailabilityState = AgentAvailabilityState.READY,
     execution_state: AgentExecutionState = AgentExecutionState.IDLE,
+    dispatch_target: str | None = None,
 ) -> AgentCandidate:
     now_str = datetime.now(UTC).isoformat()
     return AgentCandidate(
@@ -70,6 +71,7 @@ def make_candidate(
         ),
         agent_type="worker",
         execution_state=execution_state,
+        dispatch_target=dispatch_target or f"agent.tasks.{capability}",
     )
 
 
@@ -345,6 +347,7 @@ async def test_presentation_layer_successful_submission_returns_202_accepted() -
                 "capabilities": ["general"],
                 "state": "idle",
                 "updated_at": now_str,
+                "dispatch_target": "agent.tasks.general",
             }
         ]
     )

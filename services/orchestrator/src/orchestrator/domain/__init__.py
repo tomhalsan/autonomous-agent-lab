@@ -20,6 +20,7 @@ from .router import (
     DeterministicCapabilityRouter,
     ResearchIntentCategory,
 )
+from .selection import CandidateSelectionPolicy, DeterministicSelectionPolicy
 from .task import Task
 
 __all__ = [
@@ -32,8 +33,10 @@ __all__ = [
     "AgentCapabilityMetadata",
     "AgentExecutionState",
     "AgentHeartbeat",
+    "CandidateSelectionPolicy",
     "CapabilityUnavailableError",
     "DeterministicCapabilityRouter",
+    "DeterministicSelectionPolicy",
     "LivenessPolicy",
     "ResearchIntentCategory",
     "Task",

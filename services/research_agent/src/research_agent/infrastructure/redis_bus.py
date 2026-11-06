@@ -61,6 +61,8 @@ class RedisBus:
             "providers": json.dumps(metadata.providers),
             "version": str(metadata.version),
         }
+        if metadata.dispatch_target:
+            mapping["dispatch_target"] = metadata.dispatch_target
         for k, v in metadata.providers.items():
             mapping[k] = str(v)
 
