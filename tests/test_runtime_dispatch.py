@@ -436,7 +436,10 @@ async def test_dynamic_dispatch_does_not_depend_on_capability_queue_map() -> Non
     # Temporarily clear the static queue map to prove zero runtime dependency during dynamic dispatch
     with patch.dict(CAPABILITY_QUEUE_MAP, {}, clear=True):
         assert len(CAPABILITY_QUEUE_MAP) == 0
-        task = await submit_task.execute("Survey distributed tracing protocols")
+        task = await submit_task.execute(
+            "Survey distributed tracing protocols",
+            capability=AgentCapability.RESEARCH,
+        )
 
     assert len(queue.dispatches) == 1
     assert queue.dispatches[0][1] == target

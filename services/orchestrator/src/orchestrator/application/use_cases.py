@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from agent_contracts import AgentEvent, RoutingDecision, TaskRequested
 
+from orchestrator.domain.assessment import RoutingAssessment
 from orchestrator.domain.capability import AgentCapability, CapabilityUnavailableError
 from orchestrator.domain.router import DeterministicCapabilityRouter
 from orchestrator.domain.selection import (
@@ -11,6 +12,7 @@ from orchestrator.domain.selection import (
 from orchestrator.domain.task import Task
 
 from .ports import (
+    AssessingCapabilityRouter,
     CandidateFinder,
     CapabilityRouter,
     EventPublisher,
@@ -47,26 +49,45 @@ class SubmitTask:
         capability: AgentCapability | None = None,
     ) -> TaskRequested:
         task = Task(prompt=prompt)
-        resolved_capability = (
-            capability if capability is not None else self._router.route(task.prompt)
-        )
+        is_explicit_override = capability is not None
 
-        prompt_classification = (
-            resolved_capability.value
-            if not hasattr(self._router, "detect_intent")
-            else (
-                intent.value
-                if (intent := self._router.detect_intent(task.prompt)) is not None
-                else resolved_capability.value
-            )
-        )
+        if is_explicit_override:
+            resolved_capability = capability
+            if resolved_capability == AgentCapability.GENERAL:
+                prompt_classification = resolved_capability.value
+            elif hasattr(self._router, "detect_intent") and (intent := self._router.detect_intent(task.prompt)) is not None:
+                prompt_classification = intent.value
+            else:
+                prompt_classification = resolved_capability.value
+        elif isinstance(self._router, AssessingCapabilityRouter):
+            res = self._router.assess(task.prompt)
+            if not isinstance(res, RoutingAssessment):
+                raise TypeError(
+                    f"Router {type(self._router).__name__}.assess() must return RoutingAssessment, got {type(res).__name__}"
+                )
+            resolved_capability = res.provisional_capability
+            if resolved_capability == AgentCapability.GENERAL:
+                prompt_classification = resolved_capability.value
+            elif hasattr(self._router, "detect_intent") and (intent := self._router.detect_intent(task.prompt)) is not None:
+                prompt_classification = intent.value
+            else:
+                prompt_classification = resolved_capability.value
+        else:
+            resolved_capability = self._router.route(task.prompt)
+            if resolved_capability == AgentCapability.GENERAL:
+                prompt_classification = resolved_capability.value
+            elif hasattr(self._router, "detect_intent") and (intent := self._router.detect_intent(task.prompt)) is not None:
+                prompt_classification = intent.value
+            else:
+                prompt_classification = resolved_capability.value
 
         if self._candidate_finder is not None:
             candidates = await self._candidate_finder.execute(resolved_capability)
             if not candidates:
                 rejection_task_id = str(uuid4())
+                override_provenance = " (explicit capability override)" if is_explicit_override else ""
                 rejection_message = (
-                    f"No eligible agent is currently available for capability '{resolved_capability}'"
+                    f"No eligible agent is currently available for capability '{resolved_capability}'{override_provenance}"
                 )
 
                 decision = RoutingDecision(
@@ -133,9 +154,11 @@ class SubmitTask:
             policy_name = getattr(
                 self._selection_policy, "__class__", type(self._selection_policy)
             ).__name__
+            override_provenance = " (explicit capability override)" if is_explicit_override else ""
             rationale = (
                 f"Selected agent '{selected_candidate.agent_id}' targeting '{clean_target}' "
                 f"from {len(candidates)} candidate(s) using {policy_name} for capability '{resolved_capability.value}'"
+                f"{override_provenance}"
             )
 
             decision = RoutingDecision(

@@ -104,7 +104,10 @@ async def test_research_submission_succeeds_when_eligible_research_candidate_exi
     events = FakeEventPublisher()
     submit_task = SubmitTask(queue, candidate_finder=finder, events=events)
 
-    task = await submit_task.execute("Research quantum key distribution breakthroughs")
+    task = await submit_task.execute(
+        "Research quantum key distribution breakthroughs",
+        capability=AgentCapability.RESEARCH,
+    )
 
     assert isinstance(task, TaskRequested)
     assert len(queue.enqueued) == 1
@@ -125,7 +128,8 @@ async def test_automatically_resolved_capability_is_checked_for_availability() -
     submit_task = SubmitTask(queue, candidate_finder=finder, events=events)
 
     with pytest.raises(CapabilityUnavailableError) as exc_info:
-        await submit_task.execute("Research quantum key distribution breakthroughs")
+        # Phase B requires external retrieval/freshness/source evidence rather than weak verbs alone
+        await submit_task.execute("Research the latest quantum key distribution breakthroughs")
 
     assert exc_info.value.capability == AgentCapability.RESEARCH
     assert "research" in str(exc_info.value.message).lower()
@@ -281,7 +285,10 @@ async def test_operational_unavailable_capability_event_is_emitted() -> None:
     submit_task = SubmitTask(queue, candidate_finder=finder, events=events)
 
     with pytest.raises(CapabilityUnavailableError) as exc_info:
-        await submit_task.execute("Research test prompt")
+        await submit_task.execute(
+            "Research test prompt",
+            capability=AgentCapability.RESEARCH,
+        )
 
     err = exc_info.value
     assert len(events.published) == 1

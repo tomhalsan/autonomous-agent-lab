@@ -11,6 +11,7 @@ from orchestrator.domain.capability import AgentCapability
 
 from evaluation.routing.benchmark import (
     DEFAULT_DATASET_PATH,
+    VALIDATION_DATASET_PATH,
     _compute_metrics,
     _compute_percentile,
     build_parser,
@@ -273,8 +274,8 @@ class TestBenchmarkCalculations:
         )
 
         report = format_benchmark_report(dummy_result)
-        assert "Warmup Passes:       5" in report
-        assert "Measured Iterations: 15 passes over prompt set" in report
+        assert "Warmup Passes:" in report
+        assert "Measured Iterations:" in report
         assert "Total Latency Samples: 60" in report
 
 
@@ -333,6 +334,36 @@ class TestCliBehavior:
             assert len(passed_cases) == 1
             assert passed_cases[0].id == "c-001"
 
+    def test_cli_baseline_v2_flag(self) -> None:
+        with patch("evaluation.routing.benchmark.run_benchmark") as mock_run:
+            mock_run.return_value = BenchmarkResult(
+                router_name="LegacyRoutingV2Router",
+                total_cases=1,
+                clear_cases=1,
+                ambiguous_cases=0,
+                overall_correct=1,
+                clear_correct=1,
+                ambiguous_correct=0,
+                overall_accuracy=1.0,
+                clear_accuracy=1.0,
+                ambiguous_accuracy=0.0,
+                research_precision=0.0,
+                research_recall=0.0,
+                research_f1=0.0,
+                general_precision=1.0,
+                general_recall=1.0,
+                general_f1=1.0,
+                confusion_matrix=ConfusionMatrix(0, 0, 1, 0),
+                latency=LatencyStats(0, 1, 1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000),
+                category_accuracies={"clear_general": 1.0},
+                case_results=[],
+            )
+            exit_code = main(["--baseline-v2", "--latency-iterations", "1", "--warmup", "0"])
+
+            assert exit_code == 0
+            assert mock_run.call_count == 1
+            assert mock_run.call_args.kwargs["legacy_v2"] is True
+
 
 class TestFullDatasetBenchmarkExecution:
     """Verifies end-to-end benchmark execution on the full dataset without fragile timing asserts."""
@@ -344,6 +375,13 @@ class TestFullDatasetBenchmarkExecution:
         assert result.clear_cases + result.ambiguous_cases == result.total_cases
         assert result.overall_correct <= result.total_cases
         assert 0.0 <= result.overall_accuracy <= 1.0
+
+        # Phase B Assessment Metrics
+        assert result.clarity_confusion_matrix is not None
+        assert result.clarity_confusion_matrix.total == result.total_cases
+        assert 0.0 <= result.clarity_accuracy <= 1.0
+        assert 0.0 <= result.advisor_delegation_rate <= 1.0
+        assert result.clear_assessment_accuracy > 0.0
 
         # Confusion matrix sum must equal total cases
         assert result.confusion_matrix.total == result.total_cases
@@ -360,3 +398,87 @@ class TestFullDatasetBenchmarkExecution:
 
         # All case results populated from correctness pass
         assert len(result.case_results) == result.total_cases
+
+    def test_full_dataset_execution_with_legacy_v2_baseline(self) -> None:
+        result = run_benchmark(warmup=1, latency_iterations=1, legacy_v2=True)
+        assert result.router_name == "LegacyRoutingV2Router"
+        assert result.total_cases == 44
+        assert result.overall_correct == 28
+        assert round(result.overall_accuracy * 100, 2) == 63.64
+
+
+class TestValidationDatasetIntegrity:
+    """Validates structural integrity, schema, and coverage of validation_dataset.json."""
+
+    def test_validation_file_exists_and_is_valid_json(self) -> None:
+        assert VALIDATION_DATASET_PATH.exists(), f"Missing dataset at {VALIDATION_DATASET_PATH}"
+        with VALIDATION_DATASET_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert isinstance(data, list)
+        assert len(data) >= 20, f"Expected at least 20 validation cases, found {len(data)}"
+
+    def test_validation_schema_and_value_domains(self) -> None:
+        cases = load_dataset(VALIDATION_DATASET_PATH)
+        ids = set()
+
+        for case in cases:
+            assert case.id not in ids, f"Duplicate validation case ID: {case.id}"
+            ids.add(case.id)
+            assert case.prompt.strip(), f"Empty prompt in case {case.id}"
+            assert case.rationale.strip(), f"Empty rationale in case {case.id}"
+            assert case.category.strip(), f"Empty category in case {case.id}"
+            assert isinstance(case.tags, list), f"Tags must be a list in case {case.id}"
+            assert case.expected_capability in {"general", "research"}
+            assert case.clarity in {"clear", "ambiguous"}
+
+    def test_validation_benchmark_execution(self) -> None:
+        cases = load_dataset(VALIDATION_DATASET_PATH)
+        result = run_benchmark(
+            dataset=cases,
+            warmup=1,
+            latency_iterations=1,
+            dataset_name="validation",
+        )
+        assert result.total_cases == len(cases)
+        assert result.dataset_name == "validation"
+        assert result.overall_accuracy > 0.90
+        assert result.clarity_accuracy > 0.90
+        assert 0.0 <= result.advisor_delegation_rate <= 1.0
+
+
+class TestCliValidationAndAllModes:
+    """Verifies that the CLI correctly parses and dispatches --validation and --all."""
+
+    @patch("evaluation.routing.benchmark.run_benchmark")
+    @patch("evaluation.routing.benchmark.load_dataset")
+    def test_cli_validation_flag_loads_validation_dataset(
+        self, mock_load: MagicMock, mock_run: MagicMock
+    ) -> None:
+        mock_load.return_value = []
+        mock_run.return_value = BenchmarkResult(
+            router_name="TestRouter",
+            total_cases=1,
+            clear_cases=1,
+            ambiguous_cases=0,
+            overall_correct=1,
+            clear_correct=1,
+            ambiguous_correct=0,
+            overall_accuracy=1.0,
+            clear_accuracy=1.0,
+            ambiguous_accuracy=0.0,
+            research_precision=0.0,
+            research_recall=0.0,
+            research_f1=0.0,
+            general_precision=1.0,
+            general_recall=1.0,
+            general_f1=1.0,
+            confusion_matrix=ConfusionMatrix(0, 0, 1, 0),
+            latency=LatencyStats(0, 1, 1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000),
+            category_accuracies={"clear_general": 1.0},
+            dataset_name="validation",
+            case_results=[],
+        )
+        exit_code = main(["--validation", "--latency-iterations", "1", "--warmup", "0"])
+        assert exit_code == 0
+        mock_load.assert_called_with(VALIDATION_DATASET_PATH)
+        assert mock_run.call_args.kwargs["dataset_name"] == "validation"

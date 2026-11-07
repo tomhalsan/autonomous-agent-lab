@@ -1,0 +1,308 @@
+[
+  {
+    "id": "val-001",
+    "prompt": "Compare the two configuration files below and highlight port conflicts:\n[server]\nport = 8080\nhost = 127.0.0.1\n\n[server]\nport = 8080\nhost = 0.0.0.0",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Supplied configuration files provide all data locally; the weak verb 'compare' operates solely on local artifacts without external research.",
+    "category": "weak_verb_supplied_artifact",
+    "tags": ["weak_verb", "supplied_artifact", "configuration"]
+  },
+  {
+    "id": "val-002",
+    "prompt": "Assess whether this JSON payload matches our user schema:\n{\"id\": 42, \"name\": \"Alice\", \"email\": \"alice@example.com\"}",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Supplied JSON structure contains all evaluation data; weak verb 'assess' evaluates local structured data.",
+    "category": "weak_verb_supplied_artifact",
+    "tags": ["weak_verb", "supplied_artifact", "json"]
+  },
+  {
+    "id": "val-003",
+    "prompt": "Research this function and explain why the loop never terminates:\ndef run_worker():\n    while True:\n        pass",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Weak verb 'research' is applied to local code inspection and loop debugging; no external retrieval is required.",
+    "category": "weak_verb_supplied_artifact",
+    "tags": ["weak_verb", "supplied_code", "debugging"]
+  },
+  {
+    "id": "val-004",
+    "prompt": "Evaluate the time complexity of this recursive implementation:\ndef fib(n):\n    return n if n <= 1 else fib(n-1) + fib(n-2)",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Algorithmic complexity evaluation on supplied Python code; self-contained local analysis.",
+    "category": "weak_verb_supplied_artifact",
+    "tags": ["weak_verb", "supplied_code", "complexity"]
+  },
+  {
+    "id": "val-005",
+    "prompt": "Review today's AWS Lambda pricing changes and compute our expected monthly cost variance.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Explicit temporal freshness ('today's AWS Lambda pricing') queries volatile cloud vendor pricing requiring live retrieval.",
+    "category": "freshness_current_info",
+    "tags": ["freshness", "pricing", "cloud"]
+  },
+  {
+    "id": "val-006",
+    "prompt": "Who is currently serving as the Chancellor of Germany?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Queries current public-office holder; volatile political fact requiring up-to-date retrieval.",
+    "category": "freshness_current_info",
+    "tags": ["freshness", "office_holder"]
+  },
+  {
+    "id": "val-007",
+    "prompt": "What is the current status of the Python 3.14 free-threaded release?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Inquires about current status of an upcoming software release; dynamic external release state.",
+    "category": "freshness_current_info",
+    "tags": ["freshness", "release_status", "python"]
+  },
+  {
+    "id": "val-008",
+    "prompt": "What are today's spot instance pricing rates for g5.2xlarge in us-east-1?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Queries volatile today's cloud infrastructure pricing requiring real-time external data.",
+    "category": "freshness_current_info",
+    "tags": ["freshness", "pricing", "aws"]
+  },
+  {
+    "id": "val-009",
+    "prompt": "What version of Redis is currently supported by the latest Ubuntu LTS release?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Queries current package repository version support in the latest LTS operating system distribution.",
+    "category": "supported_versions_compatibility",
+    "tags": ["freshness", "version_support", "linux"]
+  },
+  {
+    "id": "val-010",
+    "prompt": "Is CUDA 12.4 supported in the latest release of PyTorch?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Inquires about compatibility matrix in the latest release of an external machine learning framework.",
+    "category": "supported_versions_compatibility",
+    "tags": ["freshness", "compatibility", "pytorch"]
+  },
+  {
+    "id": "val-011",
+    "prompt": "What are the current pricing tiers and storage quotas for Cloudflare R2?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Queries current vendor pricing tiers and storage quotas subject to policy changes.",
+    "category": "changing_prices_availability",
+    "tags": ["freshness", "pricing", "cloudflare"]
+  },
+  {
+    "id": "val-012",
+    "prompt": "Find recent service outages affecting GitHub Actions runners this month.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Queries dynamic service incident reports and recent outage records within a specific time boundary.",
+    "category": "changing_prices_availability",
+    "tags": ["freshness", "outages", "github"]
+  },
+  {
+    "id": "val-013",
+    "prompt": "Summarize the incident report and compare its findings with current NIST guidance.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Comparing against current external regulatory standards body guidance (NIST) requires external research.",
+    "category": "external_standards_guidance",
+    "tags": ["freshness", "standards", "nist"]
+  },
+  {
+    "id": "val-014",
+    "prompt": "Verify whether our encryption settings comply with current ISO 27001 standards.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Compliance check against current version of external security standards framework (ISO 27001).",
+    "category": "external_standards_guidance",
+    "tags": ["freshness", "standards", "iso"]
+  },
+  {
+    "id": "val-015",
+    "prompt": "Explain key advances in database indexing theory over the last several decades.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Historical survey of established computer science theoretical advances; fully answerable from foundation training knowledge.",
+    "category": "historical_established_advances",
+    "tags": ["historical", "conceptual", "databases"]
+  },
+  {
+    "id": "val-016",
+    "prompt": "Describe the historical evolution of relational database normal forms.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Historical overview of established database theory (1NF to 5NF); closed conceptual knowledge.",
+    "category": "historical_established_advances",
+    "tags": ["historical", "conceptual", "databases"]
+  },
+  {
+    "id": "val-017",
+    "prompt": "Check current_user permissions in this active session and verify token expiry.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "The word 'current' refers strictly to local runtime session variable 'current_user', not external temporal freshness.",
+    "category": "negative_current_program_state",
+    "tags": ["negative_freshness", "program_state", "auth"]
+  },
+  {
+    "id": "val-018",
+    "prompt": "Calculate the voltage drop across a 15-ohm resistor given a current of 2.5A.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "The word 'current' refers to electrical amperage in Ohm's law calculation; basic physics/math task.",
+    "category": "negative_current_electrical",
+    "tags": ["negative_freshness", "electrical_current", "physics"]
+  },
+  {
+    "id": "val-019",
+    "prompt": "In the code below, what is the value of current_node when the traversal finishes:\ncurrent_node = root\nwhile current_node.next:\n    current_node = current_node.next",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "'current_node' is a local loop variable in supplied Python code; negative freshness guard applies.",
+    "category": "negative_current_program_state",
+    "tags": ["negative_freshness", "program_state", "code"]
+  },
+  {
+    "id": "val-020",
+    "prompt": "Explain the difference between direct current (DC) and alternating current (AC) in power transmission.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "'current' refers to electric current (AC/DC); fundamental physical science explanation.",
+    "category": "negative_current_electrical",
+    "tags": ["negative_freshness", "electrical_current", "physics"]
+  },
+  {
+    "id": "val-021",
+    "prompt": "Tell me about quantum computing advancements.",
+    "expected_capability": "research",
+    "clarity": "ambiguous",
+    "rationale": "Open-ended inquiry into 'advancements' that can be answered from static conceptual history or active research papers.",
+    "category": "vague_insufficient_evidence",
+    "tags": ["ambiguous", "advancements", "quantum"]
+  },
+  {
+    "id": "val-022",
+    "prompt": "Should we use Kafka or RabbitMQ for our event-driven system?",
+    "expected_capability": "general",
+    "clarity": "ambiguous",
+    "rationale": "Architectural choice inquiry without explicit operational constraints or benchmark requirements; borderline intent.",
+    "category": "vague_insufficient_evidence",
+    "tags": ["ambiguous", "technology_selection", "architecture"]
+  },
+  {
+    "id": "val-023",
+    "prompt": "What are best practices for securing Kubernetes clusters?",
+    "expected_capability": "general",
+    "clarity": "ambiguous",
+    "rationale": "Broad best-practices question answerable from established guidance or recent security advisories.",
+    "category": "vague_insufficient_evidence",
+    "tags": ["ambiguous", "best_practices", "kubernetes"]
+  },
+  {
+    "id": "val-024",
+    "prompt": "How is artificial intelligence impacting healthcare jobs right now?",
+    "expected_capability": "research",
+    "clarity": "ambiguous",
+    "rationale": "Inquires about active societal/economic transformation 'right now'; borderline freshness without specific metrics.",
+    "category": "vague_insufficient_evidence",
+    "tags": ["ambiguous", "freshness", "societal_impact"]
+  },
+  {
+    "id": "val-025",
+    "prompt": "Evaluate our current database configuration against recent cloud vendor benchmark recommendations:\n[postgres]\nmax_connections = 100\nshared_buffers = 128MB",
+    "expected_capability": "research",
+    "clarity": "ambiguous",
+    "rationale": "Combines supplied local configuration artifact with external recent cloud vendor benchmark comparison.",
+    "category": "mixed_supplied_and_external",
+    "tags": ["ambiguous", "conflicting_signals", "mixed_task"]
+  },
+  {
+    "id": "val-026",
+    "prompt": "Find the latest CVE vulnerabilities affecting libssl3 and write a Bash audit script to detect vulnerable packages.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Compound task requiring external CVE discovery before generating a local audit script; retrieval is a prerequisite.",
+    "category": "compound_retrieval_prerequisite",
+    "tags": ["compound_task", "cve", "script_generation"]
+  },
+  {
+    "id": "val-027",
+    "prompt": "Search for the latest breaking changes in FastAPI 0.115 and create a migration checklist.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Compound task: external retrieval of latest breaking release changes is required before authoring the checklist.",
+    "category": "compound_retrieval_prerequisite",
+    "tags": ["compound_task", "breaking_changes", "fastapi"]
+  },
+  {
+    "id": "val-028",
+    "prompt": "Benchmark redis throughput across different network interfaces.",
+    "expected_capability": "general",
+    "clarity": "ambiguous",
+    "rationale": "Weak verb 'benchmark' without external retrieval cues or supplied artifacts; defaults provisionally to general.",
+    "category": "weak_verb_alone",
+    "tags": ["weak_verb", "ambiguous", "redis"]
+  },
+  {
+    "id": "val-029",
+    "prompt": "Survey available vector databases for hybrid search.",
+    "expected_capability": "general",
+    "clarity": "ambiguous",
+    "rationale": "Weak verb 'survey' without explicit temporal bounds or citations; defaults provisionally to general.",
+    "category": "weak_verb_alone",
+    "tags": ["weak_verb", "ambiguous", "databases"]
+  },
+  {
+    "id": "val-030",
+    "prompt": "Analyze data portability options across multiple cloud providers.",
+    "expected_capability": "general",
+    "clarity": "ambiguous",
+    "rationale": "Weak verb 'analyze' on broad architectural topic without external recency markers; defaults provisionally to general.",
+    "category": "weak_verb_alone",
+    "tags": ["weak_verb", "ambiguous", "cloud"]
+  },
+  {
+    "id": "val-031",
+    "prompt": "Install the latest version of numpy.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Package installation and upgrade commands specifying 'latest version' represent local environment management, not external research retrieval.",
+    "category": "package_management_installation",
+    "tags": ["package_management", "install", "environment"]
+  },
+  {
+    "id": "val-032",
+    "prompt": "I started learning Rust this week.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Temporal phrase 'this week' qualifies personal user activity rather than external real-world research inquiries; clear general conversational context.",
+    "category": "personal_activity_temporal",
+    "tags": ["personal_activity", "conversational", "general"]
+  },
+  {
+    "id": "val-033",
+    "prompt": "Find evidence of memory leaks in this heap dump:\nClass Name | Objects | Shallow Heap | Retained Heap\njava.lang.ref.Finalizer | 148203 | 4742496 | 134819232\norg.apache.catalina.session.StandardSession | 82104 | 5254656 | 98342112",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "The phrase 'find evidence' applies strictly to diagnostic inspection of a supplied local heap dump artifact rather than external literature retrieval.",
+    "category": "diagnostic_evidence_supplied_artifact",
+    "tags": ["diagnostic", "heap_dump", "supplied_artifact"]
+  },
+  {
+    "id": "val-034",
+    "prompt": "How many people are alive on Earth right now?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Inquires about volatile global demographic statistics ('alive on Earth right now') requiring real-time external factual retrieval.",
+    "category": "volatile_demographic_freshness",
+    "tags": ["freshness", "population", "demographics"]
+  }
+]

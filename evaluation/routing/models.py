@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from orchestrator.domain.assessment import RoutingAssessment
 
 CapabilityType = Literal["general", "research"]
 ClarityType = Literal["clear", "ambiguous"]
@@ -24,15 +27,28 @@ class EvaluationCase:
 
 @dataclass(frozen=True)
 class CaseResult:
-    """Result of evaluating a single test case for correctness."""
+    """Result of evaluating a single test case for correctness and clarity."""
 
     case: EvaluationCase
     actual_capability: CapabilityType
     matched_rules: tuple[str, ...] = ()
+    assessment: RoutingAssessment | None = None
 
     @property
     def is_correct(self) -> bool:
         return self.actual_capability == self.case.expected_capability
+
+    @property
+    def actual_clarity(self) -> ClarityType | None:
+        if self.assessment is not None:
+            return "clear" if str(self.assessment.clarity).lower() == "clear" else "ambiguous"
+        return None
+
+    @property
+    def is_clarity_correct(self) -> bool:
+        if self.actual_clarity is not None:
+            return self.actual_clarity == self.case.clarity
+        return False
 
 
 @dataclass(frozen=True)
@@ -51,6 +67,25 @@ class ConfusionMatrix:
             + self.false_research
             + self.true_general
             + self.false_general
+        )
+
+
+@dataclass(frozen=True)
+class ClarityConfusionMatrix:
+    """Confusion matrix for clarity determination (Ambiguous as Positive class)."""
+
+    true_ambiguous: int
+    false_ambiguous: int  # Assessed ambiguous, expected clear
+    true_clear: int
+    false_clear: int  # Assessed clear, expected ambiguous
+
+    @property
+    def total(self) -> int:
+        return (
+            self.true_ambiguous
+            + self.false_ambiguous
+            + self.true_clear
+            + self.false_clear
         )
 
 
@@ -94,4 +129,13 @@ class BenchmarkResult:
     confusion_matrix: ConfusionMatrix
     latency: LatencyStats
     category_accuracies: dict[str, float]
+    dataset_name: str = "development"
     case_results: list[CaseResult] = field(default_factory=list)
+    # Phase B assessment and ambiguity metrics
+    clarity_correct: int = 0
+    clarity_accuracy: float = 0.0
+    advisor_delegation_count: int = 0
+    advisor_delegation_rate: float = 0.0
+    clear_assessment_accuracy: float = 0.0
+    ambiguous_assessment_accuracy: float = 0.0
+    clarity_confusion_matrix: ClarityConfusionMatrix | None = None

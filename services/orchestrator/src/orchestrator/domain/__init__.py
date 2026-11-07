@@ -1,3 +1,10 @@
+from .assessment import (
+    RoutingAssessment,
+    RoutingClarity,
+    RoutingSignal,
+    RoutingSignalType,
+    SignalStrength,
+)
 from .availability import (
     AgentAvailability,
     AgentAvailabilityState,
@@ -39,6 +46,11 @@ __all__ = [
     "DeterministicSelectionPolicy",
     "LivenessPolicy",
     "ResearchIntentCategory",
+    "RoutingAssessment",
+    "RoutingClarity",
+    "RoutingSignal",
+    "RoutingSignalType",
+    "SignalStrength",
     "Task",
     "evaluate_agent_record",
     "evaluate_availability",
