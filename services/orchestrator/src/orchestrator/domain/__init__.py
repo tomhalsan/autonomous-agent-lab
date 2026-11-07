@@ -1,3 +1,10 @@
+from .advisor import (
+    AdvisorError,
+    AdvisorExecutionError,
+    AdvisorRecommendation,
+    AdvisorTimeoutError,
+    AdvisorUnavailableError,
+)
 from .assessment import (
     RoutingAssessment,
     RoutingClarity,
@@ -33,6 +40,11 @@ from .task import Task
 __all__ = [
     "DEFAULT_RESEARCH_KEYWORDS",
     "RESEARCH_INTENT_PATTERNS",
+    "AdvisorError",
+    "AdvisorExecutionError",
+    "AdvisorRecommendation",
+    "AdvisorTimeoutError",
+    "AdvisorUnavailableError",
     "AgentAvailability",
     "AgentAvailabilityState",
     "AgentCandidate",
