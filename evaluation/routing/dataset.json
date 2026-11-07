@@ -1,0 +1,398 @@
+[
+  {
+    "id": "eval-001",
+    "prompt": "What is 15% of 850?",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Direct arithmetic computation that does not require external evidence or live web retrieval.",
+    "category": "clear_general",
+    "tags": ["math", "calculation", "deterministic"]
+  },
+  {
+    "id": "eval-002",
+    "prompt": "How do you reverse a string in Python using slicing?",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Standard Python language idiom contained entirely within general programming knowledge.",
+    "category": "clear_general",
+    "tags": ["python", "syntax", "idiom"]
+  },
+  {
+    "id": "eval-003",
+    "prompt": "Translate 'Good morning, have a wonderful day' into French, Spanish, and German.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Standard multi-language translation without requiring live context or retrieval.",
+    "category": "clear_general",
+    "tags": ["translation", "language"]
+  },
+  {
+    "id": "eval-004",
+    "prompt": "What is the boiling point of water in Celsius and Fahrenheit at standard atmospheric pressure?",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Static physical constant well-established in general knowledge.",
+    "category": "clear_general",
+    "tags": ["science", "fact", "static"]
+  },
+  {
+    "id": "eval-005",
+    "prompt": "Write a binary search algorithm in TypeScript with proper type annotations.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Textbook algorithm implementation requiring general coding capabilities without external research.",
+    "category": "clear_general",
+    "tags": ["typescript", "algorithm", "coding"]
+  },
+  {
+    "id": "eval-006",
+    "prompt": "What are the latest pricing tiers for Claude 3.5 Sonnet on Anthropic's API?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Requests live pricing information from an external provider that changes over time.",
+    "category": "clear_research",
+    "tags": ["pricing", "external_api", "freshness"]
+  },
+  {
+    "id": "eval-007",
+    "prompt": "Find recent developments from the latest UN Climate Conference.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Inquires about recent real-world events and diplomatic proceedings requiring external search.",
+    "category": "clear_research",
+    "tags": ["news", "events", "recency"]
+  },
+  {
+    "id": "eval-008",
+    "prompt": "Compare the current features and pricing of Supabase vs Neon serverless Postgres as of today.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Competitive market analysis requiring up-to-date pricing and feature matrices from live vendor sources.",
+    "category": "clear_research",
+    "tags": ["comparison", "cloud", "pricing", "recency"]
+  },
+  {
+    "id": "eval-009",
+    "prompt": "What new features and breaking changes were added in the latest release of FastAPI?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Explicitly asks for changelog information from the latest release of a software library.",
+    "category": "clear_research",
+    "tags": ["software_release", "changelog", "recency"]
+  },
+  {
+    "id": "eval-010",
+    "prompt": "What were OpenAI's major product announcements at their most recent developer day?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Requires retrieval of recent industry announcements and keynote highlights.",
+    "category": "clear_research",
+    "tags": ["industry_news", "announcements", "recency"]
+  },
+  {
+    "id": "eval-011",
+    "prompt": "Should I use PostgreSQL or MongoDB for my new web application?",
+    "expected_capability": "general",
+    "clarity": "ambiguous",
+    "rationale": "Architectural trade-off consultation based on relational vs document data models. General software engineering knowledge suffices unless current vendor-specific pricing or features are queried.",
+    "category": "ambiguous_borderline",
+    "tags": ["architecture", "database", "tradeoffs"]
+  },
+  {
+    "id": "eval-012",
+    "prompt": "What are the best practices for securing a REST API?",
+    "expected_capability": "general",
+    "clarity": "ambiguous",
+    "rationale": "Established web security fundamentals (OAuth, rate limiting, HTTPS, input validation) do not require live external research, though recent vulnerabilities could be investigated.",
+    "category": "ambiguous_borderline",
+    "tags": ["security", "best_practices", "api"]
+  },
+  {
+    "id": "eval-013",
+    "prompt": "Tell me about quantum computing advancements.",
+    "expected_capability": "research",
+    "clarity": "ambiguous",
+    "rationale": "Both a general historical overview and a current research interpretation are plausible. A general agent can explain foundational quantum concepts and historic milestones, whereas a research agent can retrieve recent experimental breakthroughs, qubit scaling milestones, and active industry roadmaps. Under Tiny Robot routing policy, prompts requesting 'advancements' without an explicit historical constraint are deliberately routed to Research to prioritize recent developments, representing a deliberate policy choice for an ambiguous prompt.",
+    "category": "ambiguous_borderline",
+    "tags": ["science", "emerging_tech", "advancements"]
+  },
+  {
+    "id": "eval-014",
+    "prompt": "How is AI impacting software engineering jobs right now?",
+    "expected_capability": "research",
+    "clarity": "ambiguous",
+    "rationale": "Temporal qualifier 'right now' combined with market/employment trends points to current market studies and industry reports.",
+    "category": "ambiguous_borderline",
+    "tags": ["employment", "market_trends", "recency"]
+  },
+  {
+    "id": "eval-015",
+    "prompt": "Evaluate the pros and cons of microservices vs monoliths.",
+    "expected_capability": "general",
+    "clarity": "ambiguous",
+    "rationale": "Conceptual architectural comparison relying on standard design trade-offs rather than live retrieval, despite the word 'evaluate'.",
+    "category": "ambiguous_borderline",
+    "tags": ["architecture", "tradeoffs", "design"]
+  },
+  {
+    "id": "eval-016",
+    "prompt": "Who is the current Prime Minister of the United Kingdom and when did they take office?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Current political leadership inquiries require live verification to guarantee accuracy against model cutoff dates.",
+    "category": "freshness_current_info",
+    "tags": ["politics", "recency", "temporal"]
+  },
+  {
+    "id": "eval-017",
+    "prompt": "What are the latest stock market trends for semiconductor companies this week?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "High-frequency financial market trends with explicit 'this week' recency constraint require real-time external data.",
+    "category": "freshness_current_info",
+    "tags": ["finance", "markets", "recency"]
+  },
+  {
+    "id": "eval-018",
+    "prompt": "What is the current status of the Python 3.13 release and its free-threaded mode?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Inquires about current release status, PEP 703 adoption, and ecosystem support which evolve rapidly.",
+    "category": "freshness_current_info",
+    "tags": ["python", "release_status", "recency"]
+  },
+  {
+    "id": "eval-019",
+    "prompt": "What are the trending open-source AI projects on GitHub this month?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Temporal constraint 'this month' querying community activity requires live repository data.",
+    "category": "freshness_current_info",
+    "tags": ["open_source", "github", "trends"]
+  },
+  {
+    "id": "eval-020",
+    "prompt": "Find the most recent CVE vulnerabilities reported for Apache HTTP Server.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Vulnerability monitoring requires fresh security advisories and National Vulnerability Database lookups.",
+    "category": "freshness_current_info",
+    "tags": ["cve", "security", "vulnerabilities"]
+  },
+  {
+    "id": "eval-021",
+    "prompt": "Find primary sources and empirical studies on the effectiveness of remote work on developer productivity.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Explicit demand for primary sources, empirical literature, and verifiable studies necessitates research retrieval.",
+    "category": "explicit_sources_evidence",
+    "tags": ["academic", "sources", "evidence"]
+  },
+  {
+    "id": "eval-022",
+    "prompt": "What are the published benchmarks comparing Redis vs Dragonfly, citing official benchmark URLs or whitepapers?",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Explicitly requests citations, benchmark URLs, and external whitepaper evidence.",
+    "category": "explicit_sources_evidence",
+    "tags": ["benchmarks", "citations", "whitepapers"]
+  },
+  {
+    "id": "eval-023",
+    "prompt": "Provide citations and medical literature evidence for the health impacts of intermittent fasting.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Demands grounded citations and medical literature evidence rather than general assertions.",
+    "category": "explicit_sources_evidence",
+    "tags": ["medical", "citations", "evidence"]
+  },
+  {
+    "id": "eval-024",
+    "prompt": "Gather peer-reviewed evidence regarding microplastics detected in human blood and vascular tissue.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Requires peer-reviewed scientific papers and rigorous external evidence gathering.",
+    "category": "explicit_sources_evidence",
+    "tags": ["scientific_literature", "peer_reviewed", "evidence"]
+  },
+  {
+    "id": "eval-025",
+    "prompt": "Explain how OAuth 2.0 Authorization Code flow with PKCE works step by step.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "RFC 7636 standard protocol mechanism that is static, well-specified, and effectively explained through general knowledge.",
+    "category": "explanatory_general",
+    "tags": ["oauth", "security", "explanation"]
+  },
+  {
+    "id": "eval-026",
+    "prompt": "Explain the difference between processes and threads in an operating system.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Core computer science fundamentals regarding virtual address spaces, scheduling, and concurrency.",
+    "category": "explanatory_general",
+    "tags": ["operating_systems", "concurrency", "explanation"]
+  },
+  {
+    "id": "eval-027",
+    "prompt": "Describe how TCP handles congestion control using Slow Start and Congestion Avoidance.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Standard networking protocol concept (RFC 5681) fully answerable from general knowledge.",
+    "category": "explanatory_general",
+    "tags": ["networking", "tcp", "explanation"]
+  },
+  {
+    "id": "eval-028",
+    "prompt": "How does the Raft consensus algorithm elect a leader?",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Deterministic explanation of Raft leader election mechanics (term numbers, heartbeats, election timeouts).",
+    "category": "explanatory_general",
+    "tags": ["distributed_systems", "raft", "consensus"]
+  },
+  {
+    "id": "eval-029",
+    "prompt": "Explain the concept of memory alignment and struct padding in C.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Foundational C programming architecture topic requiring no external or live retrieval.",
+    "category": "explanatory_general",
+    "tags": ["c", "memory", "explanation"]
+  },
+  {
+    "id": "eval-030",
+    "prompt": "Refactor this Python function to improve readability and remove nested loops:\ndef process(data):\n    result = []\n    for item in data:\n        for sub in item['values']:\n            if sub > 0:\n                result.append(sub * 2)\n    return result",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Code refactoring task operating solely on the provided code snippet.",
+    "category": "code_transformation",
+    "tags": ["refactoring", "python", "code"]
+  },
+  {
+    "id": "eval-031",
+    "prompt": "Convert this SQL query using correlated subqueries into an equivalent query using CTEs and window functions:\nSELECT e.name, e.dept, (SELECT AVG(salary) FROM employees WHERE dept = e.dept) AS avg_dept_sal FROM employees e WHERE e.salary > (SELECT AVG(salary) FROM employees WHERE dept = e.dept);",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Query rewriting and SQL syntax transformation based entirely on user-provided specification.",
+    "category": "code_transformation",
+    "tags": ["sql", "query_optimization", "transformation"]
+  },
+  {
+    "id": "eval-032",
+    "prompt": "Debug this TypeScript interface definition that causes circular type reference errors with generic constraints:\ninterface TreeNode<T extends TreeNode<T>> {\n  value: T;\n  children: TreeNode<T>[];\n}",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Compiler error diagnosis and type definition correction requiring coding reasoning.",
+    "category": "code_transformation",
+    "tags": ["typescript", "debugging", "types"]
+  },
+  {
+    "id": "eval-033",
+    "prompt": "Rewrite this React class component lifecycle method into a functional component using useEffect:\nclass UserProfile extends React.Component {\n  componentDidMount() { this.fetchUser(this.props.userId); }\n  componentDidUpdate(prev) { if (prev.userId !== this.props.userId) this.fetchUser(this.props.userId); }\n}",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Standard React idiom migration based on established framework patterns.",
+    "category": "code_transformation",
+    "tags": ["react", "refactoring", "frontend"]
+  },
+  {
+    "id": "eval-034",
+    "prompt": "Optimize this regular expression to prevent catastrophic backtracking when evaluating long input strings:\n^([a-zA-Z0-9]+)*$",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Regex optimization task solvable via deterministic automata analysis.",
+    "category": "code_transformation",
+    "tags": ["regex", "performance", "optimization"]
+  },
+  {
+    "id": "eval-035",
+    "prompt": "Review this function for security vulnerabilities and optimize its performance for high throughput:\ndef get_user_records(db, user_id):\n    cursor = db.cursor()\n    cursor.execute(f\"SELECT * FROM records WHERE user_id = '{user_id}'\")\n    return cursor.fetchall()",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Multi-clause prompt combining security review and performance optimization on local code without external retrieval.",
+    "category": "multi_clause_mixed",
+    "tags": ["security", "performance", "multi_clause"]
+  },
+  {
+    "id": "eval-036",
+    "prompt": "Analyze this database schema for normalization issues, explain third normal form, and suggest index improvements:\nCREATE TABLE customer_orders (\n    order_id INT PRIMARY KEY,\n    customer_name VARCHAR(100),\n    customer_city VARCHAR(100),\n    item_name VARCHAR(100),\n    item_price DECIMAL(10, 2)\n);",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Combines schema analysis, pedagogical explanation, and indexing recommendations entirely using general knowledge.",
+    "category": "multi_clause_mixed",
+    "tags": ["database", "normalization", "explanation"]
+  },
+  {
+    "id": "eval-037",
+    "prompt": "Search for the latest CVEs affecting OpenSSL 3.0, and write a Python script to check installed package versions against them.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Multi-clause prompt whose primary dependency is external search/retrieval of recent CVE data before script synthesis.",
+    "category": "multi_clause_mixed",
+    "tags": ["cve", "security", "code_generation", "mixed_intent"]
+  },
+  {
+    "id": "eval-038",
+    "prompt": "Explain the Paxos consensus algorithm and write a simplified Python simulation demonstrating a single consensus round.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Combines theoretical explanation with local code simulation, both of which require no external research.",
+    "category": "multi_clause_mixed",
+    "tags": ["distributed_systems", "simulation", "python"]
+  },
+  {
+    "id": "eval-039",
+    "prompt": "Find recent real-world cloud service outages caused by BGP misconfigurations and summarize their root causes.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Requires live search for documented post-mortems and incident reports of recent events.",
+    "category": "multi_clause_mixed",
+    "tags": ["incident_analysis", "networking", "post_mortem"]
+  },
+  {
+    "id": "eval-040",
+    "prompt": "Write a Python script that benchmarks two sorting algorithms (quicksort vs mergesort) using timeit.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Contains research-associated keyword 'benchmark', but user is requesting code synthesis for a local script, not external retrieval.",
+    "category": "research_keywords_negative",
+    "tags": ["benchmark_keyword", "code_generation", "python"]
+  },
+  {
+    "id": "eval-041",
+    "prompt": "Conduct a code review of this PR diff and assess potential edge cases in error handling:\n@@ -12,4 +12,5 @@\n- response = requests.get(url)\n+ response = requests.get(url, timeout=5)\n+ data = response.json()\n+ return data['status']",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Contains keywords 'conduct' and 'assess', but operates strictly on user-supplied code diff with no external search intent.",
+    "category": "research_keywords_negative",
+    "tags": ["assess_keyword", "code_review"]
+  },
+  {
+    "id": "eval-042",
+    "prompt": "Here is a survey of our team's favorite code editors: [Vim: 4, VSCode: 12, Emacs: 1]. Compute the percentage distribution.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Contains keyword 'survey', but all survey data is inline; task is a local statistical calculation.",
+    "category": "research_keywords_negative",
+    "tags": ["survey_keyword", "data_processing", "math"]
+  },
+  {
+    "id": "eval-043",
+    "prompt": "Analyze this error traceback and identify which line caused the NullPointerException in the auth service:\nException in thread \"main\" java.lang.NullPointerException\n\tat com.example.auth.TokenValidator.verify(TokenValidator.java:42)\n\tat com.example.auth.AuthService.authenticate(AuthService.java:18)",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Contains keyword 'analyze', but is an internal diagnostic of an inline stack trace rather than external research.",
+    "category": "research_keywords_negative",
+    "tags": ["analyze_keyword", "debugging", "traceback"]
+  },
+  {
+    "id": "eval-044",
+    "prompt": "Compare these two Python dictionary merging methods for memory efficiency and syntax readability: {**a, **b} vs a | b.",
+    "expected_capability": "general",
+    "clarity": "clear",
+    "rationale": "Contains keyword 'compare', but evaluates Python language semantics and syntax patterns already in base training.",
+    "category": "research_keywords_negative",
+    "tags": ["compare_keyword", "python", "semantics"]
+  }
+]
