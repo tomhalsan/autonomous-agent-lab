@@ -153,7 +153,8 @@ async def test_submit_task_automatic_routing_research() -> None:
     queue = FakeTaskQueue()
     use_case = SubmitTask(queue)
 
-    task = await use_case.execute("Compare local and cloud LLMs")
+    # Under Phase B routing policy, genuine research prompts require external retrieval/freshness/source evidence rather than weak verbs alone
+    task = await use_case.execute("Compare current features and pricing of local and cloud LLMs")
 
     assert len(queue.enqueued) == 1
     enqueued_task, capability = queue.enqueued[0]

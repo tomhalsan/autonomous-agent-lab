@@ -164,14 +164,15 @@ async def test_create_task_automatic_research_routing() -> None:
     )
     req = Request({"type": "http", "app": app})
 
+    # Phase B requires external retrieval/freshness/source evidence rather than weak verbs alone
     task_res = await create_task(
-        TaskInput(prompt="Research consensus algorithms"),
+        TaskInput(prompt="Research the latest consensus algorithms"),
         request=req,
     )
     assert task_res["status"] == "accepted"
     assert len(fake_queue.enqueued) == 1
     enqueued_task, capability = fake_queue.enqueued[0]
-    assert enqueued_task.prompt == "Research consensus algorithms"
+    assert enqueued_task.prompt == "Research the latest consensus algorithms"
     assert capability == AgentCapability.RESEARCH
 
 
@@ -428,7 +429,13 @@ async def test_unavailable_capability_503_response_includes_task_id() -> None:
     req = Request({"type": "http", "app": app})
 
     with pytest.raises(HTTPException) as exc_info:
-        await create_task(TaskInput(prompt="perform specialized research"), request=req)
+        await create_task(
+            TaskInput(
+                prompt="perform specialized research",
+                capability=AgentCapability.RESEARCH,
+            ),
+            request=req,
+        )
 
     assert exc_info.value.status_code == 503
     detail = exc_info.value.detail

@@ -2,6 +2,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_contracts import AgentCandidate, AgentEvent, RoutingDecision, TaskRequested
 
+from orchestrator.domain.assessment import RoutingAssessment
 from orchestrator.domain.capability import AgentCapability
 
 
@@ -49,6 +50,11 @@ class CandidateFinder(Protocol):
 
 class CapabilityRouter(Protocol):
     def route(self, prompt: str) -> AgentCapability: ...
+
+
+@runtime_checkable
+class AssessingCapabilityRouter(CapabilityRouter, Protocol):
+    def assess(self, prompt: str) -> RoutingAssessment: ...
 
 
 class ResultReader(Protocol):

@@ -226,10 +226,11 @@ async def test_e2e_specialized_research_agent_dynamic_routing() -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        # Submit a research query
+        # Submit a research query with clear research intent
+        # Phase B requires external retrieval/freshness/source evidence rather than weak verbs alone
         res_task = await client.post(
             "/api/tasks",
-            json={"prompt": "Research consensus protocols in distributed state machines"},
+            json={"prompt": "Research the latest consensus protocols in distributed state machines"},
         )
         assert res_task.status_code == 202
         research_task_id = res_task.json()["task_id"]
@@ -237,7 +238,7 @@ async def test_e2e_specialized_research_agent_dynamic_routing() -> None:
         # Dequeued specifically by the research agent on its custom queue
         task = await research_bus.next_task()
         assert task.task_id == research_task_id
-        assert "Research consensus" in task.prompt
+        assert "consensus protocols" in task.prompt
 
         # Verify routing decision recorded research capability and selected target
         r_res = await client.get(f"/api/tasks/{research_task_id}/routing")

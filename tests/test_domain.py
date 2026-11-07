@@ -16,6 +16,25 @@ def test_task_accepts_prompt() -> None:
 @pytest.mark.parametrize(
     "prompt",
     [
+        "Research the latest consensus algorithms",
+        "Investigate recent distributed state synchronization developments",
+        "Find sources about data portability across clouds",
+        "Compare current features and pricing of local and cloud LLMs",
+        "Find the published benchmarks comparing redis throughput",
+        "Survey available vector databases as of today",
+        "Find recent CVEs for fault recovery models",
+        "Provide citations for latency tradeoffs",
+        "Perform a detailed study of network partitions and cite papers",
+    ],
+)
+def test_deterministic_router_routes_research_prompts(prompt: str) -> None:
+    router = DeterministicCapabilityRouter()
+    assert router.route(prompt) == AgentCapability.RESEARCH
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
         "Research consensus algorithms",
         "Investigate distributed state synchronization",
         "Analyze data portability across clouds",
@@ -28,9 +47,9 @@ def test_task_accepts_prompt() -> None:
         "Perform a detailed study of network partitions",
     ],
 )
-def test_deterministic_router_routes_research_prompts(prompt: str) -> None:
+def test_deterministic_router_weak_verbs_alone_route_to_general(prompt: str) -> None:
     router = DeterministicCapabilityRouter()
-    assert router.route(prompt) == AgentCapability.RESEARCH
+    assert router.route(prompt) == AgentCapability.GENERAL
 
 
 @pytest.mark.parametrize(
@@ -52,9 +71,9 @@ def test_deterministic_router_routes_general_prompts(prompt: str) -> None:
 
 def test_deterministic_router_routes_case_insensitively() -> None:
     router = DeterministicCapabilityRouter()
-    assert router.route("rEsEaRcH consensus") == AgentCapability.RESEARCH
-    assert router.route("INVESTIGATE failure") == AgentCapability.RESEARCH
-    assert router.route("AnAlYzE logs") == AgentCapability.RESEARCH
+    assert router.route("rEsEaRcH the latest developments") == AgentCapability.RESEARCH
+    assert router.route("INVESTIGATE recent CVEs") == AgentCapability.RESEARCH
+    assert router.route("FIND SOURCES for security audit") == AgentCapability.RESEARCH
 
 
 def test_deterministic_router_respects_word_boundaries() -> None:

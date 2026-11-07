@@ -241,7 +241,8 @@ async def test_submit_task_records_routing_decision_for_research_intent() -> Non
         routing_recorder=recorder,
     )
 
-    task = await submit_task.execute("Research quantum key distribution breakthroughs")
+    # Phase B requires external retrieval/freshness/source evidence rather than weak verbs alone
+    task = await submit_task.execute("Research the latest quantum key distribution breakthroughs")
 
     assert isinstance(task, TaskRequested)
     assert len(recorder.recorded) == 1
