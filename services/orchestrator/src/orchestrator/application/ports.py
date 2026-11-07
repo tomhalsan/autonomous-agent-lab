@@ -2,6 +2,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_contracts import AgentCandidate, AgentEvent, RoutingDecision, TaskRequested
 
+from orchestrator.domain.advisor import AdvisorRecommendation
 from orchestrator.domain.assessment import RoutingAssessment
 from orchestrator.domain.capability import AgentCapability
 
@@ -55,6 +56,15 @@ class CapabilityRouter(Protocol):
 @runtime_checkable
 class AssessingCapabilityRouter(CapabilityRouter, Protocol):
     def assess(self, prompt: str) -> RoutingAssessment: ...
+
+
+@runtime_checkable
+class RoutingAdvisor(Protocol):
+    async def advise(
+        self,
+        prompt: str,
+        assessment: RoutingAssessment,
+    ) -> AdvisorRecommendation: ...
 
 
 class ResultReader(Protocol):

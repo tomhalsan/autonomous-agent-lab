@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from orchestrator.domain.advisor import AdvisorRecommendation
     from orchestrator.domain.assessment import RoutingAssessment
 
 CapabilityType = Literal["general", "research"]
@@ -33,6 +34,8 @@ class CaseResult:
     actual_capability: CapabilityType
     matched_rules: tuple[str, ...] = ()
     assessment: RoutingAssessment | None = None
+    advisor_recommendation: AdvisorRecommendation | None = None
+    fallback_used: bool = False
 
     @property
     def is_correct(self) -> bool:
@@ -139,3 +142,13 @@ class BenchmarkResult:
     clear_assessment_accuracy: float = 0.0
     ambiguous_assessment_accuracy: float = 0.0
     clarity_confusion_matrix: ClarityConfusionMatrix | None = None
+    # Phase C1 simulated advisor metrics
+    simulated_advisor_enabled: bool = False
+    advisor_eligible_count: int = 0
+    advisor_consultation_count: int = 0
+    advisor_agreement_count: int = 0
+    advisor_override_count: int = 0
+    advisor_fallback_count: int = 0
+    advisor_unavailable_count: int = 0
+    advisor_timeout_count: int = 0
+    advisor_execution_error_count: int = 0

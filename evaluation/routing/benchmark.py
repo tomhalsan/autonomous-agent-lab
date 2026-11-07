@@ -13,7 +13,15 @@ import time
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from orchestrator.domain.assessment import RoutingAssessment
+from orchestrator.domain.advisor import (
+    AdvisorError,
+    AdvisorExecutionError,
+    AdvisorRecommendation,
+    AdvisorTimeoutError,
+    AdvisorUnavailableError,
+)
+from orchestrator.domain.assessment import RoutingAssessment, RoutingClarity
+from orchestrator.domain.capability import AgentCapability
 
 from evaluation.routing.models import (
     BenchmarkResult,
@@ -36,6 +44,72 @@ class EvaluationCapabilityRouter(Protocol):
     def route(self, prompt: str) -> object:
         """Route a prompt to an agent capability."""
         ...
+
+
+class SimulatedPlumbingAdvisor:
+    """Deterministic simulated routing advisor used strictly for plumbing validation in benchmarks.
+
+    Exercises all hybrid routing plumbing branches (agreement, change/override,
+    unavailable fallback, timeout fallback, execution-error fallback) in a deterministic cycle.
+    """
+
+    def __init__(self, scenario: str = "cycle") -> None:
+        self.consultation_count: int = 0
+        self.agreement_count: int = 0
+        self.override_count: int = 0
+        self.fallback_count: int = 0
+        self.unavailable_count: int = 0
+        self.timeout_count: int = 0
+        self.execution_error_count: int = 0
+        self.scenario = scenario
+
+    def advise(
+        self, prompt: str, assessment: RoutingAssessment
+    ) -> AdvisorRecommendation:
+        if assessment.clarity == RoutingClarity.CLEAR:
+            raise RuntimeError(
+                f"Protocol violation: Advisor was invoked on a CLEAR assessment for prompt: {prompt!r}"
+            )
+
+        self.consultation_count += 1
+        step = (self.consultation_count - 1) % 5 if self.scenario == "cycle" else {
+            "agree": 0,
+            "override": 1,
+            "unavailable": 2,
+            "timeout": 3,
+            "error": 4,
+        }.get(self.scenario, 0)
+
+        if step == 0:
+            self.agreement_count += 1
+            recommended = assessment.provisional_capability
+            reason = f"Simulated advisor confirms provisional {recommended.value} capability"
+            return AdvisorRecommendation(recommended_capability=recommended, reason=reason)
+        elif step == 1:
+            self.override_count += 1
+            recommended = (
+                AgentCapability.GENERAL
+                if assessment.provisional_capability == AgentCapability.RESEARCH
+                else AgentCapability.RESEARCH
+            )
+            reason = f"Simulated advisor changes capability to {recommended.value}"
+            return AdvisorRecommendation(recommended_capability=recommended, reason=reason)
+        elif step == 2:
+            raise AdvisorUnavailableError("Simulated advisor service unavailable (connection refused)")
+        elif step == 3:
+            raise AdvisorTimeoutError("Simulated advisor request deadline exceeded (timeout)")
+        else:
+            raise AdvisorExecutionError("Simulated advisor execution failure (internal error)")
+
+    def record_fallback(self, exc: Exception) -> None:
+        """Record fallback metric when an expected error is caught by caller."""
+        self.fallback_count += 1
+        if isinstance(exc, AdvisorUnavailableError):
+            self.unavailable_count += 1
+        elif isinstance(exc, (AdvisorTimeoutError, TimeoutError)):
+            self.timeout_count += 1
+        else:
+            self.execution_error_count += 1
 
 
 def get_default_router(legacy_v2: bool = False) -> EvaluationCapabilityRouter:
@@ -135,12 +209,18 @@ def _compute_metrics(
 def evaluate_correctness(
     router: EvaluationCapabilityRouter,
     cases: list[EvaluationCase],
-) -> tuple[list[CaseResult], ConfusionMatrix, dict[str, float]]:
+    advisor: SimulatedPlumbingAdvisor | None = None,
+) -> tuple[
+    list[CaseResult],
+    ConfusionMatrix,
+    dict[str, float],
+]:
     """Execute the correctness pass evaluating each case once.
 
     Args:
         router: CapabilityRouter under evaluation.
         cases: Labeled test cases.
+        advisor: Optional SimulatedPlumbingAdvisor invoked on ambiguous assessments.
 
     Returns:
         Tuple of (case_results, confusion_matrix, category_accuracies).
@@ -150,13 +230,27 @@ def evaluate_correctness(
     for case in cases:
         assessment = None
         matched_rules: tuple[str, ...] = ()
+        advisor_rec = None
+        fallback_used = False
 
         if hasattr(router, "assess") and callable(router.assess):
             res = router.assess(case.prompt)
             if isinstance(res, RoutingAssessment):
                 assessment = res
-                raw_output = assessment.provisional_capability
                 matched_rules = tuple(s.signal_type.value for s in assessment.signals)
+                if (
+                    advisor is not None
+                    and assessment.clarity == RoutingClarity.AMBIGUOUS
+                ):
+                    try:
+                        advisor_rec = advisor.advise(case.prompt, assessment)
+                        raw_output = advisor_rec.recommended_capability
+                    except (AdvisorError, TimeoutError) as exc:
+                        advisor.record_fallback(exc)
+                        raw_output = assessment.provisional_capability
+                        fallback_used = True
+                else:
+                    raw_output = assessment.provisional_capability
             else:
                 raw_output = router.route(case.prompt)
         else:
@@ -175,6 +269,8 @@ def evaluate_correctness(
                 actual_capability=actual_cap,
                 matched_rules=matched_rules,
                 assessment=assessment,
+                advisor_recommendation=advisor_rec,
+                fallback_used=fallback_used,
             )
         )
 
@@ -277,6 +373,7 @@ def run_benchmark(
     latency_iterations: int = 20,
     legacy_v2: bool = False,
     dataset_name: str = "development",
+    simulate_advisor: bool = False,
 ) -> BenchmarkResult:
     """Run capability routing benchmark across the evaluation dataset.
 
@@ -289,6 +386,7 @@ def run_benchmark(
         latency_iterations: Number of measured repetitions over the prompt set.
         legacy_v2: If True, uses the legacy Routing v2 baseline router.
         dataset_name: Name of the dataset being evaluated ('development' or 'validation').
+        simulate_advisor: If True, wires a deterministic test advisor into ambiguous cases only.
 
     Returns:
         BenchmarkResult containing detailed accuracy, confusion matrix, clarity analysis, and latency statistics.
@@ -301,8 +399,16 @@ def run_benchmark(
     if not cases:
         raise ValueError("Cannot run benchmark on an empty dataset.")
 
+    advisor = (
+        SimulatedPlumbingAdvisor()
+        if simulate_advisor
+        else None
+    )
+
     # 1. Correctness Pass (evaluates each case once)
-    case_results, matrix, category_accuracies = evaluate_correctness(active_router, cases)
+    case_results, matrix, category_accuracies = evaluate_correctness(
+        active_router, cases, advisor=advisor
+    )
 
     # 2. Latency Pass (isolated repeated executions)
     prompts = [c.prompt for c in cases]
@@ -414,6 +520,15 @@ def run_benchmark(
         clear_assessment_accuracy=clear_assessed_acc,
         ambiguous_assessment_accuracy=ambiguous_assessed_acc,
         clarity_confusion_matrix=clarity_matrix,
+        simulated_advisor_enabled=simulate_advisor and (advisor is not None),
+        advisor_eligible_count=len([r for r in case_results if r.actual_clarity == "ambiguous"]),
+        advisor_consultation_count=advisor.consultation_count if advisor is not None else 0,
+        advisor_agreement_count=advisor.agreement_count if advisor is not None else 0,
+        advisor_override_count=advisor.override_count if advisor is not None else 0,
+        advisor_fallback_count=advisor.fallback_count if advisor is not None else 0,
+        advisor_unavailable_count=advisor.unavailable_count if advisor is not None else 0,
+        advisor_timeout_count=advisor.timeout_count if advisor is not None else 0,
+        advisor_execution_error_count=advisor.execution_error_count if advisor is not None else 0,
     )
 
 
@@ -444,6 +559,23 @@ def format_benchmark_report(result: BenchmarkResult) -> str:
             "-" * 78,
             f"True Ambiguous  (TP): {result.clarity_confusion_matrix.true_ambiguous:4d}    False Ambiguous (FP): {result.clarity_confusion_matrix.false_ambiguous:4d}",
             f"False Clear     (FN): {result.clarity_confusion_matrix.false_clear:4d}    True Clear      (TN): {result.clarity_confusion_matrix.true_clear:4d}",
+        ])
+
+    if result.simulated_advisor_enabled:
+        lines.extend([
+            "",
+            "SIMULATED ADVISOR PLUMBING VALIDATION (PLUMBING VERIFICATION ONLY - NOT MODEL QUALITY)",
+            "-" * 78,
+            f"Total Ambiguous Eligible:       {result.advisor_eligible_count:4d}",
+            f"Advisor Consultations:          {result.advisor_consultation_count:4d}",
+            f"  - Agreements:                 {result.advisor_agreement_count:4d}",
+            f"  - Overrides (Changed):        {result.advisor_override_count:4d}",
+            f"  - Fallbacks (Preserved):      {result.advisor_fallback_count:4d}",
+            f"    * Unavailable:              {result.advisor_unavailable_count:4d}",
+            f"    * Timeout:                  {result.advisor_timeout_count:4d}",
+            f"    * Execution Error:          {result.advisor_execution_error_count:4d}",
+            "Clear Assessment Invocations:      0  (strictly enforced invariant)",
+            "NOTE: Simulation exercises all plumbing paths; outcomes are synthetic.",
         ])
 
     lines.extend([
@@ -567,6 +699,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Execute the legacy Routing v2 baseline router for comparison.",
     )
+    parser.add_argument(
+        "--simulate-advisor",
+        action="store_true",
+        default=False,
+        help="Simulate deterministic routing advisor plumbing for ambiguous cases only.",
+    )
     return parser
 
 
@@ -583,6 +721,7 @@ def main(argv: list[str] | None = None) -> int:
             latency_iterations=args.latency_iterations,
             legacy_v2=args.baseline_v2,
             dataset_name="development",
+            simulate_advisor=args.simulate_advisor,
         )
         print(format_benchmark_report(dev_result))
         print("\n" + "=" * 78 + "\n")
@@ -593,6 +732,7 @@ def main(argv: list[str] | None = None) -> int:
             latency_iterations=args.latency_iterations,
             legacy_v2=args.baseline_v2,
             dataset_name="validation",
+            simulate_advisor=args.simulate_advisor,
         )
         print(format_benchmark_report(val_result))
         return 0
@@ -614,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
         latency_iterations=args.latency_iterations,
         legacy_v2=args.baseline_v2,
         dataset_name=dataset_name,
+        simulate_advisor=args.simulate_advisor,
     )
     print(format_benchmark_report(result))
     return 0

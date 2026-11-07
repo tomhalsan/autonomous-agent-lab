@@ -1,6 +1,6 @@
-# Routing Evaluation, Deterministic Assessment & Baseline Benchmarks
+# Routing Evaluation, Deterministic Assessment & Hybrid Advisory Architecture
 
-This document describes the routing evaluation dataset, benchmark runner, empirical baseline, and the Phase B deterministic assessment architecture established for the capability routing subsystem in `autonomous-agent-lab`.
+This document describes the routing evaluation dataset, benchmark runner, empirical baseline, Phase B deterministic assessment architecture, and the Phase C1 provider-neutral hybrid advisory architecture established for the capability routing subsystem in `autonomous-agent-lab`.
 
 ---
 
@@ -10,7 +10,7 @@ The capability router directs incoming task prompts to the appropriate specializ
 
 As the platform evaluates potential improvements to capability routing (GitHub issue #91), an empirical baseline and typed assessment architecture are required to:
 - Objectively quantify routing accuracy, precision, recall, and false-positive rates against ground truth.
-- Evolve routing from returning a bare capability enum into producing a transparent [`RoutingAssessment`](file:///Users/tomhalsan/dev/autonomous-agent-lab/services/orchestrator/src/orchestrator/domain/assessment.py#L76-L108).
+- Evolve routing from returning a bare capability enum into producing a transparent [`RoutingAssessment`](../services/orchestrator/src/orchestrator/domain/assessment.py).
 - Distinguish between **CLEAR** and **AMBIGUOUS** deterministic signals without relying on uncalibrated numeric confidence scores.
 - Establish an architectural seam for a future `RoutingAdvisor` that is consulted only when deterministic evidence is ambiguous.
 - Preserve backward-compatible `route(prompt) -> AgentCapability` execution across the system.
@@ -21,8 +21,8 @@ As the platform evaluates potential improvements to capability routing (GitHub i
 
 Routing evaluation is separated into two version-controlled datasets to distinguish development iteration from regression and adversarial coverage:
 
-1. **Development Dataset** ([`evaluation/routing/dataset.json`](file:///Users/tomhalsan/dev/autonomous-agent-lab/evaluation/routing/dataset.json)): 44 curated test cases across 9 categories used to define and evaluate initial baseline signals. A 100% score on this dataset indicates that all known development cases pass, not universal production accuracy.
-2. **Validation Dataset** ([`evaluation/routing/validation_dataset.json`](file:///Users/tomhalsan/dev/autonomous-agent-lab/evaluation/routing/validation_dataset.json)): 34 diverse test cases and adversarial prompts created during the same implementation cycle. This dataset provides regression and adversarial coverage for weak-verb disambiguation, diagnostic artifacts, and edge cases.
+1. **Development Dataset** ([`evaluation/routing/dataset.json`](../evaluation/routing/dataset.json)): 44 curated test cases across 9 categories used to define and evaluate initial baseline signals. A 100% score on this dataset indicates that all known development cases pass, not universal production accuracy.
+2. **Validation Dataset** ([`evaluation/routing/validation_dataset.json`](../evaluation/routing/validation_dataset.json)): 34 diverse test cases and adversarial prompts created during the same implementation cycle. This dataset provides regression and adversarial coverage for weak-verb disambiguation, diagnostic artifacts, and edge cases.
 
 > [!IMPORTANT]
 > Development-set and validation-set metrics are always reported separately.
@@ -85,7 +85,7 @@ A prompt is labeled `expected_capability: "general"` if:
 
 ## 4. Phase B: Deterministic Routing Assessment Architecture
 
-Phase B transitions the capability router from returning a flat `AgentCapability` enum to producing an immutable, inspectable [`RoutingAssessment`](file:///Users/tomhalsan/dev/autonomous-agent-lab/services/orchestrator/src/orchestrator/domain/assessment.py#L76-L108).
+Phase B transitions the capability router from returning a flat `AgentCapability` enum to producing an immutable, inspectable [`RoutingAssessment`](../services/orchestrator/src/orchestrator/domain/assessment.py).
 
 ### Domain Model
 
@@ -117,14 +117,73 @@ flowchart TD
     CandidateDiscovery --> Dispatch
 ```
 
-1. **Caller-Supplied Explicit Capability**: An explicit capability override is always authoritative. It bypasses deterministic inference and any future advisory model, while strictly preserving candidate discovery, availability checks, selection, and transport dispatch.
-2. **Deterministic Routing**: The primary inference mechanism. Evaluates typed signals at microsecond speed.
-3. **Future RoutingAdvisor Seam**: May be consulted **only** when the assessment clarity is `AMBIGUOUS`.
-4. **Resilient Fallback**: If a future advisor is absent, times out, or fails, the router preserves the deterministic provisional capability rather than failing or unprincipled fallback.
+1. **Caller-Supplied Explicit Capability**: An explicit capability override is always authoritative. It bypasses deterministic inference and any advisor, while strictly preserving candidate discovery, availability checks, selection, and transport dispatch.
+2. **Deterministic Routing**: The primary inference mechanism. Evaluates typed signals at microsecond speed. When assessment clarity is `CLEAR`, the provisional capability is immediately resolved without calling any advisor.
+3. **RoutingAdvisor (Phase C1 Seam)**: Consulted **only** when assessment clarity is `AMBIGUOUS`. Advisory only.
+4. **Resilient Fallback**: If an advisor is absent, times out, or fails, the orchestrator preserves the deterministic provisional capability rather than failing or unprincipled fallback.
 
 ---
 
-## 5. Signal Taxonomy & Core Routing Policies
+## 5. Phase C1: Provider-Neutral RoutingAdvisor and Hybrid Routing Policy
+
+Phase C1 introduces a provider-neutral application boundary through which an optional routing advisor may recommend a capability for prompts where deterministic analysis is ambiguous.
+
+### Boundary & Contracts
+
+- **Protocol**: [`RoutingAdvisor`](../services/orchestrator/src/orchestrator/application/ports.py) in orchestrator application layer:
+  ```python
+  @runtime_checkable
+  class RoutingAdvisor(Protocol):
+      async def advise(
+          self, prompt: str, assessment: RoutingAssessment
+      ) -> AdvisorRecommendation: ...
+  ```
+- **Contract**: [`AdvisorRecommendation`](../services/orchestrator/src/orchestrator/domain/advisor.py) in domain layer:
+  ```python
+  @dataclass(frozen=True)
+  class AdvisorRecommendation:
+      recommended_capability: AgentCapability
+      reason: str
+  ```
+  - `recommended_capability` must be an `AgentCapability` instance.
+  - `reason` must be a non-empty string.
+  - Strict anti-corruption validation prevents the advisor from returning agent identity patterns (e.g. `worker-`, `research-agent-`), dispatch targets (`agent.tasks.`, `tasks.`), or execution commands (`dispatch to`, `execute on`).
+- **Exception Hierarchy**:
+  - `AdvisorError(Exception)`
+  - `AdvisorUnavailableError(AdvisorError)`
+  - `AdvisorTimeoutError(AdvisorError)`
+  - `AdvisorExecutionError(AdvisorError)`
+
+### Strict Hierarchy of Authority
+
+1. **Explicit Caller Capability Override**: Absolute authority. Bypasses deterministic assessment and advisor entirely.
+2. **Deterministic RoutingAssessment**: Always runs when no override is present. If `clarity == RoutingClarity.CLEAR`, the orchestrator immediately resolves to `provisional_capability`. The advisor is never consulted.
+3. **RoutingAdvisor**: Consulted ONLY when deterministic assessment is `RoutingClarity.AMBIGUOUS`. The advisor is strictly advisory—it recommends a capability, but cannot select agents or dictate dispatch targets.
+4. **Deterministic Provisional Fallback**: If the advisor is not configured, unavailable, or times out, the orchestrator falls back to `provisional_capability`.
+
+### Failure Model
+
+- **Expected Provider Failures**: `AdvisorUnavailableError`, `AdvisorTimeoutError`, `AdvisorExecutionError`, and `TimeoutError` are caught gracefully. The orchestrator logs the fallback in provenance and resolves to the deterministic `provisional_capability`.
+- **Contract Violations**: If an advisor returns an invalid object (not an `AdvisorRecommendation`), `SubmitTask` raises `TypeError` immediately (fail loudly), preventing corrupted data from polluting the routing pipeline.
+
+### Decision Provenance
+
+[`RoutingProvenance`](../packages/contracts/src/agent_contracts/routing.py) is persisted as part of every [`RoutingDecision`](../packages/contracts/src/agent_contracts/routing.py), answering:
+1. `is_explicit_override: bool` — Was an explicit caller capability override provided?
+2. `assessment_clarity: str | None` — Was deterministic clarity `"clear"` or `"ambiguous"`?
+3. `provisional_capability: str | None` — What was the deterministic provisional capability?
+4. `advisor_consulted: bool` — Was an external advisor consulted?
+5. `advisor_verdict: str | None` — What was the advisor's action (`"agreed"`, `"changed"`, `"unavailable"`, `"timeout"`, `"failed"`, or `None`)?
+6. `fallback_used: bool` — Did the orchestrator fall back to the provisional capability due to advisor failure?
+7. `final_selection_reason: str` — What was the authoritative reason for the final capability?
+
+### Scope & Provider Decoupling
+
+Phase C1 introduces no Ollama, Cloudflare, local model, or network dependencies. Provider-specific implementations (e.g., Ollama adapter) are deferred to Phase C2, adhering to Clean Architecture principles.
+
+---
+
+## 6. Signal Taxonomy & Core Routing Policies
 
 ### Signal Strength Tiers
 
@@ -165,9 +224,9 @@ Reasons are generated dynamically from the exact list of detected signals. Every
 
 ---
 
-## 6. Benchmark Runner & CLI Options
+## 7. Benchmark Runner & CLI Options
 
-The benchmark runner ([`evaluation/routing/benchmark.py`](file:///Users/tomhalsan/dev/autonomous-agent-lab/evaluation/routing/benchmark.py)) decouples correctness analysis from isolated latency profiling.
+The benchmark runner ([`evaluation/routing/benchmark.py`](../evaluation/routing/benchmark.py)) decouples correctness analysis from isolated latency profiling.
 
 ### Command-Line Interface
 
@@ -187,29 +246,34 @@ python -m evaluation.routing.benchmark --all
 # 4. Reproduce frozen historical Routing v2 baseline (63.64%)
 PYTHONPATH="services/orchestrator/src:services/worker/src:services/research_agent/src:packages/contracts/src:." \
 python -m evaluation.routing.benchmark --baseline-v2
+
+# 5. Validate simulated advisor plumbing on ambiguous cases
+PYTHONPATH="services/orchestrator/src:services/worker/src:services/research_agent/src:packages/contracts/src:." \
+python -m evaluation.routing.benchmark --simulate-advisor
 ```
 
 ---
 
-## 7. Empirical Results & Performance Summary
+## 8. Empirical Results & Performance Summary
 
 ### Comparative Performance Table
 
-| Metric | Phase A: Routing v2 Baseline | Phase B: Development Dataset | Phase B: Validation Dataset |
-|---|:---:|:---:|:---:|
-| **Cases Evaluated** | 44 | 44 | 34 |
-| **Provisional Capability Accuracy** | **63.64%** (28/44) | **100.00%** (44/44) | **100.00%** (34/34) |
-| **Clarity Label Alignment** | 88.64% (39/44) | **100.00%** (44/44) | **100.00%** (34/34) |
-| **Hypothetical Advisor Rate** | 0.00% (0/44) | **11.36%** (5/44) | **23.53%** (8/34) |
-| **Capability Acc (Assessed CLEAR)** | 63.64% | **100.00%** (39/39) | **100.00%** (26/26) |
-| **Capability Acc (Assessed AMBIGUOUS)** | 0.00% | **100.00%** (5/5) | **100.00%** (8/8) |
-| **Research Precision / Recall / F1** | 0.56 / 0.56 / 0.56 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** |
-| **General Precision / Recall / F1** | 0.69 / 0.69 / 0.69 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** |
-| **Median Execution Latency (P50)** | **~50 µs** | **~110 µs** | **~100 µs** |
+| Metric | Phase A: Routing v2 Baseline | Phase B: Development Dataset | Phase B: Validation Dataset | Phase C1: Simulated Advisor |
+|---|:---:|:---:|:---:|:---:|
+| **Cases Evaluated** | 44 | 44 | 34 | 44 / 34 |
+| **Provisional Capability Accuracy** | **63.64%** (28/44) | **100.00%** (44/44) | **100.00%** (34/34) | **100.00%** |
+| **Clarity Label Alignment** | 88.64% (39/44) | **100.00%** (44/44) | **100.00%** (34/34) | **100.00%** |
+| **Advisor Delegation Rate** | 0.00% (0/44) | **11.36%** (5/44) | **23.53%** (8/34) | **11.36%** / **23.53%** |
+| **Clear Prompt Advisor Invocations** | N/A | 0 (enforced) | 0 (enforced) | **0 (enforced)** |
+| **Capability Acc (Assessed CLEAR)** | 63.64% | **100.00%** (39/39) | **100.00%** (26/26) | **100.00%** |
+| **Capability Acc (Assessed AMBIGUOUS)** | 0.00% | **100.00%** (5/5) | **100.00%** (8/8) | **100.00%** |
+| **Research Precision / Recall / F1** | 0.56 / 0.56 / 0.56 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** |
+| **General Precision / Recall / F1** | 0.69 / 0.69 / 0.69 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** |
+| **Median Execution Latency (P50)** | **~50 µs** | **~110 µs** | **~100 µs** | **~130 µs** |
 
 ---
 
-## 8. Generalization Lessons & Phase C Prerequisites
+## 9. Generalization Lessons & Phase C Prerequisites
 
 ### Generalization Lessons from Phase B
 Initial testing of Phase B against unseen prompts revealed that high development scores can mask narrow regex assumptions:
@@ -219,19 +283,20 @@ Initial testing of Phase B against unseen prompts revealed that high development
 4. Unqualified temporal phrases like "this week" or "this month" misclassify personal user statements ("I started learning Rust this week") unless gated against personal activity.
 5. "Find evidence" applied to supplied diagnostic artifacts (such as heap dumps or stack traces) represents local inspection rather than academic/literature retrieval.
 
-### Deterministic Limits & Readiness for Phase C
+### Deterministic Limits & Readiness for Phase C2
 While the generalized deterministic rules achieve 100% on both the 44-case development set and the 34-case validation set, deterministic pattern matching has fundamental limits:
 - Novel phrasings without explicit freshness keywords or structural cues may be classified as ambiguous.
 - True natural language understanding is required to disambiguate subtle contextual trade-offs.
 
-**Phase C (Ollama RoutingAdvisor)** should only be explored because:
-1. Validation/adversarial coverage and ambiguity delegation behavior are now well-calibrated and validated.
-2. The advisory delegation rate is bounded (11% on dev, 24% on validation), ensuring that an LLM advisor is invoked only when deterministic evidence is genuinely ambiguous.
-3. 76% to 89% of requests continue to route deterministically at sub-150-microsecond speeds.
+**Phase C2 (Ollama / Local LLM RoutingAdvisor Adapter)** should be explored because:
+1. The provider-neutral application boundary and hybrid policy are established and thoroughly tested.
+2. Validation/adversarial coverage and ambiguity delegation behavior are now well-calibrated and validated.
+3. The advisory delegation rate is bounded (11% on dev, 24% on validation), ensuring that an LLM advisor is invoked only when deterministic evidence is genuinely ambiguous.
+4. 76% to 89% of requests continue to route deterministically at sub-150-microsecond speeds.
 
 ---
 
-## 9. Non-Blocking Architectural Follow-ups
+## 10. Non-Blocking Architectural Follow-ups
 
 The following improvements are documented for execution prior to or alongside Phase C:
 1. **Persist RoutingAssessment Diagnostics**: Extend `RoutingDecision` (or add a companion `RoutingAssessmentRecord`) to persist assessment clarity, typed signals, and signal-backed reasoning alongside the dispatch decision, exposing them to the observatory and debugging APIs.
