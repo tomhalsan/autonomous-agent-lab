@@ -1,6 +1,12 @@
 # Autonomous Agent Lab
 
-A new, independent project for experimenting with containerized autonomous agents, messaging, state, and observability. It has no dependency on the music project.
+Autonomous Agent Lab is Lab #1 under the [Tiny Robot Lab](https://tinyrobotlab.com) learning project.
+
+It is a non-commercial, open-source educational testbed for exploring how modern AI and autonomous-agent systems actually work by building them from scratch: asynchronous messaging queues, dynamic capability registration, heartbeat liveness policies, evidence-conditioned synthesis, and provider-neutral Clean Architecture boundaries.
+
+- **Current Release:** `v0.3.0 — Dynamic Orchestration`
+- **Live Experimental Lab:** [lab.tinyrobotlab.com](https://lab.tinyrobotlab.com)
+- **Umbrella Website:** [tinyrobotlab.com](https://tinyrobotlab.com)
 
 ## Architecture
 
@@ -15,6 +21,7 @@ Dependency direction is inward: presentation/infrastructure -> application -> do
 
 - **v0.1.0 — Initial Worker Prototype**: The orchestrator accepts a task, Redis transports it, and a worker processes it while publishing state. A small dashboard shows agent state and recent events.
 - **v0.2.0 — Multi-Agent Research Prototype**: Automatic capability-based task routing, independent Research Agent service, grounded Tavily research retrieval, pluggable Cloudflare inference synthesis, persistent task results, observable agent capabilities and providers, and the Prototype Console interface.
+- **v0.3.0 — Dynamic Orchestration**: Runtime capability discovery, heartbeat liveness tracking, deterministic candidate selection, advertised delivery target queues, and comprehensive routing observability.
 
 ## Start
 
@@ -59,3 +66,21 @@ docker compose config
 4. Add authentication before LAN-wide or remote access.
 5. Add OpenTelemetry and metrics.
 6. Add a container-management UI separately, with restricted Docker socket access.
+
+## Scope & Limitations
+
+This project is an experimental learning laboratory, not an enterprise product, marketing tool, or commercial SaaS. We build features to understand distributed agent patterns and tradeoffs:
+- Evidence ranking heuristics filter noise but do not provide mathematical proof of factual truth.
+- Cross-domain keyword overlap indicates topical relevance, not deep semantic corroboration.
+- Retrieval quality is strictly bounded by what upstream search providers return.
+
+## Security & CI
+
+Public repository integrity and security rely on standard GitHub-native mechanisms:
+- **Continuous Integration:** GitHub Actions runs automated tests and Ruff lint checks without external provider credentials.
+- **Dependabot:** Regularly monitors Python dependencies, GitHub Actions, and Docker base images for known vulnerabilities.
+- **Security Policies:** See [SECURITY.md](SECURITY.md) for vulnerability reporting guidelines and credential hygiene policies.
+
+## License
+
+This project is open-source software licensed under the [GNU Affero General Public License v3.0](LICENSE) (SPDX: `AGPL-3.0-only`). See [LICENSE](LICENSE) for the full license text.
