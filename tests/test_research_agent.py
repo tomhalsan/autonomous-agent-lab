@@ -2540,16 +2540,16 @@ def test_evidence_evaluator_compound_domain_diversity_capping() -> None:
     filtered = [r for r in results if not r.retained]
 
     # bbc.co.uk has 2 retained and 1 capped
-    bbc_retained = [r for r in retained if "bbc.co.uk" in r.domain]
+    bbc_retained = [r for r in retained if r.domain == "bbc.co.uk"]
     assert len(bbc_retained) == 2
 
     # theguardian.co.uk has its own independent cap slot and is retained
-    guardian_retained = [r for r in retained if "theguardian.co.uk" in r.domain]
+    guardian_retained = [r for r in retained if r.domain == "theguardian.co.uk"]
     assert len(guardian_retained) == 1
 
     # ox.ac.uk and cam.ac.uk each have their own independent cap slots and are both retained
-    ox_retained = [r for r in retained if "ox.ac.uk" in r.domain]
-    cam_retained = [r for r in retained if "cam.ac.uk" in r.domain]
+    ox_retained = [r for r in retained if r.domain == "research.ox.ac.uk"]
+    cam_retained = [r for r in retained if r.domain == "cl.cam.ac.uk"]
     assert len(ox_retained) == 1
     assert len(cam_retained) == 1
 
