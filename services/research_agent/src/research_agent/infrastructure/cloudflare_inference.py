@@ -4,6 +4,8 @@ import re
 from typing import Any
 
 import httpx
+from agent_contracts import InferenceProviderHealth
+from agent_infrastructure import CloudflareHealthProbe
 
 from research_agent.domain.models import SynthesisResult
 
@@ -73,6 +75,7 @@ class CloudflareInferenceProvider:
     ) -> None:
         self._account_id = (account_id or os.getenv("CLOUDFLARE_ACCOUNT_ID", "")).strip()
         self._api_token = (api_token or os.getenv("CLOUDFLARE_AI_API_TOKEN", "")).strip()
+        self.provider_name = "cloudflare"
         raw_model = model or os.getenv("CLOUDFLARE_AI_MODEL", DEFAULT_CLOUDFLARE_AI_MODEL)
         self.model = raw_model.strip() if raw_model else DEFAULT_CLOUDFLARE_AI_MODEL
         self._base_url = (base_url or DEFAULT_CLOUDFLARE_BASE_URL).rstrip("/")
@@ -95,6 +98,15 @@ class CloudflareInferenceProvider:
             raise ValueError(
                 "CLOUDFLARE_AI_API_TOKEN environment variable is required for CloudflareInferenceProvider"
             )
+
+        self._health_probe = CloudflareHealthProbe(
+            account_id=self._account_id,
+            api_token=self._api_token,
+            model=self.model,
+            client=self._client,
+            base_url=self._base_url,
+            timeout=self._timeout,
+        )
 
     def _redact(self, text: str) -> str:
         if self._api_token and self._api_token in text:
@@ -133,6 +145,10 @@ class CloudflareInferenceProvider:
             ],
             "max_tokens": self.max_tokens,
         }
+
+    async def check_health(self) -> InferenceProviderHealth:
+        """Probe Cloudflare Workers AI availability via the shared infrastructure health probe."""
+        return await self._health_probe.check_health()
 
     async def synthesize(self, question: str, evidence: str) -> SynthesisResult:
         logger.info("Executing Cloudflare Workers AI synthesis with model %s", self.model)

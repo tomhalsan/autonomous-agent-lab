@@ -1,9 +1,10 @@
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
     AgentHeartbeat,
+    InferenceProviderHealth,
     TaskRequested,
 )
 
@@ -30,3 +31,10 @@ class InferenceProvider(Protocol):
 
 
 ResearchSynthesizer = InferenceProvider
+
+
+@runtime_checkable
+class InferenceHealthProbe(Protocol):
+    """Application port for active or passive inference provider health probing."""
+
+    async def check_health(self) -> InferenceProviderHealth: ...

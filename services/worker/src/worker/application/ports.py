@@ -1,9 +1,10 @@
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
     AgentHeartbeat,
+    InferenceProviderHealth,
     TaskRequested,
     TaskResult,
 )
@@ -22,4 +23,11 @@ class ResultStore(Protocol):
 
 class InferenceProvider(Protocol):
     async def generate(self, prompt: str) -> str: ...
+
+
+@runtime_checkable
+class InferenceHealthProbe(Protocol):
+    """Application port for active or passive inference provider health probing."""
+
+    async def check_health(self) -> InferenceProviderHealth: ...
 
