@@ -11,6 +11,7 @@ from .availability import (
 from .candidates import AgentCandidate
 from .capabilities import AgentCapabilityMetadata
 from .heartbeat import HeartbeatRunner, parse_heartbeat_interval
+from .inference_health import InferenceHealthStatus, InferenceProviderHealth
 from .messages import AgentEvent, TaskRequested
 from .results import TaskResult
 from .routing import RoutingDecision, RoutingProvenance
@@ -33,6 +34,8 @@ __all__ = [
     "AgentExecutionState",
     "AgentHeartbeat",
     "HeartbeatRunner",
+    "InferenceHealthStatus",
+    "InferenceProviderHealth",
     "LivenessPolicy",
     "RoutingDecision",
     "RoutingProvenance",
