@@ -21,6 +21,7 @@ from research_agent.infrastructure.cloudflare_inference import (
     CloudflareInferenceProvider,
 )
 from research_agent.infrastructure.executor_factory import create_research_executor
+from research_agent.infrastructure.gemini_inference import GeminiInferenceProvider
 from research_agent.infrastructure.inference_factory import create_inference_provider
 from research_agent.infrastructure.redis_bus import RedisBus
 from research_agent.infrastructure.stub_executor import StubResearchExecutor
@@ -804,8 +805,8 @@ def test_create_inference_provider_unsupported_raises() -> None:
     with pytest.raises(ValueError, match="Unsupported inference provider: 'openai'"):
         create_inference_provider("openai")
 
-    with pytest.raises(ValueError, match="Unsupported inference provider: 'gemini'"):
-        create_inference_provider("gemini")
+    with pytest.raises(ValueError, match="Unsupported inference provider: 'anthropic'"):
+        create_inference_provider("anthropic")
 
 
 # --- Processor Integration Tests with InferenceProvider ---
@@ -2628,3 +2629,342 @@ def test_task_result_backward_compatibility_with_pre_issue_9_payload() -> None:
     assert restored.sources is None
 
 
+# --- Gemini Research Adapter Tests ---
+
+
+def test_research_create_inference_provider_gemini_missing_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "gemini")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="GEMINI_API_KEY environment variable is required"):
+        create_inference_provider()
+
+
+def test_research_create_inference_provider_gemini_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-env")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+    provider = create_inference_provider()
+    assert isinstance(provider, GeminiInferenceProvider)
+    assert provider.model == "gemini-2.5-flash"
+    assert provider.provider_name == "gemini"
+
+
+def test_research_create_inference_provider_gemini_explicit() -> None:
+    provider = create_inference_provider(
+        name="gemini",
+        api_token="explicit-gemini-key",
+        model="gemini-2.5-flash",
+        max_tokens=512,
+    )
+    assert isinstance(provider, GeminiInferenceProvider)
+    assert provider.model == "gemini-2.5-flash"
+    assert provider.max_tokens == 512
+
+
+@pytest.mark.anyio
+async def test_gemini_research_provider_successful_synthesize() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": (
+                                    "1. Raft uses leader election for consensus.\n\n"
+                                    "Sources:\n- https://raft.github.io"
+                                )
+                            }
+                        ],
+                        "role": "model",
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 50, "candidatesTokenCount": 20},
+        },
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = GeminiInferenceProvider(
+        api_key="test-gemini-key",
+        client=mock_client,
+    )
+
+    result = await provider.synthesize(
+        question="What is Raft consensus?",
+        evidence="Raft is a consensus algorithm.",
+    )
+    assert isinstance(result, SynthesisResult)
+    assert result.question == "What is Raft consensus?"
+    assert result.provider == "gemini"
+    assert result.model == "gemini-2.5-flash"
+    assert "Sources:" in result.content
+
+    mock_client.post.assert_called_once()
+    url, kwargs = mock_client.post.call_args[0][0], mock_client.post.call_args[1]
+    assert "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" in url
+    assert kwargs["headers"]["x-goog-api-key"] == "test-gemini-key"
+    payload = kwargs["json"]
+    assert payload["generationConfig"]["temperature"] == 0.0
+    assert "Raft is a consensus algorithm" in payload["contents"][0]["parts"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_gemini_research_provider_truncation_warning(caplog: pytest.LogCaptureFixture) -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "This synthesis cut off abruptly in the middle of a"}
+                        ],
+                        "role": "model",
+                    },
+                    "finishReason": "MAX_TOKENS",
+                }
+            ],
+        },
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = GeminiInferenceProvider(
+        api_key="test-gemini-key",
+        client=mock_client,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await provider.synthesize("Question?", "Evidence text")
+
+    assert result.truncated is True
+    assert result.finish_reason == "MAX_TOKENS"
+    assert "[Response truncated: token limit reached]" in result.content
+    assert "[Response may be incomplete]" not in result.content
+    assert result.content.startswith("This synthesis cut off abruptly in the middle of a")
+    assert any("detected as truncated by token limit" in record.message for record in caplog.records)
+    assert any("ends_mid_sentence=True" in record.message for record in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_gemini_research_provider_explicit_token_limit_notice() -> None:
+    mock_client = AsyncMock()
+    mock_client.post.return_value = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "First finding complete. Second finding partial"}],
+                        "role": "model",
+                    },
+                    "finishReason": "MAX_TOKENS",
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 50, "candidatesTokenCount": 25},
+        },
+    )
+    provider = GeminiInferenceProvider(api_key="test-key", client=mock_client)
+    res = await provider.synthesize(question="Query?", evidence="Evidence text")
+
+    assert res.truncated is True
+    assert res.finish_reason == "MAX_TOKENS"
+    assert res.usage == {"promptTokenCount": 50, "candidatesTokenCount": 25}
+    assert "[Response truncated: token limit reached]" in res.content
+    assert "[Response may be incomplete]" not in res.content
+    assert res.content.endswith("[Response truncated: token limit reached]")
+
+
+@pytest.mark.anyio
+async def test_gemini_research_provider_heuristic_only_incomplete_notice(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_client = AsyncMock()
+    mock_client.post.return_value = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "1. Distributed consensus requires nodes to"}],
+                        "role": "model",
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 10},
+        },
+    )
+    provider = GeminiInferenceProvider(api_key="test-key", client=mock_client)
+    with caplog.at_level(logging.WARNING):
+        res = await provider.synthesize(question="What is consensus?", evidence="Evidence text")
+
+    # finish_reason is STOP, but mid-sentence heuristic fired
+    assert res.truncated is True
+    assert res.finish_reason == "STOP"
+    assert "[Response may be incomplete]" in res.content
+    assert "[Response truncated: token limit reached]" not in res.content
+    assert any("incomplete mid-sentence" in record.message for record in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_gemini_research_provider_no_reconstructed_sources_section() -> None:
+    evidence_with_urls = (
+        "Grounding source 1: https://arxiv.org/abs/2005.14165\n"
+        "Grounding source 2: https://github.com/openai/gpt-3\n"
+        "Grounding source 3: https://en.wikipedia.org/wiki/Language_model"
+    )
+
+    # 1. Truncated mid-sentence response without Sources: must NOT reconstruct or append URLs
+    client_no_sources = AsyncMock()
+    client_no_sources.post.return_value = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Key findings on language models without any sources"}],
+                        "role": "model",
+                    },
+                    "finishReason": "MAX_TOKENS",
+                }
+            ],
+        },
+    )
+    provider = GeminiInferenceProvider(api_key="test-key", client=client_no_sources)
+    res = await provider.synthesize(question="Summarize GPT?", evidence=evidence_with_urls)
+
+    assert "[Response truncated: token limit reached]" in res.content
+    # Generated content must NOT append evidence URLs as reconstructed citations
+    assert "https://arxiv.org/abs/2005.14165" not in res.content
+    assert "https://github.com/openai/gpt-3" not in res.content
+    assert "https://en.wikipedia.org/wiki/Language_model" not in res.content
+    assert "Sources:" not in res.content
+    # Original evidence is preserved on SynthesisResult
+    assert res.evidence == evidence_with_urls
+
+    # 2. When Gemini actually returns its own Sources section, that section is preserved intact
+    client_with_sources = AsyncMock()
+    model_written_sources = (
+        "1. GPT-3 exhibits few-shot learning.\n\n"
+        "Sources:\n"
+        "- https://arxiv.org/abs/2005.14165"
+    )
+    client_with_sources.post.return_value = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": model_written_sources}],
+                        "role": "model",
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+        },
+    )
+    provider_with_sources = GeminiInferenceProvider(api_key="test-key", client=client_with_sources)
+    res_with_sources = await provider_with_sources.synthesize(
+        question="Summarize GPT?", evidence=evidence_with_urls
+    )
+    assert res_with_sources.truncated is False
+    assert "Sources:\n- https://arxiv.org/abs/2005.14165" in res_with_sources.content
+    assert "https://github.com/openai/gpt-3" not in res_with_sources.content
+    assert res_with_sources.evidence == evidence_with_urls
+
+
+@pytest.mark.anyio
+async def test_gemini_research_provider_synthesis_metadata_preservation() -> None:
+    # Normal complete synthesis preserves metadata without notices
+    normal_client = AsyncMock()
+    normal_client.post.return_value = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Complete synthesis on consensus. Sources: https://example.com"}],
+                        "role": "model",
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 35,
+                "candidatesTokenCount": 60,
+                "totalTokenCount": 95,
+            },
+        },
+    )
+    provider = GeminiInferenceProvider(api_key="test-key", client=normal_client)
+    res = await provider.synthesize(question="What is consensus?", evidence="Evidence (https://example.com)")
+    assert res.truncated is False
+    assert res.finish_reason == "STOP"
+    assert res.usage == {
+        "promptTokenCount": 35,
+        "candidatesTokenCount": 60,
+        "totalTokenCount": 95,
+    }
+    assert "[Response truncated" not in res.content
+    assert "[Response may be incomplete]" not in res.content
+
+
+def test_gemini_research_provider_configuration_validation() -> None:
+    # Invalid model
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        GeminiInferenceProvider(api_key="test-key", model="")
+
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        GeminiInferenceProvider(api_key="test-key", model="   ")
+
+    with pytest.raises(ValueError, match="model must be a non-empty string after normalization"):
+        GeminiInferenceProvider(api_key="test-key", model="models/")
+
+    # Invalid max_tokens
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens="500")  # type: ignore
+
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens=True)  # type: ignore
+
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens=False)  # type: ignore
+
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens=0)
+
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens=-10)
+
+
+@pytest.mark.anyio
+async def test_gemini_research_provider_error_redacts_secret() -> None:
+    mock_client = AsyncMock()
+    secret_key = "super-secret-gemini-key-research"
+    mock_response = httpx.Response(
+        status_code=500,
+        json={"error": {"message": f"Server crash with {secret_key}"}},
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = GeminiInferenceProvider(
+        api_key=secret_key,
+        client=mock_client,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await provider.synthesize("Question?", "Evidence")
+
+    err_text = str(exc_info.value)
+    assert secret_key not in err_text
+    assert "[REDACTED]" in err_text
