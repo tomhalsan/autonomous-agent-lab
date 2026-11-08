@@ -25,6 +25,7 @@ from evaluation.routing.benchmark import (
 )
 from evaluation.routing.models import (
     BenchmarkResult,
+    CaseResult,
     ConfusionMatrix,
     EvaluationCase,
     LatencyStats,
@@ -482,3 +483,249 @@ class TestCliValidationAndAllModes:
         assert exit_code == 0
         mock_load.assert_called_with(VALIDATION_DATASET_PATH)
         assert mock_run.call_args.kwargs["dataset_name"] == "validation"
+
+
+class TestBenchmarkAdvisorSemantics:
+    """Verifies that provisional capability and final post-advisor capability remain decoupled."""
+
+    def test_case_result_distinguishes_provisional_and_final_capability(self) -> None:
+        case = EvaluationCase(
+            id="test-001",
+            prompt="Test prompt",
+            expected_capability="general",
+            clarity="ambiguous",
+            rationale="Rationale",
+            category="ambiguous_borderline",
+        )
+        result = CaseResult(
+            case=case,
+            actual_capability="research",  # Final capability after advisor override
+            provisional_capability="general",  # Deterministic provisional capability
+        )
+        assert result.provisional_capability == "general"
+        assert result.effective_provisional_capability == "general"
+        assert result.final_capability == "research"
+        assert result.actual_capability == "research"
+        assert result.is_provisional_correct is True
+        assert result.is_final_correct is False
+        assert result.is_correct is False
+
+    def test_simulated_advisor_decouples_provisional_and_final_accuracy(self) -> None:
+        result = run_benchmark(warmup=0, latency_iterations=1, simulate_advisor=True)
+
+        assert result.total_cases == 44
+        assert result.clear_cases == 39
+        assert result.ambiguous_cases == 5
+        assert result.advisor_consultation_count == 5
+        assert result.simulated_advisor_enabled is True
+
+        # Deterministic provisional accuracy must be 100% (44/44)
+        assert result.provisional_overall_correct == 44
+        assert result.provisional_overall_accuracy == 1.0
+        assert result.provisional_clear_correct == 39
+        assert result.provisional_clear_accuracy == 1.0
+        assert result.provisional_ambiguous_correct == 5
+        assert result.provisional_ambiguous_accuracy == 1.0
+
+        # Final post-simulation capability accuracy reflects synthetic override on eval-012
+        assert result.overall_correct == 43
+        assert round(result.overall_accuracy * 100, 2) == 97.73
+        assert result.clear_correct == 39
+        assert result.clear_accuracy == 1.0
+        assert result.ambiguous_correct == 4
+        assert result.ambiguous_accuracy == 0.8
+
+    def test_eval_012_override_behavior_and_report_attribution(self) -> None:
+        result = run_benchmark(warmup=0, latency_iterations=1, simulate_advisor=True)
+        eval_012_results = [r for r in result.case_results if r.case.id == "eval-012"]
+        assert len(eval_012_results) == 1
+        r = eval_012_results[0]
+
+        assert r.case.expected_capability == "general"
+        assert r.effective_provisional_capability == "general"
+        assert r.is_provisional_correct is True
+        assert r.advisor_recommendation is not None
+        assert r.advisor_recommendation.recommended_capability == AgentCapability.RESEARCH
+        assert r.final_capability == "research"
+        assert r.is_final_correct is False
+
+        report = format_benchmark_report(result)
+        assert "Provisional Capability Acc:  100.00% (44/44)" in report
+        assert "Final Capability Acc:         97.73% (43/44)" in report
+        assert "Disagreement Source: Deterministic assessment was CORRECT; advisor recommendation changed final routing." in report
+        assert "synthetic advisor override" not in report
+        assert "[eval-012]" in report
+        assert "Advisor Action:    Changed to RESEARCH" in report
+
+    def test_clear_assessments_never_invoke_advisor(self) -> None:
+        result = run_benchmark(warmup=0, latency_iterations=1, simulate_advisor=True)
+        clear_results = [r for r in result.case_results if r.case.clarity == "clear"]
+        assert len(clear_results) == 39
+
+        for r in clear_results:
+            assert r.advisor_recommendation is None
+            assert r.fallback_used is False
+            assert r.effective_provisional_capability == r.final_capability
+
+    def test_effective_provisional_capability_derivation_from_assessment(self) -> None:
+        from orchestrator.domain.assessment import RoutingAssessment, RoutingClarity
+
+        case_gen = EvaluationCase(
+            id="t-gen",
+            prompt="Gen prompt",
+            expected_capability="general",
+            clarity="clear",
+            rationale="Test",
+            category="clear_general",
+        )
+        assessment_gen = RoutingAssessment(
+            provisional_capability=AgentCapability.GENERAL,
+            clarity=RoutingClarity.CLEAR,
+            signals=(),
+            reason="Clear general",
+        )
+        res_gen = CaseResult(
+            case=case_gen,
+            actual_capability="general",
+            provisional_capability=None,  # Omitted/None
+            assessment=assessment_gen,
+        )
+        assert res_gen.effective_provisional_capability == "general"
+        assert res_gen.is_provisional_correct is True
+
+        case_res = EvaluationCase(
+            id="t-res",
+            prompt="Res prompt",
+            expected_capability="research",
+            clarity="clear",
+            rationale="Test",
+            category="clear_research",
+        )
+        assessment_res = RoutingAssessment(
+            provisional_capability=AgentCapability.RESEARCH,
+            clarity=RoutingClarity.CLEAR,
+            signals=(),
+            reason="Clear research",
+        )
+        res_res = CaseResult(
+            case=case_res,
+            actual_capability="research",
+            provisional_capability=None,  # Omitted/None
+            assessment=assessment_res,
+        )
+        assert res_res.effective_provisional_capability == "research"
+        assert res_res.is_provisional_correct is True
+
+    def test_report_distinguishes_advisor_agreement_and_change_actions(self) -> None:
+        from orchestrator.domain.advisor import AdvisorRecommendation
+
+        case = EvaluationCase(
+            id="t-disagree",
+            prompt="Prompt",
+            expected_capability="research",
+            clarity="ambiguous",
+            rationale="R",
+            category="cat",
+        )
+        # Agreement case: both provisional and advisor were GENERAL, expected RESEARCH
+        rec_agree = AdvisorRecommendation(
+            recommended_capability=AgentCapability.GENERAL,
+            reason="Advisor concurred with provisional capability",
+        )
+        res_agree = CaseResult(
+            case=case,
+            actual_capability="general",
+            provisional_capability="general",
+            advisor_recommendation=rec_agree,
+        )
+        matrix = ConfusionMatrix(0, 0, 0, 1)
+        latency = LatencyStats(0, 1, 1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000)
+        benchmark_agree = BenchmarkResult(
+            router_name="TestRouter",
+            total_cases=1,
+            clear_cases=0,
+            ambiguous_cases=1,
+            overall_correct=0,
+            clear_correct=0,
+            ambiguous_correct=0,
+            overall_accuracy=0.0,
+            clear_accuracy=0.0,
+            ambiguous_accuracy=0.0,
+            research_precision=0.0,
+            research_recall=0.0,
+            research_f1=0.0,
+            general_precision=0.0,
+            general_recall=0.0,
+            general_f1=0.0,
+            confusion_matrix=matrix,
+            latency=latency,
+            category_accuracies={"cat": 0.0},
+            case_results=[res_agree],
+            simulated_advisor_enabled=True,
+            advisor_consultation_count=1,
+        )
+        report_agree = format_benchmark_report(benchmark_agree)
+        assert "Advisor Action:    Agreed with GENERAL" in report_agree
+        assert "Changed to" not in report_agree
+
+        # Change case: advisor changed general -> research, expected general
+        case_gen = EvaluationCase(
+            id="t-change",
+            prompt="Prompt",
+            expected_capability="general",
+            clarity="ambiguous",
+            rationale="R",
+            category="cat",
+        )
+        rec_change = AdvisorRecommendation(
+            recommended_capability=AgentCapability.RESEARCH,
+            reason="Advisor decided research was appropriate",
+        )
+        res_change = CaseResult(
+            case=case_gen,
+            actual_capability="research",
+            provisional_capability="general",
+            advisor_recommendation=rec_change,
+        )
+        benchmark_change = BenchmarkResult(
+            router_name="TestRouter",
+            total_cases=1,
+            clear_cases=0,
+            ambiguous_cases=1,
+            overall_correct=0,
+            clear_correct=0,
+            ambiguous_correct=0,
+            overall_accuracy=0.0,
+            clear_accuracy=0.0,
+            ambiguous_accuracy=0.0,
+            research_precision=0.0,
+            research_recall=0.0,
+            research_f1=0.0,
+            general_precision=0.0,
+            general_recall=0.0,
+            general_f1=0.0,
+            confusion_matrix=matrix,
+            latency=latency,
+            category_accuracies={"cat": 0.0},
+            case_results=[res_change],
+            simulated_advisor_enabled=True,
+            advisor_consultation_count=1,
+        )
+        report_change = format_benchmark_report(benchmark_change)
+        assert "Advisor Action:    Changed to RESEARCH" in report_change
+        assert "Agreed with" not in report_change
+
+    def test_benchmark_run_enforces_populated_provisional_capability_invariant(self) -> None:
+        result_dev = run_benchmark(warmup=0, latency_iterations=1, simulate_advisor=True)
+        assert len(result_dev.case_results) == 44
+        assert all(r.provisional_capability is not None for r in result_dev.case_results)
+
+        result_val = run_benchmark(
+            dataset_name="validation",
+            dataset=load_dataset(VALIDATION_DATASET_PATH),
+            warmup=0,
+            latency_iterations=1,
+            simulate_advisor=True,
+        )
+        assert len(result_val.case_results) == 34
+        assert all(r.provisional_capability is not None for r in result_val.case_results)
