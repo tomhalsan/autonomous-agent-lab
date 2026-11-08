@@ -58,6 +58,8 @@ Your job is to produce correct, maintainable, secure, well-tested changes while 
 - Do not tune an implementation merely to improve benchmark scores unless explicitly instructed.
 - Preserve separation between development datasets, validation datasets, and independent evaluation or lockbox datasets where the repository establishes that distinction.
 - Evaluation infrastructure should measure behavior rather than bias results toward a preferred outcome.
+- Evaluate local AI inference as a complete configuration of model, runtime, hardware backend, residency/cache strategy, prompt policy, and output contract. Do not infer suitability from model identity, parameter count, or generic benchmark performance alone.
+- Distinguish synthetic backend benchmarks from end-to-end application measurements, and base architectural decisions on measurements representative of the actual workload.
 
 ## 7. Scope Control
 
