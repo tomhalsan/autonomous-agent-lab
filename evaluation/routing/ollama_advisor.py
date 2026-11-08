@@ -18,6 +18,8 @@ from orchestrator.domain.advisor import (
 from orchestrator.domain.assessment import RoutingAssessment
 from orchestrator.domain.capability import AgentCapability
 
+from evaluation.routing.models import OllamaProviderTiming, parse_provider_duration_ns
+
 OLLAMA_ROUTING_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -110,6 +112,25 @@ class OllamaRoutingAdvisor:
         self.timeout = float(timeout)
         self.keep_alive = keep_alive
         self._client = client
+        self.last_provider_timing: OllamaProviderTiming | None = None
+
+    async def unload(self) -> bool:
+        """Explicitly request model unloading from Ollama memory via keep_alive=0.
+
+        Returns:
+            bool: True if the unload request was acknowledged with HTTP 200, False otherwise.
+        """
+        url = f"{self.base_url}/api/generate"
+        payload = {"model": self.model, "keep_alive": 0}
+        try:
+            if self._client is not None:
+                resp = await self._client.post(url, json=payload, timeout=self.timeout)
+            else:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(url, json=payload)
+            return resp.status_code == 200
+        except (httpx.HTTPError, TimeoutError):
+            return False
 
     def build_request_payload(self, prompt: str) -> dict[str, Any]:
         """Construct the request payload for the Ollama /api/generate endpoint."""
@@ -137,6 +158,7 @@ class OllamaRoutingAdvisor:
         but assessment details are deliberately omitted from the prompt payload in
         prompt-only evaluation mode.
         """
+        self.last_provider_timing = None
         payload = self.build_request_payload(prompt)
         url = f"{self.base_url}/api/generate"
 
@@ -172,6 +194,17 @@ class OllamaRoutingAdvisor:
         if not isinstance(outer_data, dict):
             raise AdvisorExecutionError("Ollama outer response is not a JSON object")
 
+        # Parse provider timing into a local value; publish to self.last_provider_timing
+        # only after the recommendation is successfully validated and constructed.
+        local_timing = OllamaProviderTiming(
+            total_duration_ns=parse_provider_duration_ns(outer_data.get("total_duration")),
+            load_duration_ns=parse_provider_duration_ns(outer_data.get("load_duration")),
+            prompt_eval_duration_ns=parse_provider_duration_ns(
+                outer_data.get("prompt_eval_duration")
+            ),
+            eval_duration_ns=parse_provider_duration_ns(outer_data.get("eval_duration")),
+        )
+
         if "response" not in outer_data:
             raise AdvisorExecutionError("Ollama outer response missing required 'response' field")
 
@@ -179,7 +212,9 @@ class OllamaRoutingAdvisor:
         if not isinstance(raw_content, str):
             raise AdvisorExecutionError("Ollama 'response' field is not a string")
 
-        return self._validate_and_parse_model_output(raw_content)
+        recommendation = self._validate_and_parse_model_output(raw_content)
+        self.last_provider_timing = local_timing
+        return recommendation
 
     def _validate_and_parse_model_output(self, raw_content: str) -> AdvisorRecommendation:
         """Validate and parse raw model response string.

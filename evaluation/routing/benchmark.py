@@ -8,13 +8,14 @@ Supports Phase B RoutingAssessment evaluation and legacy Phase A baseline reprod
 from __future__ import annotations
 
 import argparse
+import asyncio
+import inspect
 import json
 import time
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from orchestrator.domain.advisor import (
-    AdvisorError,
     AdvisorExecutionError,
     AdvisorRecommendation,
     AdvisorTimeoutError,
@@ -23,15 +24,45 @@ from orchestrator.domain.advisor import (
 from orchestrator.domain.assessment import RoutingAssessment, RoutingClarity
 from orchestrator.domain.capability import AgentCapability
 
+from evaluation.routing.advisor_evaluation import (
+    COLD_PROBE_PROMPT,
+    categorize_advisor_error,
+    compute_advisor_latency_stats,
+    compute_advisor_quality_metrics,
+    execute_advisor_consultation_async,
+    execute_advisor_consultation_sync,
+    execute_cold_probe,
+    execute_unload_after_run,
+)
 from evaluation.routing.models import (
+    AdvisorFailureCategory,
+    AdvisorLatencyStats,
+    AdvisorRunMetadata,
     BenchmarkResult,
     CapabilityType,
     CaseResult,
     ClarityConfusionMatrix,
+    ColdProbeOutcome,
     ConfusionMatrix,
     EvaluationCase,
     LatencyStats,
+    UnloadStatus,
 )
+
+__all__ = [
+    "COLD_PROBE_PROMPT",
+    "build_parser",
+    "categorize_advisor_error",
+    "compute_advisor_latency_stats",
+    "execute_cold_probe",
+    "format_benchmark_report",
+    "load_dataset",
+    "main",
+    "measure_latency",
+    "run_benchmark",
+    "run_benchmark_async",
+    "validate_cli_args",
+]
 
 DEFAULT_DATASET_PATH = Path(__file__).parent / "dataset.json"
 VALIDATION_DATASET_PATH = Path(__file__).parent / "validation_dataset.json"
@@ -206,86 +237,43 @@ def _compute_metrics(
     return precision, recall, f1
 
 
-def evaluate_correctness(
-    router: EvaluationCapabilityRouter,
-    cases: list[EvaluationCase],
-    advisor: SimulatedPlumbingAdvisor | None = None,
-) -> tuple[
-    list[CaseResult],
-    ConfusionMatrix,
-    dict[str, float],
-]:
-    """Execute the correctness pass evaluating each case once.
+def _prepare_case_provisional(
+    router: EvaluationCapabilityRouter, case: EvaluationCase
+) -> tuple[RoutingAssessment | None, tuple[str, ...], CapabilityType]:
+    """Execute router assessment or route() and derive provisional capability and signals."""
+    assessment: RoutingAssessment | None = None
+    matched_rules: tuple[str, ...] = ()
+    raw_provisional: object = None
 
-    Args:
-        router: CapabilityRouter under evaluation.
-        cases: Labeled test cases.
-        advisor: Optional SimulatedPlumbingAdvisor invoked on ambiguous assessments.
-
-    Returns:
-        Tuple of (case_results, confusion_matrix, category_accuracies).
-    """
-    case_results: list[CaseResult] = []
-
-    for case in cases:
-        assessment = None
-        matched_rules: tuple[str, ...] = ()
-        advisor_rec = None
-        fallback_used = False
-        raw_provisional = None
-
-        if hasattr(router, "assess") and callable(router.assess):
-            res = router.assess(case.prompt)
-            if isinstance(res, RoutingAssessment):
-                assessment = res
-                matched_rules = tuple(s.signal_type.value for s in assessment.signals)
-                raw_provisional = assessment.provisional_capability
-                if (
-                    advisor is not None
-                    and assessment.clarity == RoutingClarity.AMBIGUOUS
-                ):
-                    try:
-                        advisor_rec = advisor.advise(case.prompt, assessment)
-                        raw_output = advisor_rec.recommended_capability
-                    except (AdvisorError, TimeoutError) as exc:
-                        advisor.record_fallback(exc)
-                        raw_output = assessment.provisional_capability
-                        fallback_used = True
-                else:
-                    raw_output = assessment.provisional_capability
-            else:
-                raw_output = router.route(case.prompt)
-                raw_provisional = raw_output
+    if hasattr(router, "assess") and callable(router.assess):
+        res = router.assess(case.prompt)
+        if isinstance(res, RoutingAssessment):
+            assessment = res
+            matched_rules = tuple(s.signal_type.value for s in assessment.signals)
+            raw_provisional = assessment.provisional_capability
         else:
-            raw_output = router.route(case.prompt)
-            raw_provisional = raw_output
+            raw_provisional = router.route(case.prompt)
+    else:
+        raw_provisional = router.route(case.prompt)
 
-        if assessment is None and hasattr(router, "detect_intent"):
-            intent = router.detect_intent(case.prompt)
-            if intent is not None:
-                matched_rules = (intent.value if hasattr(intent, "value") else str(intent),)
+    if assessment is None and hasattr(router, "detect_intent"):
+        intent = router.detect_intent(case.prompt)
+        if intent is not None:
+            matched_rules = (intent.value if hasattr(intent, "value") else str(intent),)
 
-        if raw_provisional is None:
-            raise ValueError(
-                f"Router {type(router).__name__} failed to produce a provisional capability for case '{case.id}'."
-            )
-
-        provisional_cap = normalize_capability(raw_provisional)
-        final_cap = normalize_capability(raw_output)
-
-        case_results.append(
-            CaseResult(
-                case=case,
-                actual_capability=final_cap,
-                provisional_capability=provisional_cap,
-                matched_rules=matched_rules,
-                assessment=assessment,
-                advisor_recommendation=advisor_rec,
-                fallback_used=fallback_used,
-            )
+    if raw_provisional is None:
+        raise ValueError(
+            f"Router {type(router).__name__} failed to produce a provisional capability for case '{case.id}'."
         )
 
-    # Confusion matrix for final capability (Research = positive, General = negative)
+    provisional_cap = normalize_capability(raw_provisional)
+    return assessment, matched_rules, provisional_cap
+
+
+def compute_evaluation_matrices(
+    case_results: list[CaseResult],
+) -> tuple[ConfusionMatrix, dict[str, float]]:
+    """Compute final capability ConfusionMatrix and category accuracy breakdown."""
     true_research = sum(
         1
         for r in case_results
@@ -314,7 +302,6 @@ def evaluate_correctness(
         false_general=false_general,
     )
 
-    # Category accuracies (final capability)
     categories = sorted({r.case.category for r in case_results})
     category_accuracies: dict[str, float] = {}
     for cat in categories:
@@ -324,6 +311,160 @@ def evaluate_correctness(
             cat_correct / len(cat_results) if cat_results else 0.0
         )
 
+    return matrix, category_accuracies
+
+
+async def evaluate_correctness_async(
+    router: EvaluationCapabilityRouter,
+    cases: list[EvaluationCase],
+    advisor: object = None,
+) -> tuple[
+    list[CaseResult],
+    ConfusionMatrix,
+    dict[str, float],
+]:
+    """Execute the correctness pass asynchronously evaluating each case once.
+
+    Args:
+        router: CapabilityRouter under evaluation.
+        cases: Labeled test cases.
+        advisor: Optional sync or async advisor invoked only on ambiguous assessments.
+
+    Returns:
+        Tuple of (case_results, confusion_matrix, category_accuracies).
+    """
+    case_results: list[CaseResult] = []
+
+    for case in cases:
+        assessment, matched_rules, provisional_cap = _prepare_case_provisional(
+            router, case
+        )
+        advisor_rec = None
+        fallback_used = False
+        advisor_wall_clock_ns = None
+        provider_timing = None
+        advisor_error_category: AdvisorFailureCategory | None = None
+        is_clear_invocation = False
+
+        if advisor is not None and assessment is not None:
+            if assessment.clarity == RoutingClarity.AMBIGUOUS:
+                (
+                    raw_output,
+                    advisor_rec,
+                    fallback_used,
+                    advisor_wall_clock_ns,
+                    provider_timing,
+                    advisor_error_category,
+                ) = await execute_advisor_consultation_async(
+                    advisor, case.prompt, assessment
+                )
+            else:
+                # CLEAR assessment: advisor must NOT be invoked
+                raw_output = assessment.provisional_capability
+        else:
+            raw_output = provisional_cap
+
+        final_cap = normalize_capability(raw_output)
+        case_results.append(
+            CaseResult(
+                case=case,
+                actual_capability=final_cap,
+                provisional_capability=provisional_cap,
+                matched_rules=matched_rules,
+                assessment=assessment,
+                advisor_recommendation=advisor_rec,
+                fallback_used=fallback_used,
+                advisor_wall_clock_ns=advisor_wall_clock_ns,
+                provider_timing=provider_timing,
+                advisor_error_category=advisor_error_category,
+                is_advisor_clear_invocation=is_clear_invocation,
+            )
+        )
+
+    matrix, category_accuracies = compute_evaluation_matrices(case_results)
+    return case_results, matrix, category_accuracies
+
+
+def evaluate_correctness(
+    router: EvaluationCapabilityRouter,
+    cases: list[EvaluationCase],
+    advisor: object = None,
+) -> tuple[
+    list[CaseResult],
+    ConfusionMatrix,
+    dict[str, float],
+]:
+    """Execute the correctness pass evaluating each case once.
+
+    Args:
+        router: CapabilityRouter under evaluation.
+        cases: Labeled test cases.
+        advisor: Optional SimulatedPlumbingAdvisor or async advisor invoked on ambiguous assessments.
+
+    Returns:
+        Tuple of (case_results, confusion_matrix, category_accuracies).
+    """
+    is_async_advisor = advisor is not None and (
+        inspect.iscoroutinefunction(getattr(advisor, "advise", None))
+    )
+    if is_async_advisor:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop.is_running():
+            raise RuntimeError(
+                "evaluate_correctness was invoked with an async advisor inside a running event loop. "
+                "Use await evaluate_correctness_async(...) instead."
+            )
+        return asyncio.run(evaluate_correctness_async(router, cases, advisor=advisor))
+
+    case_results: list[CaseResult] = []
+
+    for case in cases:
+        assessment, matched_rules, provisional_cap = _prepare_case_provisional(
+            router, case
+        )
+        advisor_rec = None
+        fallback_used = False
+        advisor_wall_clock_ns = None
+        provider_timing = None
+        advisor_error_category: AdvisorFailureCategory | None = None
+        is_clear_invocation = False
+
+        if advisor is not None and assessment is not None:
+            if assessment.clarity == RoutingClarity.AMBIGUOUS:
+                (
+                    raw_output,
+                    advisor_rec,
+                    fallback_used,
+                    advisor_wall_clock_ns,
+                    provider_timing,
+                    advisor_error_category,
+                ) = execute_advisor_consultation_sync(advisor, case.prompt, assessment)
+            else:
+                raw_output = assessment.provisional_capability
+        else:
+            raw_output = provisional_cap
+
+        final_cap = normalize_capability(raw_output)
+        case_results.append(
+            CaseResult(
+                case=case,
+                actual_capability=final_cap,
+                provisional_capability=provisional_cap,
+                matched_rules=matched_rules,
+                assessment=assessment,
+                advisor_recommendation=advisor_rec,
+                fallback_used=fallback_used,
+                advisor_wall_clock_ns=advisor_wall_clock_ns,
+                provider_timing=provider_timing,
+                advisor_error_category=advisor_error_category,
+                is_advisor_clear_invocation=is_clear_invocation,
+            )
+        )
+
+    matrix, category_accuracies = compute_evaluation_matrices(case_results)
     return case_results, matrix, category_accuracies
 
 
@@ -377,60 +518,21 @@ def measure_latency(
     )
 
 
-def run_benchmark(
-    router: EvaluationCapabilityRouter | None = None,
-    dataset: list[EvaluationCase] | None = None,
-    warmup: int = 10,
-    latency_iterations: int = 20,
-    legacy_v2: bool = False,
-    dataset_name: str = "development",
-    simulate_advisor: bool = False,
+def _build_benchmark_result(
+    active_router: EvaluationCapabilityRouter,
+    cases: list[EvaluationCase],
+    case_results: list[CaseResult],
+    matrix: ConfusionMatrix,
+    category_accuracies: dict[str, float],
+    latency_stats: LatencyStats,
+    dataset_name: str,
+    simulate_advisor: bool,
+    advisor: Any,
+    advisor_provider: str | None,
+    advisor_metadata: AdvisorRunMetadata | None,
+    advisor_latency: AdvisorLatencyStats | None,
 ) -> BenchmarkResult:
-    """Run capability routing benchmark across the evaluation dataset.
-
-    Separates correctness evaluation from isolated latency profiling.
-
-    Args:
-        router: CapabilityRouter instance (defaults to DeterministicCapabilityRouter or LegacyRoutingV2Router).
-        dataset: List of EvaluationCase objects (defaults to loading dataset.json).
-        warmup: Number of unmeasured warmup iterations over the prompt set.
-        latency_iterations: Number of measured repetitions over the prompt set.
-        legacy_v2: If True, uses the legacy Routing v2 baseline router.
-        dataset_name: Name of the dataset being evaluated ('development' or 'validation').
-        simulate_advisor: If True, wires a deterministic test advisor into ambiguous cases only.
-
-    Returns:
-        BenchmarkResult containing detailed accuracy, confusion matrix, clarity analysis, and latency statistics.
-    """
-    active_router = (
-        router if router is not None else get_default_router(legacy_v2=legacy_v2)
-    )
-    cases = dataset if dataset is not None else load_dataset()
-
-    if not cases:
-        raise ValueError("Cannot run benchmark on an empty dataset.")
-
-    advisor = (
-        SimulatedPlumbingAdvisor()
-        if simulate_advisor
-        else None
-    )
-
-    # 1. Correctness Pass (evaluates each case once)
-    case_results, matrix, category_accuracies = evaluate_correctness(
-        active_router, cases, advisor=advisor
-    )
-
-    # 2. Latency Pass (isolated repeated executions)
-    prompts = [c.prompt for c in cases]
-    latency_stats = measure_latency(
-        router=active_router,
-        prompts=prompts,
-        warmup=warmup,
-        latency_iterations=latency_iterations,
-    )
-
-    # Capability accuracy breakdown
+    """Assemble aggregate BenchmarkResult metrics from evaluated case results."""
     total_cases = len(cases)
     clear_cases = [r for r in case_results if r.case.clarity == "clear"]
     ambiguous_cases = [r for r in case_results if r.case.clarity == "ambiguous"]
@@ -465,16 +567,28 @@ def run_benchmark(
 
     # Provisional confusion matrix
     prov_true_research = sum(
-        1 for r in case_results if r.case.expected_capability == "research" and r.effective_provisional_capability == "research"
+        1
+        for r in case_results
+        if r.case.expected_capability == "research"
+        and r.effective_provisional_capability == "research"
     )
     prov_false_research = sum(
-        1 for r in case_results if r.case.expected_capability == "general" and r.effective_provisional_capability == "research"
+        1
+        for r in case_results
+        if r.case.expected_capability == "general"
+        and r.effective_provisional_capability == "research"
     )
     prov_true_general = sum(
-        1 for r in case_results if r.case.expected_capability == "general" and r.effective_provisional_capability == "general"
+        1
+        for r in case_results
+        if r.case.expected_capability == "general"
+        and r.effective_provisional_capability == "general"
     )
     prov_false_general = sum(
-        1 for r in case_results if r.case.expected_capability == "research" and r.effective_provisional_capability == "general"
+        1
+        for r in case_results
+        if r.case.expected_capability == "research"
+        and r.effective_provisional_capability == "general"
     )
     prov_matrix = ConfusionMatrix(
         true_research=prov_true_research,
@@ -497,7 +611,7 @@ def run_benchmark(
         fn=matrix.false_research,
     )
 
-    # 3. Phase B Clarity & Ambiguity Analysis
+    # Phase B Clarity & Ambiguity Analysis
     has_assessments = any(r.assessment is not None for r in case_results)
     clarity_correct = 0
     clarity_acc = 0.0
@@ -528,10 +642,26 @@ def run_benchmark(
             else 0.0
         )
 
-        true_ambiguous = sum(1 for r in case_results if r.case.clarity == "ambiguous" and r.actual_clarity == "ambiguous")
-        false_ambiguous = sum(1 for r in case_results if r.case.clarity == "clear" and r.actual_clarity == "ambiguous")
-        true_clear = sum(1 for r in case_results if r.case.clarity == "clear" and r.actual_clarity == "clear")
-        false_clear = sum(1 for r in case_results if r.case.clarity == "ambiguous" and r.actual_clarity == "clear")
+        true_ambiguous = sum(
+            1
+            for r in case_results
+            if r.case.clarity == "ambiguous" and r.actual_clarity == "ambiguous"
+        )
+        false_ambiguous = sum(
+            1
+            for r in case_results
+            if r.case.clarity == "clear" and r.actual_clarity == "ambiguous"
+        )
+        true_clear = sum(
+            1
+            for r in case_results
+            if r.case.clarity == "clear" and r.actual_clarity == "clear"
+        )
+        false_clear = sum(
+            1
+            for r in case_results
+            if r.case.clarity == "ambiguous" and r.actual_clarity == "clear"
+        )
 
         clarity_matrix = ClarityConfusionMatrix(
             true_ambiguous=true_ambiguous,
@@ -540,6 +670,8 @@ def run_benchmark(
             false_clear=false_clear,
         )
 
+    # Advisor metrics computation
+    quality = compute_advisor_quality_metrics(case_results, advisor)
     router_name = type(active_router).__name__
 
     return BenchmarkResult(
@@ -572,14 +704,14 @@ def run_benchmark(
         ambiguous_assessment_accuracy=ambiguous_assessed_acc,
         clarity_confusion_matrix=clarity_matrix,
         simulated_advisor_enabled=simulate_advisor and (advisor is not None),
-        advisor_eligible_count=len([r for r in case_results if r.actual_clarity == "ambiguous"]),
-        advisor_consultation_count=advisor.consultation_count if advisor is not None else 0,
-        advisor_agreement_count=advisor.agreement_count if advisor is not None else 0,
-        advisor_override_count=advisor.override_count if advisor is not None else 0,
-        advisor_fallback_count=advisor.fallback_count if advisor is not None else 0,
-        advisor_unavailable_count=advisor.unavailable_count if advisor is not None else 0,
-        advisor_timeout_count=advisor.timeout_count if advisor is not None else 0,
-        advisor_execution_error_count=advisor.execution_error_count if advisor is not None else 0,
+        advisor_eligible_count=quality.eligible_count,
+        advisor_consultation_count=quality.consultation_count,
+        advisor_agreement_count=quality.agreement_count,
+        advisor_override_count=quality.override_count,
+        advisor_fallback_count=quality.fallback_count,
+        advisor_unavailable_count=quality.unavailable_count,
+        advisor_timeout_count=quality.timeout_count,
+        advisor_execution_error_count=quality.execution_error_count,
         provisional_overall_correct=prov_overall_correct,
         provisional_overall_accuracy=prov_overall_acc,
         provisional_clear_correct=prov_clear_correct,
@@ -588,6 +720,240 @@ def run_benchmark(
         provisional_ambiguous_accuracy=prov_ambiguous_acc,
         provisional_confusion_matrix=prov_matrix,
         provisional_category_accuracies=prov_category_accuracies,
+        advisor_provider=advisor_provider,
+        advisor_metadata=advisor_metadata,
+        advisor_latency=advisor_latency,
+        advisor_successful_count=quality.successful_count,
+        advisor_correct_change_count=quality.correct_change_count,
+        advisor_regression_count=quality.regression_count,
+        advisor_preserved_correct_count=quality.preserved_correct_count,
+        advisor_preserved_incorrect_count=quality.preserved_incorrect_count,
+        advisor_clear_invocation_count=quality.clear_invocation_count,
+    )
+
+
+async def run_benchmark_async(
+    router: EvaluationCapabilityRouter | None = None,
+    dataset: list[EvaluationCase] | None = None,
+    warmup: int = 10,
+    latency_iterations: int = 20,
+    legacy_v2: bool = False,
+    dataset_name: str = "development",
+    simulate_advisor: bool = False,
+    advisor_provider: str | None = None,
+    ollama_model: str | None = None,
+    ollama_url: str | None = None,
+    ollama_timeout: float | None = None,
+    ollama_keep_alive: int | str | None = None,
+    cold_probe: bool = False,
+    unload_after_run: bool = False,
+    advisor: Any = None,
+) -> BenchmarkResult:
+    """Asynchronous benchmark runner supporting model-backed and simulated advisor evaluation."""
+    active_router = (
+        router if router is not None else get_default_router(legacy_v2=legacy_v2)
+    )
+    cases = dataset if dataset is not None else load_dataset()
+
+    if not cases:
+        raise ValueError("Cannot run benchmark on an empty dataset.")
+
+    effective_advisor = advisor
+    effective_provider = advisor_provider
+
+    if effective_advisor is None:
+        if effective_provider == "ollama":
+            from evaluation.routing.ollama_advisor import OllamaRoutingAdvisor
+
+            effective_advisor = OllamaRoutingAdvisor(
+                model=ollama_model or "",
+                base_url=ollama_url or "http://localhost:11434",
+                timeout=ollama_timeout if ollama_timeout is not None else 30.0,
+                keep_alive=ollama_keep_alive,
+            )
+        elif simulate_advisor or effective_provider == "simulated":
+            effective_advisor = SimulatedPlumbingAdvisor()
+            effective_provider = "simulated"
+
+    cold_probe_outcome: ColdProbeOutcome | None = None
+    if not cold_probe:
+        cold_probe_outcome = ColdProbeOutcome(status="not_requested")
+    elif effective_advisor is not None:
+        cold_probe_outcome = await execute_cold_probe(effective_advisor)
+
+    # 1. Correctness Pass
+    case_results, matrix, category_accuracies = await evaluate_correctness_async(
+        active_router, cases, advisor=effective_advisor
+    )
+
+    # Post-run cleanup/unload if requested
+    unload_status: UnloadStatus = "not_requested"
+    if unload_after_run:
+        unload_status = "not_acknowledged"
+        if effective_advisor is not None:
+            unload_status = await execute_unload_after_run(effective_advisor)
+
+    # 2. Latency Pass (deterministic router latency profiling)
+    prompts = [c.prompt for c in cases]
+    latency_stats = measure_latency(
+        router=active_router,
+        prompts=prompts,
+        warmup=warmup,
+        latency_iterations=latency_iterations,
+    )
+
+    # Advisor metadata and latency stats
+    advisor_metadata = None
+    advisor_latency = None
+    if effective_advisor is not None:
+        advisor_metadata = AdvisorRunMetadata(
+            provider=effective_provider if effective_provider is not None else "custom",
+            model=getattr(effective_advisor, "model", ollama_model),
+            base_url=getattr(effective_advisor, "base_url", ollama_url),
+            timeout_seconds=getattr(effective_advisor, "timeout", ollama_timeout),
+            keep_alive=getattr(effective_advisor, "keep_alive", ollama_keep_alive),
+            prompt_policy="prompt-only C2 (no assessment reason, signals, or ground-truth)",
+            schema='strict raw JSON {"capability", "reason"}',
+            cold_probe_outcome=cold_probe_outcome,
+            unload_after_run=unload_after_run,
+            unload_status=unload_status,
+        )
+        advisor_latency = compute_advisor_latency_stats(
+            case_results=case_results,
+            cold_probe=cold_probe_outcome,
+        )
+
+    return _build_benchmark_result(
+        active_router=active_router,
+        cases=cases,
+        case_results=case_results,
+        matrix=matrix,
+        category_accuracies=category_accuracies,
+        latency_stats=latency_stats,
+        dataset_name=dataset_name,
+        simulate_advisor=simulate_advisor or effective_provider == "simulated",
+        advisor=effective_advisor,
+        advisor_provider=effective_provider,
+        advisor_metadata=advisor_metadata,
+        advisor_latency=advisor_latency,
+    )
+
+
+def run_benchmark(
+    router: EvaluationCapabilityRouter | None = None,
+    dataset: list[EvaluationCase] | None = None,
+    warmup: int = 10,
+    latency_iterations: int = 20,
+    legacy_v2: bool = False,
+    dataset_name: str = "development",
+    simulate_advisor: bool = False,
+    advisor_provider: str | None = None,
+    ollama_model: str | None = None,
+    ollama_url: str | None = None,
+    ollama_timeout: float | None = None,
+    ollama_keep_alive: int | str | None = None,
+    cold_probe: bool = False,
+    unload_after_run: bool = False,
+    advisor: Any = None,
+) -> BenchmarkResult:
+    """Run capability routing benchmark across the evaluation dataset.
+
+    Separates correctness evaluation from isolated latency profiling.
+    """
+    is_async = advisor_provider == "ollama" or (
+        advisor is not None
+        and inspect.iscoroutinefunction(getattr(advisor, "advise", None))
+    )
+    if is_async:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop.is_running():
+            raise RuntimeError(
+                "run_benchmark was called with an async advisor inside a running event loop. "
+                "Use await run_benchmark_async(...) instead."
+            )
+        return asyncio.run(
+            run_benchmark_async(
+                router=router,
+                dataset=dataset,
+                warmup=warmup,
+                latency_iterations=latency_iterations,
+                legacy_v2=legacy_v2,
+                dataset_name=dataset_name,
+                simulate_advisor=simulate_advisor,
+                advisor_provider=advisor_provider,
+                ollama_model=ollama_model,
+                ollama_url=ollama_url,
+                ollama_timeout=ollama_timeout,
+                ollama_keep_alive=ollama_keep_alive,
+                cold_probe=cold_probe,
+                unload_after_run=unload_after_run,
+                advisor=advisor,
+            )
+        )
+
+    # Pure synchronous execution path (deterministic baseline, --simulate-advisor, or sync custom advisor)
+    active_router = (
+        router if router is not None else get_default_router(legacy_v2=legacy_v2)
+    )
+    cases = dataset if dataset is not None else load_dataset()
+
+    if not cases:
+        raise ValueError("Cannot run benchmark on an empty dataset.")
+
+    effective_advisor = advisor
+    effective_provider = advisor_provider
+
+    if effective_advisor is None and (simulate_advisor or effective_provider == "simulated"):
+        effective_advisor = SimulatedPlumbingAdvisor()
+        effective_provider = "simulated"
+
+    # 1. Correctness Pass
+    case_results, matrix, category_accuracies = evaluate_correctness(
+        active_router, cases, advisor=effective_advisor
+    )
+
+    # 2. Latency Pass (isolated repeated executions)
+    prompts = [c.prompt for c in cases]
+    latency_stats = measure_latency(
+        router=active_router,
+        prompts=prompts,
+        warmup=warmup,
+        latency_iterations=latency_iterations,
+    )
+
+    advisor_metadata = None
+    advisor_latency = None
+    if effective_advisor is not None:
+        advisor_metadata = AdvisorRunMetadata(
+            provider=effective_provider if effective_provider is not None else "custom",
+            model=getattr(effective_advisor, "model", None),
+            base_url=getattr(effective_advisor, "base_url", None),
+            timeout_seconds=getattr(effective_advisor, "timeout", None),
+            keep_alive=getattr(effective_advisor, "keep_alive", None),
+            prompt_policy="simulated plumbing" if effective_provider == "simulated" else "custom",
+            schema="N/A",
+            cold_probe_outcome=ColdProbeOutcome(status="not_requested"),
+            unload_after_run=False,
+            unload_status="not_requested",
+        )
+        advisor_latency = compute_advisor_latency_stats(case_results)
+
+    return _build_benchmark_result(
+        active_router=active_router,
+        cases=cases,
+        case_results=case_results,
+        matrix=matrix,
+        category_accuracies=category_accuracies,
+        latency_stats=latency_stats,
+        dataset_name=dataset_name,
+        simulate_advisor=simulate_advisor or effective_provider == "simulated",
+        advisor=effective_advisor,
+        advisor_provider=effective_provider,
+        advisor_metadata=advisor_metadata,
+        advisor_latency=advisor_latency,
     )
 
 
@@ -656,9 +1022,160 @@ def format_benchmark_report(result: BenchmarkResult) -> str:
             f"    * Unavailable:              {result.advisor_unavailable_count:4d}",
             f"    * Timeout:                  {result.advisor_timeout_count:4d}",
             f"    * Execution Error:          {result.advisor_execution_error_count:4d}",
-            "Clear Assessment Invocations:      0  (strictly enforced invariant)",
+            f"Clear Assessment Invocations:      {result.advisor_clear_invocation_count}  (strictly enforced invariant)",
             "NOTE: Simulation exercises all plumbing paths; outcomes are synthetic.",
         ])
+    elif (
+        result.advisor_metadata is not None and result.advisor_metadata.provider != "simulated"
+    ) or (result.advisor_consultation_count > 0 and not result.simulated_advisor_enabled):
+        meta = result.advisor_metadata
+        prov_name = meta.provider if meta else (result.advisor_provider or "custom")
+        mod_name = meta.model if meta and meta.model else "unknown"
+        url_name = meta.base_url if meta and meta.base_url else "unknown"
+        timeout_str = (
+            f"{meta.timeout_seconds} s"
+            if meta and meta.timeout_seconds is not None
+            else "unknown"
+        )
+        keep_alive_str = (
+            str(meta.keep_alive)
+            if meta and meta.keep_alive is not None
+            else "default"
+        )
+        prompt_pol = (
+            meta.prompt_policy
+            if meta
+            else "prompt-only C2 (no assessment reason, signals, or ground-truth)"
+        )
+        schema_str = meta.schema if meta else 'strict raw JSON {"capability", "reason"}'
+        cold_probe_flag = meta.cold_probe_performed if meta else False
+        unload_str = "False (Not Requested)"
+        if meta and meta.unload_status == "acknowledged":
+            unload_str = "True (Unload Requested and Acknowledged; Residency Not Independently Verified)"
+        elif meta and meta.unload_status == "not_acknowledged":
+            unload_str = "Requested (Not Acknowledged; Residency Not Independently Verified)"
+
+        lines.extend([
+            "",
+            "MODEL ADVISOR EXPERIMENTAL CONFIGURATION (C2 PROMPT-ONLY EVALUATION)",
+            "-" * 78,
+            f"Provider:                    {prov_name}",
+            f"Model:                       {mod_name}",
+            f"Base URL:                    {url_name}",
+            f"Timeout:                     {timeout_str}",
+            f"Keep Alive:                  {keep_alive_str}",
+            f"Prompt Policy:               {prompt_pol}",
+            f"Schema:                      {schema_str}",
+            f"Cold Probe Performed:        {cold_probe_flag}",
+            f"Unload After Run:            {unload_str}",
+            "",
+            "ADVISOR QUALITY & DISAMBIGUATION PERFORMANCE (AMBIGUOUS CASES ONLY)",
+            "-" * 78,
+            f"Total Ambiguous Eligible:       {result.advisor_eligible_count:4d}",
+            f"Advisor Consultations:          {result.advisor_consultation_count:4d}",
+            f"  - Successful Recommendations: {result.advisor_successful_count:4d}",
+            f"    * Agreements:               {result.advisor_agreement_count:4d}",
+            f"    * Changes (Overrides):      {result.advisor_override_count:4d}",
+            f"      + Correct Changes:        {result.advisor_correct_change_count:4d}  (Provisional wrong, Advisor correct)",
+            f"      + Regressions:            {result.advisor_regression_count:4d}  (Provisional correct, Advisor wrong)",
+            f"      + Preserved Correct:      {result.advisor_preserved_correct_count:4d}  (Provisional correct, Final correct)",
+            f"      + Preserved Incorrect:    {result.advisor_preserved_incorrect_count:4d}  (Provisional wrong, Final wrong)",
+            f"  - Fallbacks (Preserved):      {result.advisor_fallback_count:4d}",
+            f"    * Unavailable:              {result.advisor_unavailable_count:4d}",
+            f"    * Timeout:                  {result.advisor_timeout_count:4d}",
+            f"    * Execution Error:          {result.advisor_execution_error_count:4d}",
+            f"Clear Assessment Invocations:      {result.advisor_clear_invocation_count}  (strictly enforced invariant)",
+        ])
+
+        if result.advisor_successful_count > 0:
+            sem_correct = (
+                result.advisor_correct_change_count + result.advisor_preserved_correct_count
+            )
+            sem_acc = (sem_correct / result.advisor_successful_count) * 100.0
+            lines.append(
+                f"Advisor Semantic Accuracy:      {sem_correct}/{result.advisor_successful_count} ({sem_acc:6.2f}%)"
+            )
+        else:
+            lines.append("Advisor Semantic Accuracy:      N/A (0 successful)")
+
+        lines.extend([
+            f"Final Ambiguous Accuracy:       {result.ambiguous_accuracy * 100:6.2f}%",
+            f"Deterministic Provisional Acc:  {result.provisional_ambiguous_accuracy * 100:6.2f}%",
+        ])
+
+        if result.advisor_latency is not None:
+            lat = result.advisor_latency
+            lines.extend([
+                "",
+                "ADVISOR LATENCY PROFILE (DESCRIPTIVE MEASUREMENTS OVER SMALL SAMPLE)",
+                "-" * 78,
+            ])
+            if lat.warm_successful is not None:
+                lines.extend([
+                    f"  Successful Warm Consultations: {lat.warm_successful.sample_count}",
+                    f"  Warm Wall-Clock Mean:          {lat.warm_successful.mean_ns / 1_000_000.0:8.2f} ms",
+                    f"  Warm Wall-Clock P50:           {lat.warm_successful.p50_ns / 1_000_000.0:8.2f} ms",
+                    f"  Warm Wall-Clock P90:           {lat.warm_successful.p90_ns / 1_000_000.0:8.2f} ms",
+                    f"  Warm Wall-Clock P95:           {lat.warm_successful.p95_ns / 1_000_000.0:8.2f} ms",
+                ])
+                if lat.warm_successful.p99_ns is not None:
+                    lines.append(
+                        f"  Warm Wall-Clock P99:           {lat.warm_successful.p99_ns / 1_000_000.0:8.2f} ms"
+                    )
+                else:
+                    lines.append(
+                        f"  Warm Wall-Clock P99:           N/A (sample count {lat.warm_successful.sample_count} < 100)"
+                    )
+                lines.extend([
+                    f"  Warm Wall-Clock Min:           {lat.warm_successful.min_ns / 1_000_000.0:8.2f} ms",
+                    f"  Warm Wall-Clock Max:           {lat.warm_successful.max_ns / 1_000_000.0:8.2f} ms",
+                ])
+            else:
+                lines.append("  Successful Warm Consultations: 0")
+
+            if lat.failed_attempts is not None:
+                lines.extend([
+                    f"  Failed Attempt Fallbacks:      {lat.failed_attempts.sample_count}",
+                    f"  Failed Attempt Mean:           {lat.failed_attempts.mean_ns / 1_000_000.0:8.2f} ms",
+                    f"  Failed Attempt Min:            {lat.failed_attempts.min_ns / 1_000_000.0:8.2f} ms",
+                    f"  Failed Attempt Max:            {lat.failed_attempts.max_ns / 1_000_000.0:8.2f} ms",
+                ])
+
+            if lat.provider_total_duration_mean_ns is not None:
+                lines.append(
+                    f"  Provider Total Duration Mean:       {lat.provider_total_duration_mean_ns / 1_000_000.0:8.2f} ms"
+                )
+            if lat.provider_load_duration_mean_ns is not None:
+                lines.append(
+                    f"  Provider Load Duration Mean:        {lat.provider_load_duration_mean_ns / 1_000_000.0:8.2f} ms"
+                )
+            if lat.provider_prompt_eval_duration_mean_ns is not None:
+                lines.append(
+                    f"  Provider Prompt Eval Duration Mean: {lat.provider_prompt_eval_duration_mean_ns / 1_000_000.0:8.2f} ms"
+                )
+            if lat.provider_eval_duration_mean_ns is not None:
+                lines.append(
+                    f"  Provider Eval Duration Mean:        {lat.provider_eval_duration_mean_ns / 1_000_000.0:8.2f} ms"
+                )
+
+            if lat.cold_probe is not None and lat.cold_probe.status != "not_requested":
+                if lat.cold_probe.status == "succeeded" and lat.cold_probe.latency_ns is not None:
+                    lines.append(
+                        f"  Cold Probe Measurement:             {lat.cold_probe.latency_ns / 1_000_000.0:8.2f} ms ({lat.cold_probe.label})"
+                    )
+                    if lat.cold_probe.provider_total_duration_ns is not None:
+                        lines.append(
+                            f"    * Cold Provider Total Duration:   {lat.cold_probe.provider_total_duration_ns / 1_000_000.0:8.2f} ms"
+                        )
+                    if lat.cold_probe.provider_load_duration_ns is not None:
+                        lines.append(
+                            f"    * Cold Provider Load Duration:    {lat.cold_probe.provider_load_duration_ns / 1_000_000.0:8.2f} ms"
+                        )
+                elif lat.cold_probe.status == "failed":
+                    fail_cat = lat.cold_probe.failure_category or "unknown"
+                    lines.append(
+                        f"  Cold Probe Measurement:             FAILED ({fail_cat}) - {lat.cold_probe.label}"
+                    )
 
     lines.extend([
         "",
@@ -825,7 +1342,80 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Simulate deterministic routing advisor plumbing for ambiguous cases only.",
     )
+    parser.add_argument(
+        "--advisor-provider",
+        choices=["simulated", "ollama"],
+        default=None,
+        help="Advisor provider for ambiguous cases ('simulated' or 'ollama').",
+    )
+    parser.add_argument(
+        "--ollama-model",
+        type=str,
+        default=None,
+        help="Ollama model name (required when --advisor-provider ollama is selected).",
+    )
+    parser.add_argument(
+        "--ollama-url",
+        type=str,
+        default=None,
+        help="Ollama server base URL (default: http://localhost:11434 when provider is ollama).",
+    )
+    parser.add_argument(
+        "--ollama-timeout",
+        type=float,
+        default=None,
+        help="Ollama request timeout in seconds (default: 30.0 when provider is ollama).",
+    )
+    parser.add_argument(
+        "--ollama-keep-alive",
+        type=str,
+        default=None,
+        help="Ollama keep_alive parameter (e.g. '5m', '0' for immediate unload, or integer seconds).",
+    )
+    parser.add_argument(
+        "--cold-probe",
+        action="store_true",
+        default=False,
+        help="Execute an isolated, non-scored cold probe request prior to the scored evaluation run.",
+    )
+    parser.add_argument(
+        "--unload-after-run",
+        action="store_true",
+        default=False,
+        help="Send keep_alive=0 to unload the model from memory after benchmark completion.",
+    )
     return parser
+
+
+def validate_cli_args(args: argparse.Namespace) -> None:
+    """Validate CLI flag combinations."""
+    if args.simulate_advisor and args.advisor_provider is not None:
+        raise ValueError("Cannot combine --simulate-advisor and --advisor-provider")
+    if args.advisor_provider == "ollama":
+        if not args.ollama_model or not args.ollama_model.strip():
+            raise ValueError(
+                "--ollama-model is required when --advisor-provider ollama is selected"
+            )
+        if args.ollama_timeout is not None and args.ollama_timeout <= 0:
+            raise ValueError("--ollama-timeout must be greater than zero")
+    else:
+        ollama_opts: list[str] = []
+        if args.ollama_model is not None:
+            ollama_opts.append("--ollama-model")
+        if args.ollama_url is not None:
+            ollama_opts.append("--ollama-url")
+        if args.ollama_timeout is not None:
+            ollama_opts.append("--ollama-timeout")
+        if args.ollama_keep_alive is not None:
+            ollama_opts.append("--ollama-keep-alive")
+        if args.cold_probe:
+            ollama_opts.append("--cold-probe")
+        if args.unload_after_run:
+            ollama_opts.append("--unload-after-run")
+        if ollama_opts:
+            raise ValueError(
+                f"Ollama options ({', '.join(ollama_opts)}) require --advisor-provider ollama"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -833,26 +1423,39 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    try:
+        validate_cli_args(args)
+    except ValueError as err:
+        parser.error(str(err))
+
+    run_kwargs: dict[str, Any] = {
+        "warmup": args.warmup,
+        "latency_iterations": args.latency_iterations,
+        "legacy_v2": args.baseline_v2,
+        "simulate_advisor": args.simulate_advisor,
+        "advisor_provider": args.advisor_provider,
+        "ollama_model": args.ollama_model,
+        "ollama_url": args.ollama_url,
+        "ollama_timeout": args.ollama_timeout,
+        "ollama_keep_alive": args.ollama_keep_alive,
+        "cold_probe": args.cold_probe,
+        "unload_after_run": args.unload_after_run,
+    }
+
     if args.all:
         dev_cases = load_dataset(DEFAULT_DATASET_PATH)
         dev_result = run_benchmark(
             dataset=dev_cases,
-            warmup=args.warmup,
-            latency_iterations=args.latency_iterations,
-            legacy_v2=args.baseline_v2,
             dataset_name="development",
-            simulate_advisor=args.simulate_advisor,
+            **run_kwargs,
         )
         print(format_benchmark_report(dev_result))
         print("\n" + "=" * 78 + "\n")
         val_cases = load_dataset(VALIDATION_DATASET_PATH)
         val_result = run_benchmark(
             dataset=val_cases,
-            warmup=args.warmup,
-            latency_iterations=args.latency_iterations,
-            legacy_v2=args.baseline_v2,
             dataset_name="validation",
-            simulate_advisor=args.simulate_advisor,
+            **run_kwargs,
         )
         print(format_benchmark_report(val_result))
         return 0
@@ -862,7 +1465,9 @@ def main(argv: list[str] | None = None) -> int:
         dataset_name = "validation"
     elif args.dataset is not None:
         target_path = args.dataset
-        dataset_name = "validation" if "validation" in str(target_path).lower() else "custom"
+        dataset_name = (
+            "validation" if "validation" in str(target_path).lower() else "custom"
+        )
     else:
         target_path = DEFAULT_DATASET_PATH
         dataset_name = "development"
@@ -870,11 +1475,8 @@ def main(argv: list[str] | None = None) -> int:
     cases = load_dataset(target_path)
     result = run_benchmark(
         dataset=cases,
-        warmup=args.warmup,
-        latency_iterations=args.latency_iterations,
-        legacy_v2=args.baseline_v2,
         dataset_name=dataset_name,
-        simulate_advisor=args.simulate_advisor,
+        **run_kwargs,
     )
     print(format_benchmark_report(result))
     return 0

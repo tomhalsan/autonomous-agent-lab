@@ -451,3 +451,64 @@ async def test_22_injected_client_is_not_closed_by_advisor() -> None:
         rec2 = await advisor.advise("Test prompt 2", make_assessment())
         assert rec2.recommended_capability == AgentCapability.GENERAL
         assert not client.is_closed
+
+
+@pytest.mark.anyio
+async def test_23_provider_timing_lifecycle() -> None:
+    """Provider timing is only published after a valid recommendation and cleared on error."""
+    valid_payload = {
+        "response": json.dumps({"capability": "general", "reason": "Clear general query"}),
+        "total_duration": 50_000_000,
+        "load_duration": 10_000_000,
+        "prompt_eval_duration": 20_000_000,
+        "eval_duration": 20_000_000,
+    }
+    malformed_payload = {
+        "response": "not json content",
+        "total_duration": 80_000_000,
+        "load_duration": 15_000_000,
+    }
+
+    # 1. Successful call publishes timing
+    async with make_mock_client(json_data=valid_payload) as client:
+        advisor = OllamaRoutingAdvisor(model="test-model", client=client)
+        assert advisor.last_provider_timing is None
+
+        rec = await advisor.advise("Test prompt", make_assessment())
+        assert rec.recommended_capability == AgentCapability.GENERAL
+        assert advisor.last_provider_timing is not None
+        assert advisor.last_provider_timing.total_duration_ns == 50_000_000
+        assert advisor.last_provider_timing.load_duration_ns == 10_000_000
+
+    # 2. Malformed model response does NOT publish timing even if outer Ollama timing was present
+    async with make_mock_client(json_data=malformed_payload) as client:
+        advisor = OllamaRoutingAdvisor(model="test-model", client=client)
+        assert advisor.last_provider_timing is None
+
+        with pytest.raises(AdvisorExecutionError):
+            await advisor.advise("Test prompt", make_assessment())
+
+        assert advisor.last_provider_timing is None
+
+    # 3. Consecutive calls: failed call after successful call does NOT retain stale timing
+    responses = [
+        httpx.Response(200, json=valid_payload),
+        httpx.Response(200, json=malformed_payload),
+    ]
+
+    async def mock_handler(request: httpx.Request) -> httpx.Response:
+        return responses.pop(0)
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        advisor = OllamaRoutingAdvisor(model="test-model", client=client)
+
+        # Call 1 succeeds
+        await advisor.advise("Test prompt 1", make_assessment())
+        assert advisor.last_provider_timing is not None
+        assert advisor.last_provider_timing.total_duration_ns == 50_000_000
+
+        # Call 2 fails -> timing must be cleared to None, not retaining stale timing
+        with pytest.raises(AdvisorExecutionError):
+            await advisor.advise("Test prompt 2", make_assessment())
+        assert advisor.last_provider_timing is None

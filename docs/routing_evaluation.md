@@ -267,11 +267,54 @@ python -m evaluation.routing.benchmark --baseline-v2
 # 5. Validate simulated advisor plumbing on ambiguous cases
 PYTHONPATH="services/orchestrator/src:services/worker/src:services/research_agent/src:packages/contracts/src:." \
 python -m evaluation.routing.benchmark --simulate-advisor
+
+# 6. Evaluate ambiguous cases with local model-backed Ollama advisor (Phase C2 experimental harness)
+PYTHONPATH="services/orchestrator/src:services/worker/src:services/research_agent/src:packages/contracts/src:." \
+python -m evaluation.routing.benchmark --advisor-provider ollama --ollama-model llama3.2:3b
+
+# 7. Model evaluation with explicit cold probe, keep_alive retention, and post-run unloading
+PYTHONPATH="services/orchestrator/src:services/worker/src:services/research_agent/src:packages/contracts/src:." \
+python -m evaluation.routing.benchmark --advisor-provider ollama --ollama-model gemma3:1b --ollama-keep-alive 5m --cold-probe --unload-after-run
 ```
 
 ---
 
-## 8. Empirical Results & Performance Summary
+## 8. Phase C2: Model-Backed RoutingAdvisor Evaluation Harness (Experimental)
+
+Phase C2 introduces experimental harness infrastructure to evaluate local language models (such as `gemma3:1b` or `llama3.2:3b` via Ollama) behind the provider-neutral `RoutingAdvisor` port.
+
+> [!IMPORTANT]
+> **Experimental Evaluation Status**:
+> The Ollama advisor adapter ([`evaluation/routing/ollama_advisor.py`](../evaluation/routing/ollama_advisor.py)) and CLI flags are strictly experimental evaluation fixtures. They are **not** production orchestrator provider implementations. No external provider or running Ollama daemon is required for CI or automated pytest suites; all unit tests execute offline using deterministic mocks.
+
+### Prompt-Only Evaluation Mode
+In Phase C2 prompt-only evaluation mode, the model receives only the raw task prompt embedded in a standardized classification instruction. Deterministic routing assessment reasons, detected signal types, provisional capability decisions, and ground-truth dataset labels are **deliberately withheld** from the prompt. This prevents the model from anchoring on deterministic heuristics and measures true independent task disambiguation ability.
+
+### Outcome Interpretation: Changes vs. Regressions
+When an advisor is consulted on an ambiguous assessment, the outcome falls into one of four mutually exclusive quality categories:
+1. **Correct Change**: The deterministic provisional capability disagreed with expected ground truth, and the advisor recommendation changed the final decision to the correct capability.
+2. **Regression**: The deterministic provisional capability was correct, but the advisor recommendation changed the final decision to an incorrect capability.
+3. **Preserved Correct**: The deterministic provisional capability was correct, and the advisor agreed (or gracefully fell back on failure), preserving the correct capability.
+4. **Preserved Incorrect**: The deterministic provisional capability was incorrect, and the advisor either agreed with the incorrect capability or fell back without resolving the error.
+
+### Latency Separation: Deterministic Baseline vs. Model Advisor
+The benchmark strictly isolates microsecond deterministic router performance from model inference latency:
+- **Deterministic Latency**: Measured in microseconds (`µs`) over repeated iterations of `router.route(prompt)`. It never invokes an advisor.
+- **Advisor Latency**: Reported separately in milliseconds (`ms`). Both client-observed wall-clock duration and provider-reported telemetry (`total_duration`, `load_duration`, `prompt_eval_duration`, `eval_duration`) are tracked. Because the ambiguous subsets are small (5 development cases, 8 validation cases), percentiles are labeled descriptive measurements rather than statistical significance indicators.
+
+### Cold-Probe vs. Warm-Scored Methodology
+To ensure fair and reproducible CPU-only evaluation on local hosts (such as `home-core`):
+1. **Cold Probe**: An isolated, non-scored baseline request ([`COLD_PROBE_PROMPT`](../evaluation/routing/benchmark.py)) can be executed prior to the scored evaluation run via `--cold-probe`. If model unloading via `keep_alive=0` succeeded immediately prior, it is labeled as an explicitly unloaded cold probe; otherwise it is labeled as an unverified cold start. The cold probe is **strictly excluded** from dataset accuracy scoring and warm latency distribution calculations.
+2. **Warm Scored Run**: The harness scores ambiguous dataset cases sequentially after the cold probe. `--ollama-keep-alive` (e.g. `5m`) ensures the model remains resident in memory throughout the scored run.
+3. **Post-Run Cleanup**: If `--unload-after-run` is passed, the harness issues an explicit `keep_alive=0` unload request to free memory upon benchmark completion.
+
+> [!WARNING]
+> **Evaluation Dataset Caveat**:
+> Accuracy and latency metrics on the 44-case development dataset and 34-case validation dataset are diagnostic calibration tools, not unbiased production accuracy estimates. An unbiased evaluation requires a future independent lockbox dataset authored independently after implementation freezing.
+
+---
+
+## 9. Empirical Results & Performance Summary
 
 ### Comparative Performance Table
 
@@ -294,7 +337,7 @@ python -m evaluation.routing.benchmark --simulate-advisor
 
 ---
 
-## 9. Generalization Lessons & Phase C Prerequisites
+## 10. Generalization Lessons & Phase C Prerequisites
 
 ### Generalization Lessons from Phase B
 Initial testing of Phase B against unseen prompts revealed that high development scores can mask narrow regex assumptions:
@@ -317,7 +360,7 @@ While the generalized deterministic rules achieve 100% on both the 44-case devel
 
 ---
 
-## 10. Non-Blocking Architectural Follow-ups
+## 11. Non-Blocking Architectural Follow-ups
 
 The following improvements are documented for execution prior to or alongside Phase C:
 1. **Persist RoutingAssessment Diagnostics**: Extend `RoutingDecision` (or add a companion `RoutingAssessmentRecord`) to persist assessment clarity, typed signals, and signal-backed reasoning alongside the dispatch decision, exposing them to the observatory and debugging APIs.
