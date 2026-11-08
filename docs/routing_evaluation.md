@@ -181,6 +181,23 @@ Phase C1 introduces a provider-neutral application boundary through which an opt
 
 Phase C1 introduces no Ollama, Cloudflare, local model, or network dependencies. Provider-specific implementations (e.g., Ollama adapter) are deferred to Phase C2, adhering to Clean Architecture principles.
 
+### Plumbing Validation vs. Model-Quality Benchmarking
+
+To verify the hybrid execution plumbing prior to introducing model providers (Phase C2), Phase C1 provides a deterministic test fixture: `SimulatedPlumbingAdvisor` in [`evaluation/routing/benchmark.py`](../evaluation/routing/benchmark.py).
+
+`SimulatedPlumbingAdvisor` deterministically cycles through all hybrid plumbing branches for AMBIGUOUS assessments:
+1. **Agreement** (step 0): Confirms the provisional capability.
+2. **Override / Changed Recommendation** (step 1): Deliberately returns the opposite capability to verify that the orchestrator respects an advisor recommendation when it differs from the provisional assessment.
+3. **Unavailable Fallback** (step 2): Raises `AdvisorUnavailableError` to verify fallback to the provisional capability.
+4. **Timeout Fallback** (step 3): Raises `AdvisorTimeoutError` to verify fallback to the provisional capability.
+5. **Execution Error Fallback** (step 4): Raises `AdvisorExecutionError` to verify fallback to the provisional capability.
+
+> [!IMPORTANT]
+> **Plumbing Verification is NOT Model-Quality Evidence**:
+> The simulated advisor exists solely to verify wiring, fallback mechanics, and provenance logging. Because step 1 deliberately overrides the provisional capability, synthetic advisor overrides alter **final post-advisor routing accuracy** without retroactively altering **deterministic provisional capability accuracy**:
+> - On the development dataset, case `eval-012` (*"What are the best practices for securing a REST API?"*) has expected capability `GENERAL`. The deterministic router provisionally selects `GENERAL` (100% correct). The simulated advisor deliberately changes it to `RESEARCH`, demonstrating that advisor overrides function as intended in dispatch decisions. This produces a final capability accuracy of 97.73% (43/44) while deterministic provisional accuracy remains 100.00% (44/44).
+> - On the validation dataset, synthetic overrides on cases `val-022` and `val-029` similarly produce a final capability accuracy of 94.12% (32/34) while deterministic provisional accuracy remains 100.00% (34/34).
+
 ---
 
 ## 6. Signal Taxonomy & Core Routing Policies
@@ -258,18 +275,22 @@ python -m evaluation.routing.benchmark --simulate-advisor
 
 ### Comparative Performance Table
 
-| Metric | Phase A: Routing v2 Baseline | Phase B: Development Dataset | Phase B: Validation Dataset | Phase C1: Simulated Advisor |
+| Metric | Phase A: Routing v2 Baseline | Phase B: Development Dataset | Phase B: Validation Dataset | Phase C1: Simulated Advisor (Plumbing Test) |
 |---|:---:|:---:|:---:|:---:|
 | **Cases Evaluated** | 44 | 44 | 34 | 44 / 34 |
-| **Provisional Capability Accuracy** | **63.64%** (28/44) | **100.00%** (44/44) | **100.00%** (34/34) | **100.00%** |
+| **Provisional Capability Accuracy (Deterministic)** | **63.64%** (28/44) | **100.00%** (44/44) | **100.00%** (34/34) | **100.00%** (44/44) / **100.00%** (34/34) |
+| **Final Capability Accuracy (Post-Advisor)** | **63.64%** (28/44) | **100.00%** (44/44) | **100.00%** (34/34) | **97.73%** (43/44) / **94.12%** (32/34) * |
 | **Clarity Label Alignment** | 88.64% (39/44) | **100.00%** (44/44) | **100.00%** (34/34) | **100.00%** |
 | **Advisor Delegation Rate** | 0.00% (0/44) | **11.36%** (5/44) | **23.53%** (8/34) | **11.36%** / **23.53%** |
 | **Clear Prompt Advisor Invocations** | N/A | 0 (enforced) | 0 (enforced) | **0 (enforced)** |
 | **Capability Acc (Assessed CLEAR)** | 63.64% | **100.00%** (39/39) | **100.00%** (26/26) | **100.00%** |
-| **Capability Acc (Assessed AMBIGUOUS)** | 0.00% | **100.00%** (5/5) | **100.00%** (8/8) | **100.00%** |
-| **Research Precision / Recall / F1** | 0.56 / 0.56 / 0.56 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** |
-| **General Precision / Recall / F1** | 0.69 / 0.69 / 0.69 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** |
+| **Capability Acc (Assessed AMBIGUOUS, Provisional)** | 0.00% | **100.00%** (5/5) | **100.00%** (8/8) | **100.00%** (5/5) / **100.00%** (8/8) |
+| **Capability Acc (Assessed AMBIGUOUS, Final Post-Simulation)** | 0.00% | **100.00%** (5/5) | **100.00%** (8/8) | **80.00%** (4/5) / **75.00%** (6/8) * |
+| **Research Precision / Recall / F1 (Final)** | 0.56 / 0.56 / 0.56 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** | **0.95 / 1.00 / 0.97** (dev) / **0.89 / 1.00 / 0.94** (val) |
+| **General Precision / Recall / F1 (Final)** | 0.69 / 0.69 / 0.69 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** | **1.00 / 0.96 / 0.98** (dev) / **1.00 / 0.89 / 0.94** (val) |
 | **Median Execution Latency (P50)** | **~50 µs** | **~110 µs** | **~100 µs** | **~130 µs** |
+
+\* *Note on Phase C1 Final Accuracy: The simulated plumbing advisor intentionally exercises synthetic overrides on step 1 of its cycle (`eval-012` on dev; `val-022` and `val-029` on val) to prove that changed advisor recommendations alter the final dispatch decision. This validates plumbing mechanics, not model intelligence.*
 
 ---
 

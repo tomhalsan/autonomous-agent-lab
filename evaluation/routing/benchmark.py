@@ -232,12 +232,14 @@ def evaluate_correctness(
         matched_rules: tuple[str, ...] = ()
         advisor_rec = None
         fallback_used = False
+        raw_provisional = None
 
         if hasattr(router, "assess") and callable(router.assess):
             res = router.assess(case.prompt)
             if isinstance(res, RoutingAssessment):
                 assessment = res
                 matched_rules = tuple(s.signal_type.value for s in assessment.signals)
+                raw_provisional = assessment.provisional_capability
                 if (
                     advisor is not None
                     and assessment.clarity == RoutingClarity.AMBIGUOUS
@@ -253,20 +255,29 @@ def evaluate_correctness(
                     raw_output = assessment.provisional_capability
             else:
                 raw_output = router.route(case.prompt)
+                raw_provisional = raw_output
         else:
             raw_output = router.route(case.prompt)
+            raw_provisional = raw_output
 
         if assessment is None and hasattr(router, "detect_intent"):
             intent = router.detect_intent(case.prompt)
             if intent is not None:
                 matched_rules = (intent.value if hasattr(intent, "value") else str(intent),)
 
-        actual_cap = normalize_capability(raw_output)
+        if raw_provisional is None:
+            raise ValueError(
+                f"Router {type(router).__name__} failed to produce a provisional capability for case '{case.id}'."
+            )
+
+        provisional_cap = normalize_capability(raw_provisional)
+        final_cap = normalize_capability(raw_output)
 
         case_results.append(
             CaseResult(
                 case=case,
-                actual_capability=actual_cap,
+                actual_capability=final_cap,
+                provisional_capability=provisional_cap,
                 matched_rules=matched_rules,
                 assessment=assessment,
                 advisor_recommendation=advisor_rec,
@@ -274,26 +285,26 @@ def evaluate_correctness(
             )
         )
 
-    # Confusion matrix (Research = positive, General = negative)
+    # Confusion matrix for final capability (Research = positive, General = negative)
     true_research = sum(
         1
         for r in case_results
-        if r.case.expected_capability == "research" and r.actual_capability == "research"
+        if r.case.expected_capability == "research" and r.final_capability == "research"
     )
     false_research = sum(
         1
         for r in case_results
-        if r.case.expected_capability == "general" and r.actual_capability == "research"
+        if r.case.expected_capability == "general" and r.final_capability == "research"
     )
     true_general = sum(
         1
         for r in case_results
-        if r.case.expected_capability == "general" and r.actual_capability == "general"
+        if r.case.expected_capability == "general" and r.final_capability == "general"
     )
     false_general = sum(
         1
         for r in case_results
-        if r.case.expected_capability == "research" and r.actual_capability == "general"
+        if r.case.expected_capability == "research" and r.final_capability == "general"
     )
 
     matrix = ConfusionMatrix(
@@ -303,12 +314,12 @@ def evaluate_correctness(
         false_general=false_general,
     )
 
-    # Category accuracies
+    # Category accuracies (final capability)
     categories = sorted({r.case.category for r in case_results})
     category_accuracies: dict[str, float] = {}
     for cat in categories:
         cat_results = [r for r in case_results if r.case.category == cat]
-        cat_correct = sum(1 for r in cat_results if r.is_correct)
+        cat_correct = sum(1 for r in cat_results if r.is_final_correct)
         category_accuracies[cat] = (
             cat_correct / len(cat_results) if cat_results else 0.0
         )
@@ -424,13 +435,53 @@ def run_benchmark(
     clear_cases = [r for r in case_results if r.case.clarity == "clear"]
     ambiguous_cases = [r for r in case_results if r.case.clarity == "ambiguous"]
 
-    overall_correct = sum(1 for r in case_results if r.is_correct)
-    clear_correct = sum(1 for r in clear_cases if r.is_correct)
-    ambiguous_correct = sum(1 for r in ambiguous_cases if r.is_correct)
+    # Final post-advisor metrics
+    overall_correct = sum(1 for r in case_results if r.is_final_correct)
+    clear_correct = sum(1 for r in clear_cases if r.is_final_correct)
+    ambiguous_correct = sum(1 for r in ambiguous_cases if r.is_final_correct)
 
     overall_acc = overall_correct / total_cases if total_cases > 0 else 0.0
     clear_acc = clear_correct / len(clear_cases) if clear_cases else 0.0
     ambiguous_acc = ambiguous_correct / len(ambiguous_cases) if ambiguous_cases else 0.0
+
+    # Deterministic provisional metrics (pre-advisor)
+    prov_overall_correct = sum(1 for r in case_results if r.is_provisional_correct)
+    prov_clear_correct = sum(1 for r in clear_cases if r.is_provisional_correct)
+    prov_ambiguous_correct = sum(1 for r in ambiguous_cases if r.is_provisional_correct)
+
+    prov_overall_acc = prov_overall_correct / total_cases if total_cases > 0 else 0.0
+    prov_clear_acc = prov_clear_correct / len(clear_cases) if clear_cases else 0.0
+    prov_ambiguous_acc = prov_ambiguous_correct / len(ambiguous_cases) if ambiguous_cases else 0.0
+
+    # Provisional category accuracies
+    categories = sorted({r.case.category for r in case_results})
+    prov_category_accuracies: dict[str, float] = {}
+    for cat in categories:
+        cat_results = [r for r in case_results if r.case.category == cat]
+        cat_correct = sum(1 for r in cat_results if r.is_provisional_correct)
+        prov_category_accuracies[cat] = (
+            cat_correct / len(cat_results) if cat_results else 0.0
+        )
+
+    # Provisional confusion matrix
+    prov_true_research = sum(
+        1 for r in case_results if r.case.expected_capability == "research" and r.effective_provisional_capability == "research"
+    )
+    prov_false_research = sum(
+        1 for r in case_results if r.case.expected_capability == "general" and r.effective_provisional_capability == "research"
+    )
+    prov_true_general = sum(
+        1 for r in case_results if r.case.expected_capability == "general" and r.effective_provisional_capability == "general"
+    )
+    prov_false_general = sum(
+        1 for r in case_results if r.case.expected_capability == "research" and r.effective_provisional_capability == "general"
+    )
+    prov_matrix = ConfusionMatrix(
+        true_research=prov_true_research,
+        false_research=prov_false_research,
+        true_general=prov_true_general,
+        false_general=prov_false_general,
+    )
 
     res_precision, res_recall, res_f1 = _compute_metrics(
         tp=matrix.true_research,
@@ -467,12 +518,12 @@ def run_benchmark(
         delegation_rate = delegation_count / total_cases if total_cases > 0 else 0.0
 
         clear_assessed_acc = (
-            sum(1 for r in clear_assessed if r.is_correct) / len(clear_assessed)
+            sum(1 for r in clear_assessed if r.is_final_correct) / len(clear_assessed)
             if clear_assessed
             else 0.0
         )
         ambiguous_assessed_acc = (
-            sum(1 for r in ambiguous_assessed if r.is_correct) / len(ambiguous_assessed)
+            sum(1 for r in ambiguous_assessed if r.is_final_correct) / len(ambiguous_assessed)
             if ambiguous_assessed
             else 0.0
         )
@@ -529,11 +580,21 @@ def run_benchmark(
         advisor_unavailable_count=advisor.unavailable_count if advisor is not None else 0,
         advisor_timeout_count=advisor.timeout_count if advisor is not None else 0,
         advisor_execution_error_count=advisor.execution_error_count if advisor is not None else 0,
+        provisional_overall_correct=prov_overall_correct,
+        provisional_overall_accuracy=prov_overall_acc,
+        provisional_clear_correct=prov_clear_correct,
+        provisional_clear_accuracy=prov_clear_acc,
+        provisional_ambiguous_correct=prov_ambiguous_correct,
+        provisional_ambiguous_accuracy=prov_ambiguous_acc,
+        provisional_confusion_matrix=prov_matrix,
+        provisional_category_accuracies=prov_category_accuracies,
     )
 
 
 def format_benchmark_report(result: BenchmarkResult) -> str:
     """Format benchmark results into a clear, human-readable terminal report."""
+    has_advisor = result.simulated_advisor_enabled or result.advisor_consultation_count > 0
+
     lines: list[str] = [
         "=" * 78,
         f"ROUTING BENCHMARK REPORT: {result.router_name} [{result.dataset_name.upper()} DATASET]",
@@ -543,17 +604,38 @@ def format_benchmark_report(result: BenchmarkResult) -> str:
         "-" * 78,
         f"Dataset:                     {result.dataset_name.capitalize()} Dataset",
         f"Total Cases:                 {result.total_cases:4d}",
-        f"  Clear Cases:               {result.clear_cases:4d}   (Accuracy: {result.clear_accuracy * 100:6.2f}% | {result.clear_correct}/{result.clear_cases})",
-        f"  Ambiguous Cases:           {result.ambiguous_cases:4d}   (Accuracy: {result.ambiguous_accuracy * 100:6.2f}% | {result.ambiguous_correct}/{result.ambiguous_cases})",
-        f"Provisional Capability Acc:  {result.overall_accuracy * 100:6.2f}% ({result.overall_correct}/{result.total_cases})",
     ]
+
+    if has_advisor:
+        lines.extend([
+            f"  Clear Cases:               {result.clear_cases:4d}   (Provisional: {result.provisional_clear_accuracy * 100:6.2f}% | Final: {result.clear_accuracy * 100:6.2f}%)",
+            f"  Ambiguous Cases:           {result.ambiguous_cases:4d}   (Provisional: {result.provisional_ambiguous_accuracy * 100:6.2f}% | Final: {result.ambiguous_accuracy * 100:6.2f}%)",
+            f"Provisional Capability Acc:  {result.provisional_overall_accuracy * 100:6.2f}% ({result.provisional_overall_correct}/{result.total_cases})",
+            f"Final Capability Acc:        {result.overall_accuracy * 100:6.2f}% ({result.overall_correct}/{result.total_cases})",
+        ])
+    else:
+        lines.extend([
+            f"  Clear Cases:               {result.clear_cases:4d}   (Accuracy: {result.clear_accuracy * 100:6.2f}% | {result.clear_correct}/{result.clear_cases})",
+            f"  Ambiguous Cases:           {result.ambiguous_cases:4d}   (Accuracy: {result.ambiguous_accuracy * 100:6.2f}% | {result.ambiguous_correct}/{result.ambiguous_cases})",
+            f"Provisional Capability Acc:  {result.provisional_overall_accuracy * 100:6.2f}% ({result.provisional_overall_correct}/{result.total_cases})",
+            f"Final Capability Acc:        {result.overall_accuracy * 100:6.2f}% ({result.overall_correct}/{result.total_cases})",
+        ])
 
     if result.clarity_confusion_matrix is not None:
         lines.extend([
             f"Clarity Label Alignment:     {result.clarity_accuracy * 100:6.2f}% ({result.clarity_correct}/{result.total_cases})",
             f"Hypothetical Advisor Rate:   {result.advisor_delegation_rate * 100:6.2f}% ({result.advisor_delegation_count}/{result.total_cases} ambiguous prompts)",
             f"Capability Acc (Assessed CLEAR):     {result.clear_assessment_accuracy * 100:6.2f}%",
-            f"Capability Acc (Assessed AMBIGUOUS): {result.ambiguous_assessment_accuracy * 100:6.2f}%",
+        ])
+        if has_advisor:
+            lines.extend([
+                f"Provisional Acc (Assessed AMBIGUOUS): {result.provisional_ambiguous_accuracy * 100:6.2f}%",
+                f"Final Acc (Assessed AMBIGUOUS):       {result.ambiguous_assessment_accuracy * 100:6.2f}%",
+            ])
+        else:
+            lines.append(f"Capability Acc (Assessed AMBIGUOUS): {result.ambiguous_assessment_accuracy * 100:6.2f}%")
+
+        lines.extend([
             "",
             "CLARITY CONFUSION MATRIX (Ambiguous = Positive, Clear = Negative)",
             "-" * 78,
@@ -616,24 +698,62 @@ def format_benchmark_report(result: BenchmarkResult) -> str:
         "",
     ])
 
-    # Capability Disagreements
-    disagreements = [r for r in result.case_results if not r.is_correct]
+    # Final Capability Disagreements
+    disagreements = [r for r in result.case_results if not r.is_final_correct]
     if disagreements:
         lines.extend([
-            f"CAPABILITY DISAGREEMENTS / ERRORS ({len(disagreements)} cases)",
+            f"CAPABILITY DISAGREEMENTS / ERRORS (FINAL ROUTING) ({len(disagreements)} cases)",
             "-" * 78,
         ])
         for r in disagreements:
             rule_str = f" [Signals: {', '.join(r.matched_rules)}]" if r.matched_rules else ""
             reason_str = f"\n  Assessment Reason: {r.assessment.reason}" if r.assessment is not None else ""
+            advisor_str = ""
+            if r.advisor_recommendation is not None:
+                rec_cap = normalize_capability(r.advisor_recommendation.recommended_capability)
+                prov_cap = r.effective_provisional_capability
+                if rec_cap == prov_cap:
+                    action_label = f"Agreed with {rec_cap.upper()}"
+                else:
+                    action_label = f"Changed to {rec_cap.upper()}"
+                advisor_str = f"\n  Advisor Action:    {action_label} ({r.advisor_recommendation.reason})"
+            elif r.fallback_used:
+                advisor_str = "\n  Advisor Action:    Fallback used (provisional capability preserved)"
+
+            diff_note = ""
+            if r.is_provisional_correct and not r.is_final_correct:
+                diff_note = "\n  Disagreement Source: Deterministic assessment was CORRECT; advisor recommendation changed final routing."
+            elif not r.is_provisional_correct and not r.is_final_correct:
+                diff_note = "\n  Disagreement Source: Deterministic provisional assessment also disagreed with expected ground truth."
+
             lines.append(
                 f"[{r.case.id}] ({r.case.category}) clarity={r.case.clarity}\n"
-                f"  Prompt:   \"{r.case.prompt[:70]}{'...' if len(r.case.prompt) > 70 else ''}\"\n"
-                f"  Expected: {r.case.expected_capability.upper()} | Actual: {r.actual_capability.upper()}{rule_str}{reason_str}\n"
-                f"  Rationale: {r.case.rationale}\n"
+                f"  Prompt:            \"{r.case.prompt[:70]}{'...' if len(r.case.prompt) > 70 else ''}\"\n"
+                f"  Expected:          {r.case.expected_capability.upper()}\n"
+                f"  Provisional:       {r.effective_provisional_capability.upper()}{rule_str}\n"
+                f"  Final:             {r.final_capability.upper()}{advisor_str}{diff_note}{reason_str}\n"
+                f"  Rationale:         {r.case.rationale}\n"
             )
     else:
-        lines.append("No capability classification disagreements found.\n")
+        lines.append("No final capability classification disagreements found.\n")
+
+    # Deterministic Provisional Disagreements (Pre-advisor)
+    prov_disagreements = [r for r in result.case_results if not r.is_provisional_correct]
+    if prov_disagreements and has_advisor:
+        lines.extend([
+            f"PROVISIONAL CAPABILITY DISAGREEMENTS (PRE-ADVISOR) ({len(prov_disagreements)} cases)",
+            "-" * 78,
+        ])
+        for r in prov_disagreements:
+            rule_str = f" [Signals: {', '.join(r.matched_rules)}]" if r.matched_rules else ""
+            reason_str = f"\n  Assessment Reason: {r.assessment.reason}" if r.assessment is not None else ""
+            lines.append(
+                f"[{r.case.id}] ({r.case.category}) clarity={r.case.clarity}\n"
+                f"  Prompt:            \"{r.case.prompt[:70]}{'...' if len(r.case.prompt) > 70 else ''}\"\n"
+                f"  Expected:          {r.case.expected_capability.upper()}\n"
+                f"  Provisional:       {r.effective_provisional_capability.upper()}{rule_str}{reason_str}\n"
+                f"  Rationale:         {r.case.rationale}\n"
+            )
 
     # Clarity Disagreements (where router clarity != human dataset clarity)
     if result.clarity_confusion_matrix is not None:

@@ -31,15 +31,52 @@ class CaseResult:
     """Result of evaluating a single test case for correctness and clarity."""
 
     case: EvaluationCase
-    actual_capability: CapabilityType
+    actual_capability: CapabilityType  # Final capability after routing/advising (retained for backward compat)
     matched_rules: tuple[str, ...] = ()
     assessment: RoutingAssessment | None = None
     advisor_recommendation: AdvisorRecommendation | None = None
     fallback_used: bool = False
+    provisional_capability: CapabilityType | None = None
+
+    @property
+    def final_capability(self) -> CapabilityType:
+        """Final post-advisor capability (or provisional if fallback/no advisor)."""
+        return self.actual_capability
+
+    @property
+    def effective_provisional_capability(self) -> CapabilityType:
+        """Deterministic provisional capability before advisor consultation."""
+        if self.provisional_capability is not None:
+            return self.provisional_capability
+        if self.assessment is not None:
+            cap = self.assessment.provisional_capability
+            raw_val = cap.value if hasattr(cap, "value") else cap
+            if isinstance(raw_val, str):
+                normalized = raw_val.strip().lower()
+                if normalized == "general":
+                    return "general"
+                if normalized == "research":
+                    return "research"
+            raise ValueError(
+                f"Unsupported assessment provisional capability: {cap!r}. "
+                "Expected AgentCapability.GENERAL or AgentCapability.RESEARCH."
+            )
+        return self.actual_capability
 
     @property
     def is_correct(self) -> bool:
+        """Final capability matches expected ground truth."""
         return self.actual_capability == self.case.expected_capability
+
+    @property
+    def is_final_correct(self) -> bool:
+        """Final capability matches expected ground truth."""
+        return self.is_correct
+
+    @property
+    def is_provisional_correct(self) -> bool:
+        """Deterministic provisional capability matches expected ground truth."""
+        return self.effective_provisional_capability == self.case.expected_capability
 
     @property
     def actual_clarity(self) -> ClarityType | None:
@@ -152,3 +189,40 @@ class BenchmarkResult:
     advisor_unavailable_count: int = 0
     advisor_timeout_count: int = 0
     advisor_execution_error_count: int = 0
+    # Phase C1 / C2 explicit provisional vs final metrics
+    provisional_overall_correct: int = 0
+    provisional_overall_accuracy: float = 0.0
+    provisional_clear_correct: int = 0
+    provisional_clear_accuracy: float = 0.0
+    provisional_ambiguous_correct: int = 0
+    provisional_ambiguous_accuracy: float = 0.0
+    provisional_confusion_matrix: ConfusionMatrix | None = None
+    provisional_category_accuracies: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def final_overall_correct(self) -> int:
+        return self.overall_correct
+
+    @property
+    def final_overall_accuracy(self) -> float:
+        return self.overall_accuracy
+
+    @property
+    def final_clear_correct(self) -> int:
+        return self.clear_correct
+
+    @property
+    def final_clear_accuracy(self) -> float:
+        return self.clear_accuracy
+
+    @property
+    def final_ambiguous_correct(self) -> int:
+        return self.ambiguous_correct
+
+    @property
+    def final_ambiguous_accuracy(self) -> float:
+        return self.ambiguous_accuracy
+
+    @property
+    def final_confusion_matrix(self) -> ConfusionMatrix:
+        return self.confusion_matrix
