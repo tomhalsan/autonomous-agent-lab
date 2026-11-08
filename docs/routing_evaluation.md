@@ -314,7 +314,7 @@ To ensure fair and reproducible CPU-only evaluation on local hosts (such as `hom
 
 ---
 
-## 9. Empirical Results & Performance Summary
+## 9. Baseline Empirical Results (Phases A, B & C1)
 
 ### Comparative Performance Table
 
@@ -337,7 +337,216 @@ To ensure fair and reproducible CPU-only evaluation on local hosts (such as `hom
 
 ---
 
-## 10. Generalization Lessons & Phase C Prerequisites
+## 10. Phase C2 Empirical Results: home-core Evaluation
+
+This section documents the empirical Routing v3 Phase C2 evaluation results collected manually on the physical host `home-core`.
+
+### 10.1 Evaluation Environment (`home-core`)
+
+- **Host OS**: Ubuntu 26.04.1 LTS
+- **Python**: CPython 3.12.16 within project-local `.venv`
+- **Ollama**: 0.40.15 (CPU-only execution for all C2 repository benchmark runs)
+- **Integrated GPU**: AMD Radeon Vega 8 Graphics (RADV RAVEN)
+- **Vulkan Driver**: Mesa RADV (ROCm was not used for the Vulkan experiments)
+- **llama.cpp Experimental Build**: Commit `372dc5ca1`, build identifier `b12199-372dc5ca1`
+- **llama.cpp Vulkan Capabilities**: Reported `uma=1`, `fp16=1`, `int dot=0`, `matrix cores=none`
+- **Device Enumeration**: `Vulkan0: AMD Radeon Vega 8 Graphics (RADV RAVEN)` (~7966 MiB visible, ~7922 MiB free at enumeration)
+- **Weight Storage**: Existing Ollama GGUF weight blobs were reused read-only across llama.cpp experiments.
+
+### 10.2 Strict Separation of Experimental Contexts
+
+To avoid conflation across distinct experimental layers, results are partitioned into five separate measurement contexts:
+
+1. **Ollama CPU Model-Backed Benchmark Results**: Produced directly by the repository evaluation harness (`evaluation/routing/benchmark.py`) under standard CPU-only Ollama execution.
+2. **Exploratory llama.cpp + Mesa RADV/Vulkan Hardware Experiments**: Conducted directly against llama.cpp binaries to assess integrated GPU acceleration via Vulkan.
+3. **Synthetic `llama-bench` Throughput Measurements**: Synthetic micro-benchmarks measuring raw token-processing throughput, strictly decoupled from end-to-end routing latency.
+4. **Persistent `llama-server` Measurements**: Request-level latency measurements under schema-constrained generation with prefix caching on Vulkan.
+5. **Temporary 13-Case Qwen/Vulkan Ambiguous-Case Experiment**: A standalone external batch run across all 13 ambiguous cases, not produced by the repository harness.
+
+> [!IMPORTANT]
+> Exploratory llama.cpp measurements must **not** be presented as or conflated with repository benchmark harness results. Only Section 10.3 reflects runs executed through `evaluation/routing/benchmark.py`.
+
+---
+
+### 10.3 Ollama CPU Model-Backed Benchmark Results (Repository Harness)
+
+The repository benchmark harness was executed against Ollama running on CPU for four candidate model configurations across the development dataset (5 ambiguous cases) and validation dataset (8 ambiguous cases).
+
+#### Comparative Model Performance Table
+
+| Metric | Deterministic Baseline | Gemma 3 1B (`gemma3:1b`) | Llama 3.2 3B (`llama3.2:3b`) [Dev] | Llama 3.2 3B (`llama3.2:3b`) [Val] | Qwen3 1.7B (`qwen3:1.7b`) | Phi-4 Mini (`phi4-mini`) |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Dataset** | Dev / Val | Development (44) | Development (44) | Validation (34) | Development (44) | Development (44) |
+| **Ambiguous Eligible** | 5 / 8 | 5 | 5 | 8 | 5 | 5 |
+| **Successful Recommendations** | N/A | 5 | 5 | 8 | 2 | 5 |
+| **Completed Semantic Accuracy** | **100.00%** | 60.00% (3/5) | 80.00% (4/5) | 62.50% (5/8) | 100.00% (2/2) * | 80.00% (4/5) |
+| **Agreements** | N/A | 3 | 4 | 5 | 2 | 4 |
+| **Changes** | N/A | 2 | 1 | 3 | 0 | 1 |
+| **Correct Changes** | N/A | **0** | **0** | **0** | **0** | **0** |
+| **Regressions** | N/A | **2** | **1** | **3** | **0** | **1** |
+| **Fallbacks (Preserved)** | N/A | 0 | 0 | 0 | 3 (timeouts) | 0 |
+| **CLEAR Advisor Invocations** | 0 (enforced) | 0 (enforced) | 0 (enforced) | 0 (enforced) | 0 (enforced) | 0 (enforced) |
+| **Provisional Ambiguous Acc** | **100.00%** | **100.00%** (5/5) | **100.00%** (5/5) | **100.00%** (8/8) | **100.00%** (5/5) | **100.00%** (5/5) |
+| **Final Ambiguous Accuracy** | **100.00%** | 60.00% (3/5) | 80.00% (4/5) | 62.50% (5/8) | **100.00%** (5/5) † | 80.00% (4/5) |
+| **Overall Final Accuracy** | **100.00%** | 95.45% (42/44) | 97.73% (43/44) | 91.18% (31/34) | **100.00%** (44/44) † | 97.73% (43/44) |
+| **Warm Wall-Clock Mean** | ~0.11 ms | 5,499.98 ms | 7,741.27 ms | 7,999.67 ms | 23,200.13 ms | 8,563.95 ms |
+| **Cold Probe Latency** | N/A | 7,798.27 ms | 16,863.09 ms | 16,833.92 ms | 27,172.65 ms | 16,448.10 ms |
+
+\* *Interpret Qwen3 1.7B completed semantic accuracy (2/2) carefully: This represents accuracy on completed responses only. 3 of the 5 eligible cases failed via timeout, so the model succeeded on only 40% of attempted consultations.*
+† *Final accuracy remained 100% under Qwen3 1.7B solely because the orchestrator's resilient fallback mechanism preserved the correct deterministic provisional capability when advisor timeouts occurred.*
+
+#### Detailed Model Findings
+
+1. **Gemma 3 1B (`gemma3:1b`)**:
+   - Completed 5 of 5 ambiguous consultations.
+   - Agreed with the provisional capability on 3 cases; changed 2 cases.
+   - Introduced **2 regressions** (0 correct changes), reducing final ambiguous accuracy to 60.00% (overall 95.45%):
+     - `eval-013` (*"Tell me about quantum computing advancements"*): Expected `RESEARCH`, model recommended `GENERAL`.
+     - `eval-014` (*"How is AI impacting software engineering jobs right now?"*): Expected `RESEARCH`, model recommended `GENERAL`.
+   - Warm latency averaged 5,500 ms; cold probe required 7,798 ms.
+
+2. **Llama 3.2 3B (`llama3.2:3b`) [Development Dataset]**:
+   - Completed 5 of 5 ambiguous consultations.
+   - Agreed on 4 cases; changed 1 case.
+   - Introduced **1 regression** (0 correct changes), reducing final ambiguous accuracy to 80.00% (overall 97.73%):
+     - `eval-014` (*"How is AI impacting software engineering jobs right now?"*): Expected `RESEARCH`, model recommended `GENERAL`.
+   - Warm latency averaged 7,741 ms; cold probe required 16,863 ms.
+
+3. **Llama 3.2 3B (`llama3.2:3b`) [Validation Dataset]**:
+   - Completed 8 of 8 ambiguous consultations.
+   - Agreed on 5 cases; changed 3 cases.
+   - Introduced **3 regressions** (0 correct changes), reducing final ambiguous accuracy to 62.50% (overall 91.18%):
+     - `val-024` (*"What is the job market for healthcare workers right now?"*): Expected `RESEARCH`, model recommended `GENERAL`.
+     - `val-025` (*"Compare our current database configuration with recent cloud vendor benchmark recommendations"*): Expected `RESEARCH`, model recommended `GENERAL`.
+     - `val-029` (*"Survey available vector databases for hybrid search"*): Expected `GENERAL`, model recommended `RESEARCH`.
+   - Warm latency averaged 8,000 ms; cold probe required 16,834 ms.
+
+4. **Qwen3 1.7B (`qwen3:1.7b`)**:
+   - Encountered severe CPU latency limitations.
+   - Successfully completed only 2 of 5 consultations; the remaining 3 consultations exceeded the 30-second timeout threshold (~30,000 ms each).
+   - Among the 2 completed responses, both agreed with the deterministic provisional capability (2/2 semantic accuracy, 0 regressions).
+   - Resilient fallback triggered on the 3 timed-out cases, preserving the correct deterministic capability and yielding 44/44 (100%) final accuracy.
+   - Successful warm consultations averaged 23,200 ms; cold probe required 27,173 ms.
+
+5. **Phi-4 Mini (`phi4-mini`)**:
+   - Completed 5 of 5 ambiguous consultations.
+   - Agreed on 4 cases; changed 1 case.
+   - Introduced **1 regression** (0 correct changes), reducing final ambiguous accuracy to 80.00% (overall 97.73%):
+     - `eval-011` (*"Compare PostgreSQL and MongoDB for time-series data storage"*): Expected `GENERAL`, model recommended `RESEARCH`.
+   - Warm latency averaged 8,564 ms; cold probe required 16,448 ms.
+
+---
+
+### 10.4 Exploratory llama.cpp + Mesa RADV/Vulkan Hardware Experiments
+
+To assess whether hardware acceleration on integrated AMD graphics could mitigate the severe CPU latency observed under Ollama, exploratory experiments were conducted using `llama.cpp` compiled with Vulkan support via Mesa RADV.
+
+> [!NOTE]
+> These exploratory benchmarks were run directly using standalone `llama.cpp` tools (`llama-bench` and `llama-server`) with existing Ollama GGUF model weights. They were **not** executed via the repository benchmark harness.
+
+#### 10.4.1 Synthetic Backend Throughput (`llama-bench`)
+
+Synthetic throughput was evaluated using `llama-bench` across prompt evaluation (`pp512`) and text generation (`tg128` and `tg32`):
+
+| Model | Quantization | Backend | Prompt Processing (`pp512`) | Generation (`tg128`) | Generation (`tg32`) | Speedup Factor |
+|---|---|:---:|:---:|:---:|:---:|:---:|
+| **Gemma 3 1B** | Q4_K_M | CPU | 55.30 – 56.50 t/s | 17.62 t/s | 17.66 t/s | Baseline |
+| **Gemma 3 1B** | Q4_K_M | Vulkan (RADV) | **538.36 – 539.33 t/s** | 17.12 t/s | 17.10 t/s | **~9.5x – 9.7x prompt speedup** (generation flat) |
+| **Llama 3.2 3B** | Q4_K_M | CPU | 22.14 t/s | — | 7.31 t/s | Baseline |
+| **Llama 3.2 3B** | Q4_K_M | Vulkan (RADV) | **117.32 t/s** | — | 7.33 t/s | **~5.3x prompt speedup** (generation flat) |
+| **Qwen3 1.7B** | Q4_K_M | CPU | 42.45 t/s | — | 12.34 t/s | Baseline |
+| **Qwen3 1.7B** | Q4_K_M | Vulkan (RADV) | **261.18 t/s** | — | 12.24 t/s | **~6.15x prompt speedup** (generation flat) |
+
+**Key Hardware Finding**:
+- Vulkan delivers a dramatic **5.3x to 9.7x acceleration in prompt evaluation** (`pp512`) on the Vega 8 integrated GPU.
+- Generation throughput (`tg32` / `tg128`) remains **essentially unchanged or marginally slower** across all models. On integrated unified memory architectures (UMA), autoregressive token generation is strictly memory-bandwidth bound.
+- *Distinction*: These figures represent raw token-processing throughput and must not be conflated with end-to-end task routing latency.
+
+#### 10.4.2 Persistent `llama-server` Measurements & Prefix Caching
+
+Using `llama-server` with models resident in memory, JSON schema constrained generation, and the exact C2 evaluation prompt policy (`format_evaluation_prompt()`), requests were evaluated on the test prompt:
+> *"How is AI impacting software engineering jobs right now?"*
+
+1. **Gemma 3 1B + Vulkan**:
+   - First request (cold prompt): ~2.53 s.
+   - Cached warm requests: ~2.05 – 2.06 s total wall-clock.
+   - Latency decomposition: Prompt evaluation required ~0.18 – 0.19 s; generation required ~1.86 – 1.88 s.
+   - At a 32-token limit, the JSON output was truncated. The model classified the prompt as `GENERAL`, which is incorrect under C2 ground truth.
+2. **Llama 3.2 3B + Vulkan**:
+   - First request: ~5.91 s.
+   - Cached warm requests: ~4.42 – 4.46 s total wall-clock.
+   - Latency decomposition: Prompt evaluation required ~0.16 s; generation required ~4.26 – 4.30 s.
+   - At a 32-token limit, the JSON output was truncated. The model classified the prompt as `GENERAL`, which is incorrect under C2 ground truth.
+3. **Qwen3 1.7B + Vulkan**:
+   - At a 32-token limit: Initial request ~3.50 s; warm requests ~2.71 – 2.72 s. Correctly classified as `RESEARCH`, but the JSON payload was truncated before closing braces.
+   - At a 64-token limit: The model naturally completed after 40 generated tokens with an EOS stop token, producing complete, schema-valid JSON.
+   - Repeated warm requests required **~3.43 – 3.47 s**.
+   - Output classification: `capability="research"`, correctly citing the need for current information regarding the impact of AI on software engineering jobs.
+
+**Latency Bottleneck Insight**:
+Once prefix caching eliminates prompt evaluation overhead (reducing prompt processing to ~160–190 ms), **token generation accounts for 90% to 96% of total request latency** (1.8 s to 4.3 s). Because generation throughput cannot be accelerated on this integrated GPU, wall-clock latency remains in the multi-second regime even with persistent resident servers.
+
+#### 10.4.3 Temporary 13-Case Qwen/Vulkan Ambiguous Experiment
+
+To evaluate semantic quality under accelerated inference, a temporary external experiment evaluated Qwen3 1.7B on `llama-server` (Vega 8 RADV/Vulkan, temperature 0, 64-token limit, strict JSON schema, exact C2 prompt policy) across all 13 ambiguous cases from both datasets (5 development + 8 validation).
+
+> [!CAUTION]
+> This was a temporary external experiment, **not** a repository benchmark harness run.
+
+- **Total Cases Evaluated**: 13 (5 development, 8 validation)
+- **Valid Complete JSON Responses**: 13/13 (100%)
+- **Correct Recommendations**: 6/13 (46.15%)
+  - Development dataset: 2/5 (40.00%)
+  - Validation dataset: 4/8 (50.00%)
+- **Incorrect Recommendations**: 7/13 (53.85%)
+- **Deterministic Provisional Baseline on Same Cases**: **13/13 (100.00%)**
+- **Correct Changes**: **0**
+- **Regressions Introduced**: **7**
+- **Wall-Clock Latency**: Mean 3,452.94 ms | Median 3,440.13 ms | Min 2,406.40 ms | Max 4,216.44 ms
+
+**Regressions Introduced by Qwen/Vulkan**:
+In all 7 regression cases, the deterministic provisional router correctly identified `GENERAL` based on established architectural and technology-comparison intent, but the model incorrectly recommended `RESEARCH`:
+1. `eval-011` (*"Compare PostgreSQL and MongoDB for time-series data storage"*): Expected `GENERAL`, Qwen recommended `RESEARCH`.
+2. `eval-012` (*"What are the best practices for securing a REST API?"*): Expected `GENERAL`, Qwen recommended `RESEARCH`.
+3. `eval-015` (*"Evaluate whether our architecture should transition from microservices to a modular monolith"*): Expected `GENERAL`, Qwen recommended `RESEARCH`.
+4. `val-022` (*"Compare Apache Kafka and RabbitMQ for distributed event streaming"*): Expected `GENERAL`, Qwen recommended `RESEARCH`.
+5. `val-023` (*"What are the security best practices for Kubernetes secret management?"*): Expected `GENERAL`, Qwen recommended `RESEARCH`.
+6. `val-029` (*"Survey available vector databases for hybrid search"*): Expected `GENERAL`, Qwen recommended `RESEARCH`.
+7. `val-030` (*"Analyze the trade-offs of data portability across cloud providers"*): Expected `GENERAL`, Qwen recommended `RESEARCH`.
+
+---
+
+## 11. Empirical Conclusions & Policy Recommendations
+
+### 11.1 Value of Negative Results & Architectural Decision
+
+In accordance with project engineering principles (AGENTS.md Rules 6 & 11), negative experimental results are valuable architectural milestones that prevent unwarranted complexity:
+
+1. **Zero Correct Changes**: No tested model, runtime, or hardware backend configuration produced a single correct change over deterministic provisional routing on the evaluated ambiguous cases.
+2. **Systematic Degradation**: Every tested model either introduced accuracy regressions (1 to 7 misclassifications), failed due to latency timeouts, or both.
+3. **Deterministic Superiority**: The deterministic `RoutingAssessment` was **100% correct** (13/13) across all ambiguous cases in both datasets, with sub-millisecond execution in the measured benchmark runs.
+4. **Severe Latency Penalty**: Model inference added multi-second latency per ambiguous prompt, compared with sub-millisecond deterministic assessment in the measured benchmark runs, without delivering any semantic improvement.
+
+> [!IMPORTANT]
+> **Architectural Policy Decision**:
+> - **Do not implement or select a production local routing advisor** based on these Phase C2 findings.
+> - **Deterministic capability routing remains authoritative** for all task submissions.
+> - The provider-neutral `RoutingAdvisor` interface and evaluation harness in `evaluation/routing/` will be preserved as an experimental test fixture for future model or hardware evaluations, but will **not** be integrated into the production orchestrator dependency graph.
+
+### 11.2 Qualitative Lesson: The Complete Configuration Perspective
+
+A critical qualitative conclusion from Phase C2 is that local model evaluation cannot evaluate a model name or parameter count in isolation. Evaluation validity requires specifying and measuring the complete runtime stack:
+
+$$\text{Evaluation Stack} = \text{Model} + \text{Runtime} + \text{Hardware Backend} + \text{Residency/Prefix Strategy} + \text{Prompt Policy} + \text{Output Contract}$$
+
+- **Parameter count is deceptive**: Gemma 3 1B and Qwen3 1.7B exhibited vastly different latency, prompt-processing throughput, and timeout profiles despite similar sizes.
+- **Hardware acceleration has distinct bottlenecks**: Vulkan accelerated prompt evaluation by 5x to 10x, while autoregressive token-generation throughput remained essentially unchanged in these experiments.
+- **Output size materially affects latency**: Under the tested Qwen configuration, complete schema-valid responses naturally required 40 generated tokens and took approximately 3.4 seconds, with token generation dominating warm request latency.
+- **Syntactic compliance does not equal semantic alignment**: Qwen3 on Vulkan achieved 100% valid JSON adherence, but misclassified 54% of ambiguous cases by conflating architectural inquiries with external research.
+
+---
+
+## 12. Generalization Lessons & Historical Context
 
 ### Generalization Lessons from Phase B
 Initial testing of Phase B against unseen prompts revealed that high development scores can mask narrow regex assumptions:
@@ -347,23 +556,13 @@ Initial testing of Phase B against unseen prompts revealed that high development
 4. Unqualified temporal phrases like "this week" or "this month" misclassify personal user statements ("I started learning Rust this week") unless gated against personal activity.
 5. "Find evidence" applied to supplied diagnostic artifacts (such as heap dumps or stack traces) represents local inspection rather than academic/literature retrieval.
 
-### Deterministic Limits & Readiness for Phase C2
-While the generalized deterministic rules achieve 100% on both the 44-case development set and the 34-case validation set, deterministic pattern matching has fundamental limits:
-- Novel phrasings without explicit freshness keywords or structural cues may be classified as ambiguous.
-- True natural language understanding is required to disambiguate subtle contextual trade-offs.
-
-**Phase C2 (Ollama / Local LLM RoutingAdvisor Adapter)** should be explored because:
-1. The provider-neutral application boundary and hybrid policy are established and thoroughly tested.
-2. Validation/adversarial coverage and ambiguity delegation behavior are now well-calibrated and validated.
-3. The advisory delegation rate is bounded (11% on dev, 24% on validation), ensuring that an LLM advisor is invoked only when deterministic evidence is genuinely ambiguous.
-4. 76% to 89% of requests continue to route deterministically at sub-150-microsecond speeds.
-
 ---
 
-## 11. Non-Blocking Architectural Follow-ups
+## 13. Non-Blocking Architectural Follow-ups
 
-The following improvements are documented for execution prior to or alongside Phase C:
+The following improvements remain documented for future evaluation cycles:
 1. **Persist RoutingAssessment Diagnostics**: Extend `RoutingDecision` (or add a companion `RoutingAssessmentRecord`) to persist assessment clarity, typed signals, and signal-backed reasoning alongside the dispatch decision, exposing them to the observatory and debugging APIs.
 2. **Decompose Freshness Regex**: Decompose the large monolithic `FRESHNESS_OR_CURRENT_INFO` pattern into a collection of smaller named semantic sub-patterns (e.g., `supported_versions`, `pricing_queries`, `service_status`, `demographic_counts`) compiled at router initialization.
 3. **Invert Freshness Whitelisting**: Replace the current term-based whitelist in `_is_false_freshness` with positively matched context guards, ensuring that new freshness qualifiers are not inadvertently suppressed.
 4. **Independent Lockbox Dataset**: Create a third, truly independent lockbox evaluation dataset authored by an external contributor or at a later date after deterministic rules are completely frozen, establishing an unbiased production-accuracy estimate.
+5. **Future Model Architecture Evaluations**: Retain the evaluation-only Ollama and benchmark harness infrastructure to evaluate future small language models (e.g., specialized routing SLMs or fine-tuned classifiers) or alternative execution backends if dedicated GPU hardware becomes available.
