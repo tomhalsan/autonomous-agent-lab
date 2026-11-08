@@ -68,6 +68,10 @@ Your job is to produce correct, maintainable, secure, well-tested changes while 
 - Do not begin subsequent phases or roadmap items unless explicitly asked.
 - If worthwhile follow-up work is discovered outside the requested scope, report it separately rather than implementing it.
 - Stop at explicit review checkpoints when requested.
+- If an implementation produces an unexpectedly large diff, report the complete change size, including untracked files, before declaring the task complete.
+- When a change causes substantial growth in a module or test file, identify the added responsibilities and consider focused decomposition before completion.
+- Prefer shared helpers, fixtures, and focused modules when they reduce meaningful duplication without introducing unnecessary abstraction.
+- Do not use passing tests alone as evidence that a large or complex change is well structured.
 
 ## 8. Dependencies
 
