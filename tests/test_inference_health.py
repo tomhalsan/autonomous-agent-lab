@@ -7,12 +7,21 @@ from agent_contracts import (
     InferenceHealthStatus,
     InferenceProviderHealth,
 )
-from agent_infrastructure import CloudflareHealthProbe
+from agent_infrastructure import (
+    CloudflareHealthProbe,
+    GeminiClient,
+    GeminiHealthProbe,
+    canonical_gemini_model,
+    normalize_gemini_model,
+)
 from research_agent.application.ports import (
     InferenceHealthProbe as ResearchInferenceHealthProbe,
 )
 from research_agent.infrastructure.cloudflare_inference import (
     CloudflareInferenceProvider as ResearchCloudflareProvider,
+)
+from research_agent.infrastructure.gemini_inference import (
+    GeminiInferenceProvider as ResearchGeminiProvider,
 )
 from research_agent.infrastructure.stub_inference import (
     StubInferenceProvider as ResearchStubProvider,
@@ -20,6 +29,9 @@ from research_agent.infrastructure.stub_inference import (
 from worker.application.ports import InferenceHealthProbe as WorkerInferenceHealthProbe
 from worker.infrastructure.cloudflare_inference import (
     CloudflareInferenceProvider as WorkerCloudflareProvider,
+)
+from worker.infrastructure.gemini_inference import (
+    GeminiInferenceProvider as WorkerGeminiProvider,
 )
 from worker.infrastructure.stub_inference import (
     StubInferenceProvider as WorkerStubProvider,
@@ -264,6 +276,12 @@ def test_inference_health_probe_protocol_compliance() -> None:
 
     research_cf = ResearchCloudflareProvider(account_id="acc", api_token="tok")
     assert isinstance(research_cf, ResearchInferenceHealthProbe)
+
+    worker_gemini = WorkerGeminiProvider(api_key="tok")
+    assert isinstance(worker_gemini, WorkerInferenceHealthProbe)
+
+    research_gemini = ResearchGeminiProvider(api_key="tok")
+    assert isinstance(research_gemini, ResearchInferenceHealthProbe)
 
     class NotAProbe:
         pass
@@ -615,3 +633,578 @@ async def test_service_adapters_cloudflare_health_delegation() -> None:
     r_health = await research_provider.check_health()
     assert r_health.status == InferenceHealthStatus.HEALTHY
     assert r_health.provider_name == "cloudflare"
+
+
+def test_gemini_client_key_validation_and_defense_in_depth() -> None:
+    with pytest.raises(ValueError, match="GEMINI_API_KEY environment variable is required"):
+        GeminiClient(api_key="")
+
+    with pytest.raises(ValueError, match="GEMINI_API_KEY environment variable is required"):
+        GeminiClient(api_key="   ")
+
+    client = GeminiClient(api_key="secret-key-12345", model="gemini-2.5-flash")
+    assert repr(client) == "GeminiClient(model='gemini-2.5-flash', api_key='[REDACTED]')"
+    assert "secret-key-12345" not in repr(client)
+    assert not hasattr(client, "api_key")  # Private _api_key only
+    assert client.redact("Failed with secret-key-12345 token") == "Failed with [REDACTED] token"
+
+    probe = GeminiHealthProbe(gemini_client=client)
+    assert probe.provider_name == "gemini"
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_successful_metadata_probe() -> None:
+    calls = []
+
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        calls.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "json": json_data,
+            }
+        )
+        return httpx.Response(
+            200,
+            json={
+                "name": "models/gemini-2.5-flash",
+                "version": "001",
+                "supportedGenerationMethods": ["generateContent", "countTokens"],
+            },
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    probe = GeminiHealthProbe(
+        api_key="secret-gemini-key",
+        model="gemini-2.5-flash",
+        client=client,
+    )
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.HEALTHY
+    assert health.provider_name == "gemini"
+    assert health.model == "gemini-2.5-flash"
+    assert "verified model 'gemini-2.5-flash' is accessible" in health.reason
+    assert health.latency_ms is not None and health.latency_ms >= 0.0
+
+    # Ensure non-generating metadata verification: GET /models/{model} was called, NOT generateContent
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["method"] == "GET"
+    assert call["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash"
+    assert call["headers"]["x-goog-api-key"] == "secret-gemini-key"
+    assert call["json"] is None
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_model_absent_404() -> None:
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            404,
+            json={"error": {"code": 404, "message": "models/nonexistent not found", "status": "NOT_FOUND"}},
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    probe = GeminiHealthProbe(api_key="secret-key", model="nonexistent", client=client)
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.UNAVAILABLE
+    assert "absent from Google Gemini catalog (HTTP 404)" in health.reason
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_missing_generate_content_capability() -> None:
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "name": "models/text-embedding-004",
+                "supportedGenerationMethods": ["embedContent"],
+            },
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    probe = GeminiHealthProbe(api_key="secret-key", model="text-embedding-004", client=client)
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.UNAVAILABLE
+    assert "does not advertise generateContent capability" in health.reason
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_invalid_or_missing_supported_generation_methods() -> None:
+    # 1. Missing supportedGenerationMethods field
+    probe_missing = GeminiHealthProbe(
+        api_key="secret-key",
+        client=DummyAsyncClient(
+            lambda *a, **kw: httpx.Response(200, json={"name": "models/gemini-2.5-flash"})
+        ),
+    )
+    h_missing = await probe_missing.check_health()
+    assert h_missing.status == InferenceHealthStatus.UNAVAILABLE
+    assert "missing or invalid 'supportedGenerationMethods' list" in h_missing.reason
+
+    # 2. Null (None) supportedGenerationMethods
+    probe_null = GeminiHealthProbe(
+        api_key="secret-key",
+        client=DummyAsyncClient(
+            lambda *a, **kw: httpx.Response(
+                200,
+                json={"name": "models/gemini-2.5-flash", "supportedGenerationMethods": None},
+            )
+        ),
+    )
+    h_null = await probe_null.check_health()
+    assert h_null.status == InferenceHealthStatus.UNAVAILABLE
+    assert "missing or invalid 'supportedGenerationMethods' list" in h_null.reason
+
+    # 3. String-valued supportedGenerationMethods
+    probe_str = GeminiHealthProbe(
+        api_key="secret-key",
+        client=DummyAsyncClient(
+            lambda *a, **kw: httpx.Response(
+                200,
+                json={
+                    "name": "models/gemini-2.5-flash",
+                    "supportedGenerationMethods": "generateContent",
+                },
+            )
+        ),
+    )
+    h_str = await probe_str.check_health()
+    assert h_str.status == InferenceHealthStatus.UNAVAILABLE
+    assert "missing or invalid 'supportedGenerationMethods' list" in h_str.reason
+
+    # 4. Object-valued (dict) supportedGenerationMethods
+    probe_obj = GeminiHealthProbe(
+        api_key="secret-key",
+        client=DummyAsyncClient(
+            lambda *a, **kw: httpx.Response(
+                200,
+                json={
+                    "name": "models/gemini-2.5-flash",
+                    "supportedGenerationMethods": {"generateContent": True},
+                },
+            )
+        ),
+    )
+    h_obj = await probe_obj.check_health()
+    assert h_obj.status == InferenceHealthStatus.UNAVAILABLE
+    assert "missing or invalid 'supportedGenerationMethods' list" in h_obj.reason
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_valid_supported_generation_methods() -> None:
+    probe = GeminiHealthProbe(
+        api_key="secret-key",
+        client=DummyAsyncClient(
+            lambda *a, **kw: httpx.Response(
+                200,
+                json={
+                    "name": "models/gemini-2.5-flash",
+                    "supportedGenerationMethods": ["generateContent", "countTokens"],
+                },
+            )
+        ),
+    )
+    h = await probe.check_health()
+    assert h.status == InferenceHealthStatus.HEALTHY
+    assert "verified model 'gemini-2.5-flash' is accessible" in h.reason
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_auth_failure_401() -> None:
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            401,
+            json={"error": {"code": 401, "message": "API key not valid", "status": "UNAUTHENTICATED"}},
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    probe = GeminiHealthProbe(api_key="invalid-key", client=client)
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.UNAVAILABLE
+    assert "authentication failed (HTTP 401)" in health.reason
+    assert health.status.is_connected is False
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_authorization_failure_403() -> None:
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            403,
+            json={"error": {"code": 403, "message": "Generative Language API has not been used", "status": "PERMISSION_DENIED"}},
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    probe = GeminiHealthProbe(api_key="secret-key", client=client)
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.UNAVAILABLE
+    assert "authorization failed (HTTP 403)" in health.reason
+    assert health.status.is_connected is False
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_rate_limited_conservative() -> None:
+    # Conservative guardrail: RESOURCE_EXHAUSTED without explicit quota details is RATE_LIMITED
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "30"},
+            json={
+                "error": {
+                    "code": 429,
+                    "message": "Resource has been exhausted (e.g. check quota)",
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            },
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    probe = GeminiHealthProbe(api_key="secret-key", client=client)
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.RATE_LIMITED
+    assert health.retry_after_seconds == 30.0
+    assert health.status.is_constrained is True
+    assert health.status.is_available is False
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_quota_exhausted_explicit() -> None:
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "code": 429,
+                    "message": "Quota exceeded for quota metric 'GenerateContent requests' per day",
+                    "status": "RESOURCE_EXHAUSTED",
+                    "details": [{"reason": "QUOTA_EXCEEDED"}],
+                }
+            },
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    probe = GeminiHealthProbe(api_key="secret-key", client=client)
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.QUOTA_EXHAUSTED
+    assert "Quota exceeded" in health.reason
+    assert health.status.is_constrained is True
+    assert health.status.is_available is False
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_transport_errors_and_credential_sanitization() -> None:
+    class TimeoutClient:
+        async def get(self, url, headers=None, params=None):
+            raise httpx.ReadTimeout("Timed out reading from Google API")
+
+    t_probe = GeminiHealthProbe(api_key="secret-key-xyz", client=TimeoutClient())
+    t_health = await t_probe.check_health()
+    assert t_health.status == InferenceHealthStatus.UNAVAILABLE
+    assert "timed out" in t_health.reason
+
+    class ConnectFailClient:
+        async def get(self, url, headers=None, params=None):
+            raise httpx.ConnectError("Failed to connect to generativelanguage.googleapis.com with key secret-key-xyz")
+
+    c_probe = GeminiHealthProbe(api_key="secret-key-xyz", client=ConnectFailClient())
+    c_health = await c_probe.check_health()
+    assert c_health.status == InferenceHealthStatus.UNAVAILABLE
+    assert "secret-key-xyz" not in c_health.reason
+    assert "[REDACTED]" in c_health.reason
+
+    class BuggyClient:
+        async def get(self, url, headers=None, params=None):
+            raise TypeError("programming defect")
+
+    b_probe = GeminiHealthProbe(api_key="secret-key-xyz", client=BuggyClient())
+    with pytest.raises(TypeError, match="programming defect"):
+        await b_probe.check_health()
+
+
+@pytest.mark.anyio
+async def test_service_adapters_gemini_health_delegation() -> None:
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "name": "models/gemini-2.5-flash",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    worker_provider = WorkerGeminiProvider(
+        api_key="secret-gemini-key",
+        client=client,
+    )
+    research_provider = ResearchGeminiProvider(
+        api_key="secret-gemini-key",
+        client=client,
+    )
+
+    w_health = await worker_provider.check_health()
+    assert w_health.status == InferenceHealthStatus.HEALTHY
+    assert w_health.provider_name == "gemini"
+
+    r_health = await research_provider.check_health()
+    assert r_health.status == InferenceHealthStatus.HEALTHY
+    assert r_health.provider_name == "gemini"
+
+
+@pytest.mark.anyio
+async def test_gemini_client_invalid_json_without_swallowing_programming_defects() -> None:
+    # 1. Invalid JSON raises ValueError in response.json() -> wrapped as RuntimeError
+    class InvalidJsonResponse:
+        status_code = 200
+
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    class InvalidJsonClient:
+        async def post(self, url, headers=None, json=None):
+            return InvalidJsonResponse()
+
+    client1 = GeminiClient(api_key="test-key", client=InvalidJsonClient())
+    with pytest.raises(RuntimeError, match="Gemini API returned invalid JSON"):
+        await client1.generate_content({"contents": []})
+
+    # 2. Programming defect in response.json() raises TypeError -> NOT swallowed, propagates directly
+    class DefectiveResponse:
+        status_code = 200
+
+        def json(self):
+            raise TypeError("unhashable type: 'slice'")
+
+    class DefectiveClient:
+        async def post(self, url, headers=None, json=None):
+            return DefectiveResponse()
+
+    client2 = GeminiClient(api_key="test-key", client=DefectiveClient())
+    with pytest.raises(TypeError, match="unhashable type: 'slice'"):
+        await client2.generate_content({"contents": []})
+
+
+@pytest.mark.anyio
+async def test_gemini_client_candidate_text_validation() -> None:
+    # Multiple text parts combined
+    def multi_part_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "First part. "},
+                                {"text": "Second part."},
+                            ],
+                            "role": "model",
+                        },
+                        "finishReason": "STOP",
+                    }
+                ]
+            },
+        )
+
+    client_multi = GeminiClient(api_key="test-key", client=DummyAsyncClient(multi_part_handler))
+    res = await client_multi.generate_content({"contents": []})
+    assert res.text == "First part. Second part."
+
+    # Empty parts array -> raises RuntimeError
+    def empty_parts_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": []}, "finishReason": "STOP"}]},
+        )
+
+    client_empty = GeminiClient(api_key="test-key", client=DummyAsyncClient(empty_parts_handler))
+    with pytest.raises(RuntimeError, match="missing or invalid 'parts' list"):
+        await client_empty.generate_content({"contents": []})
+
+    # Whitespace-only parts -> raises RuntimeError
+    def whitespace_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": "   \n\t"}]}, "finishReason": "STOP"}]},
+        )
+
+    client_ws = GeminiClient(api_key="test-key", client=DummyAsyncClient(whitespace_handler))
+    with pytest.raises(RuntimeError, match="candidate produced empty or whitespace-only text"):
+        await client_ws.generate_content({"contents": []})
+
+    # Non-string and null text fields are ignored without converting to strings
+    def mixed_parts_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": None},
+                                {"text": 12345},
+                                {"text": {"nested": "obj"}},
+                                {"text": "Valid text part"},
+                            ],
+                            "role": "model",
+                        },
+                        "finishReason": "STOP",
+                    }
+                ]
+            },
+        )
+
+    client_mixed = GeminiClient(api_key="test-key", client=DummyAsyncClient(mixed_parts_handler))
+    res_mixed = await client_mixed.generate_content({"contents": []})
+    assert res_mixed.text == "Valid text part"
+    assert "None" not in res_mixed.text
+    assert "12345" not in res_mixed.text
+
+    # Candidate with only non-string text parts -> raises RuntimeError
+    def only_invalid_parts_handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"text": None}, {"text": 42}],
+                            "role": "model",
+                        },
+                        "finishReason": "STOP",
+                    }
+                ]
+            },
+        )
+
+    client_invalid = GeminiClient(api_key="test-key", client=DummyAsyncClient(only_invalid_parts_handler))
+    with pytest.raises(RuntimeError, match="candidate produced empty or whitespace-only text"):
+        await client_invalid.generate_content({"contents": []})
+
+
+@pytest.mark.anyio
+async def test_gemini_client_usage_metadata_boolean_exclusion() -> None:
+    def handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "response text"}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 15,
+                    "candidatesTokenCount": 30,
+                    "totalTokenCount": 45,
+                    "isCached": True,
+                    "cacheActive": False,
+                },
+            },
+        )
+
+    client = GeminiClient(api_key="test-key", client=DummyAsyncClient(handler))
+    res = await client.generate_content({"contents": []})
+    assert res.usage_metadata == {
+        "promptTokenCount": 15,
+        "candidatesTokenCount": 30,
+        "totalTokenCount": 45,
+    }
+    assert "isCached" not in (res.usage_metadata or {})
+    assert "cacheActive" not in (res.usage_metadata or {})
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_exact_canonical_model_matching() -> None:
+    # 1. Probe expecting 'gemini-2.5-flash', catalog returns 'models/gemini-2.5-flash' -> HEALTHY
+    def handler1(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "name": "models/gemini-2.5-flash",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+        )
+
+    probe1 = GeminiHealthProbe(api_key="test-key", model="gemini-2.5-flash", client=DummyAsyncClient(handler1))
+    health1 = await probe1.check_health()
+    assert health1.status == InferenceHealthStatus.HEALTHY
+    assert health1.model == "gemini-2.5-flash"
+
+    # 2. Probe initialized with 'models/gemini-2.5-flash', catalog returns 'gemini-2.5-flash' -> HEALTHY
+    def handler2(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "name": "gemini-2.5-flash",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+        )
+
+    probe2 = GeminiHealthProbe(api_key="test-key", model="models/gemini-2.5-flash", client=DummyAsyncClient(handler2))
+    health2 = await probe2.check_health()
+    assert health2.status == InferenceHealthStatus.HEALTHY
+
+
+@pytest.mark.anyio
+async def test_gemini_health_check_mismatched_suffix_like_model_names() -> None:
+    # Catalog returning 'models/other-gemini-2.5-flash' must NOT match 'gemini-2.5-flash'
+    def handler_prefix(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "name": "models/other-gemini-2.5-flash",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+        )
+
+    probe_prefix = GeminiHealthProbe(api_key="test-key", model="gemini-2.5-flash", client=DummyAsyncClient(handler_prefix))
+    health_prefix = await probe_prefix.check_health()
+    assert health_prefix.status == InferenceHealthStatus.UNAVAILABLE
+    assert "does not match configured model" in health_prefix.reason
+
+    # Catalog returning 'models/gemini-2.5-flash-preview' must NOT match 'gemini-2.5-flash'
+    def handler_suffix(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            200,
+            json={
+                "name": "models/gemini-2.5-flash-preview",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+        )
+
+    probe_suffix = GeminiHealthProbe(api_key="test-key", model="gemini-2.5-flash", client=DummyAsyncClient(handler_suffix))
+    health_suffix = await probe_suffix.check_health()
+    assert health_suffix.status == InferenceHealthStatus.UNAVAILABLE
+    assert "does not match configured model" in health_suffix.reason
+
+
+def test_gemini_model_helpers_and_empty_validation() -> None:
+    assert normalize_gemini_model("gemini-2.5-flash") == "gemini-2.5-flash"
+    assert normalize_gemini_model("models/gemini-2.5-flash") == "gemini-2.5-flash"
+    assert canonical_gemini_model("gemini-2.5-flash") == "models/gemini-2.5-flash"
+    assert canonical_gemini_model("models/gemini-2.5-flash") == "models/gemini-2.5-flash"
+
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        normalize_gemini_model("")
+
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        normalize_gemini_model("   ")
+
+    with pytest.raises(ValueError, match="model must be a non-empty string after normalization"):
+        normalize_gemini_model("models/")
+
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        GeminiClient(api_key="test-key", model="")
+
+    with pytest.raises(ValueError, match="model must be a non-empty string after normalization"):
+        GeminiClient(api_key="test-key", model="models/")

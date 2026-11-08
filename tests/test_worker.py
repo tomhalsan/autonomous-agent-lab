@@ -18,6 +18,7 @@ from worker.infrastructure.cloudflare_inference import (
     DEFAULT_CLOUDFLARE_AI_MODEL,
     CloudflareInferenceProvider,
 )
+from worker.infrastructure.gemini_inference import GeminiInferenceProvider
 from worker.infrastructure.inference_factory import create_inference_provider
 from worker.infrastructure.redis_bus import RedisBus, retry_with_backoff
 from worker.infrastructure.stub_inference import StubInferenceProvider
@@ -768,3 +769,170 @@ async def test_general_worker_task_produces_retrievable_result_in_orchestrator()
     assert retrieved["acknowledged"] is True
 
 
+# --- Gemini Adapter Tests ---
+
+
+def test_create_inference_provider_gemini_missing_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "gemini")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="GEMINI_API_KEY environment variable is required"):
+        create_inference_provider()
+
+
+def test_create_inference_provider_gemini_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-env")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+    provider = create_inference_provider()
+    assert isinstance(provider, GeminiInferenceProvider)
+    assert provider.model == "gemini-2.5-flash"
+    assert provider.provider_name == "gemini"
+
+
+def test_create_inference_provider_gemini_explicit() -> None:
+    provider = create_inference_provider(
+        name="gemini",
+        api_token="explicit-gemini-key",
+        model="gemini-2.5-flash",
+        max_tokens=256,
+    )
+    assert isinstance(provider, GeminiInferenceProvider)
+    assert provider.model == "gemini-2.5-flash"
+    assert provider.max_tokens == 256
+
+
+def test_create_inference_provider_stub_and_cloudflare_unaffected_when_gemini_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+
+    # Stub succeeds without Gemini env
+    stub = create_inference_provider("stub")
+    assert isinstance(stub, StubInferenceProvider)
+
+    # Cloudflare succeeds without Gemini env
+    cf = create_inference_provider(
+        name="cloudflare",
+        account_id="acc",
+        api_token="tok",
+    )
+    assert isinstance(cf, CloudflareInferenceProvider)
+
+
+@pytest.mark.anyio
+async def test_gemini_worker_provider_successful_generate() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Generated Gemini response."}],
+                        "role": "model",
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5},
+        },
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = GeminiInferenceProvider(
+        api_key="test-gemini-key",
+        client=mock_client,
+    )
+
+    result = await provider.generate("Explain machine learning")
+    assert result == "Generated Gemini response."
+    mock_client.post.assert_called_once()
+    url, kwargs = mock_client.post.call_args[0][0], mock_client.post.call_args[1]
+    assert "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" in url
+    assert kwargs["headers"]["x-goog-api-key"] == "test-gemini-key"
+    assert kwargs["json"]["contents"][0]["parts"][0]["text"] == "Explain machine learning"
+
+
+@pytest.mark.anyio
+async def test_gemini_worker_provider_error_redacts_secret() -> None:
+    mock_client = AsyncMock()
+    secret_key = "super-secret-gemini-api-key"
+    mock_response = httpx.Response(
+        status_code=400,
+        json={"error": {"message": f"Bad request using {secret_key}"}},
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = GeminiInferenceProvider(
+        api_key=secret_key,
+        client=mock_client,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await provider.generate("test prompt")
+
+    err_text = str(exc_info.value)
+    assert secret_key not in err_text
+    assert "[REDACTED]" in err_text
+
+
+def test_gemini_worker_provider_configuration_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Invalid model
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        GeminiInferenceProvider(api_key="test-key", model="")
+
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        GeminiInferenceProvider(api_key="test-key", model="   ")
+
+    with pytest.raises(ValueError, match="model must be a non-empty string after normalization"):
+        GeminiInferenceProvider(api_key="test-key", model="models/")
+
+    # Invalid max_tokens
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens="256")  # type: ignore
+
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens=True)  # type: ignore
+
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens=False)  # type: ignore
+
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens=0)
+
+    with pytest.raises(ValueError, match="max_tokens must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key", max_tokens=-5)
+
+    # Invalid temperature
+    with pytest.raises(ValueError, match="temperature must be a number"):
+        GeminiInferenceProvider(api_key="test-key", temperature=True)  # type: ignore
+
+    with pytest.raises(ValueError, match="temperature must be a number"):
+        GeminiInferenceProvider(api_key="test-key", temperature="0.7")  # type: ignore
+
+    with pytest.raises(ValueError, match="temperature must be a number between 0.0 and 2.0"):
+        GeminiInferenceProvider(api_key="test-key", temperature=-0.1)
+
+    with pytest.raises(ValueError, match="temperature must be a number between 0.0 and 2.0"):
+        GeminiInferenceProvider(api_key="test-key", temperature=2.1)
+
+    # Valid temperature
+    valid_provider = GeminiInferenceProvider(api_key="test-key", temperature=0.7)
+    assert valid_provider.temperature == 0.7
+
+    # Invalid GEMINI_MAX_TOKENS from env
+    monkeypatch.setenv("GEMINI_MAX_TOKENS", "invalid_number")
+    with pytest.raises(ValueError, match="GEMINI_MAX_TOKENS must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key")
+
+    monkeypatch.setenv("GEMINI_MAX_TOKENS", "0")
+    with pytest.raises(ValueError, match="GEMINI_MAX_TOKENS must be a positive integer"):
+        GeminiInferenceProvider(api_key="test-key")

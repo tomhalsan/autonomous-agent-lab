@@ -3,6 +3,7 @@ from typing import Any
 
 from worker.application.ports import InferenceProvider
 from worker.infrastructure.cloudflare_inference import CloudflareInferenceProvider
+from worker.infrastructure.gemini_inference import GeminiInferenceProvider
 from worker.infrastructure.stub_inference import StubInferenceProvider
 
 
@@ -58,7 +59,18 @@ def create_inference_provider(
             max_tokens=max_tokens,
         )
 
+    if normalized == "gemini":
+        resolved_model = (
+            model if model is not None else os.getenv("GEMINI_MODEL", None)
+        )
+        return GeminiInferenceProvider(
+            api_key=api_token,
+            model=resolved_model.strip() if resolved_model else None,
+            client=client,
+            max_tokens=max_tokens,
+        )
+
     raise ValueError(
-        f"Unsupported inference provider: {raw_name!r}. Supported providers: ['stub', 'cloudflare']"
+        f"Unsupported inference provider: {raw_name!r}. Supported providers: ['stub', 'cloudflare', 'gemini']"
     )
 
