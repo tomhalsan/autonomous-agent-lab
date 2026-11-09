@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from agent_contracts import FallbackEligibleInferenceError, NonFallbackInferenceError
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +114,19 @@ class GeminiClient:
                     response = await client.post(endpoint, headers=headers, json=payload)
         except httpx.TimeoutException as exc:
             logger.error("Gemini API generateContent request timed out")
-            raise RuntimeError("Gemini API request timed out") from exc
+            raise FallbackEligibleInferenceError(
+                "Gemini API request timed out",
+                provider_name="gemini",
+                reason="timeout",
+            ) from exc
         except httpx.RequestError as exc:
             err_msg = self.redact(str(exc))
             logger.error("Gemini API HTTP request failed: %s", err_msg)
-            raise RuntimeError(f"Gemini API request failed: {err_msg}") from exc
+            raise FallbackEligibleInferenceError(
+                f"Gemini API request failed: {err_msg}",
+                provider_name="gemini",
+                reason="connection_error",
+            ) from exc
 
         try:
             data = response.json()
@@ -126,13 +135,19 @@ class GeminiClient:
                 "Gemini API returned unparseable JSON (status %d)",
                 response.status_code,
             )
-            raise RuntimeError(
-                f"Gemini API returned invalid JSON (status {response.status_code})"
+            raise FallbackEligibleInferenceError(
+                f"Gemini API returned invalid JSON (status {response.status_code})",
+                provider_name="gemini",
+                reason="malformed_response",
+                status_code=response.status_code,
             ) from exc
 
         if not isinstance(data, dict):
-            raise RuntimeError(  # noqa: TRY004
-                "Malformed Gemini API response: top-level JSON must be an object"
+            raise FallbackEligibleInferenceError(
+                "Malformed Gemini API response: top-level JSON must be an object",
+                provider_name="gemini",
+                reason="malformed_response",
+                status_code=response.status_code,
             )
 
         if response.status_code >= 400 or "error" in data:
@@ -144,30 +159,88 @@ class GeminiClient:
                 err_msg = error_obj
             clean_err = self.redact(str(err_msg))
             logger.error("Gemini API error (status %d): %s", response.status_code, clean_err)
-            raise RuntimeError(f"Gemini API error (status {response.status_code}): {clean_err}")
+            full_msg = f"Gemini API error (status {response.status_code}): {clean_err}"
+            if response.status_code == 429 or (500 <= response.status_code <= 599):
+                raise FallbackEligibleInferenceError(
+                    full_msg,
+                    provider_name="gemini",
+                    reason="rate_limited" if response.status_code == 429 else f"server_error_{response.status_code}",
+                    status_code=response.status_code,
+                )
+            if 400 <= response.status_code < 500:
+                raise NonFallbackInferenceError(
+                    full_msg,
+                    provider_name="gemini",
+                    reason=f"client_error_{response.status_code}",
+                    status_code=response.status_code,
+                )
+            raise NonFallbackInferenceError(
+                full_msg,
+                provider_name="gemini",
+                reason="unclassified_api_error",
+                status_code=response.status_code,
+            )
 
         candidates = data.get("candidates")
         if not isinstance(candidates, list) or not candidates:
             prompt_feedback = data.get("promptFeedback")
             if isinstance(prompt_feedback, dict) and prompt_feedback.get("blockReason"):
                 block_reason = prompt_feedback["blockReason"]
-                raise RuntimeError(f"Gemini API generation blocked: {block_reason}")
-            raise RuntimeError("Malformed Gemini API response: missing or empty 'candidates' list")
+                clean_block = self.redact(str(block_reason))
+                raise NonFallbackInferenceError(
+                    f"Gemini API generation blocked: {clean_block}",
+                    provider_name="gemini",
+                    reason=f"blocked_{clean_block.lower()}",
+                    status_code=response.status_code,
+                )
+            raise FallbackEligibleInferenceError(
+                "Malformed Gemini API response: missing or empty 'candidates' list",
+                provider_name="gemini",
+                reason="malformed_response",
+                status_code=response.status_code,
+            )
 
         candidate = candidates[0]
         if not isinstance(candidate, dict):
-            raise RuntimeError("Malformed Gemini API response: candidate must be an object")  # noqa: TRY004
+            raise FallbackEligibleInferenceError(
+                "Malformed Gemini API response: candidate must be an object",
+                provider_name="gemini",
+                reason="malformed_response",
+                status_code=response.status_code,
+            )
+
+        finish_reason = candidate.get("finishReason")
+        if finish_reason and str(finish_reason).upper() in (
+            "SAFETY",
+            "RECITATION",
+            "BLOCKLIST",
+            "PROHIBITED_CONTENT",
+            "SPII",
+        ):
+            clean_finish = self.redact(str(finish_reason))
+            raise NonFallbackInferenceError(
+                f"Gemini API generation blocked: {clean_finish}",
+                provider_name="gemini",
+                reason=f"blocked_{clean_finish.lower()}",
+                status_code=response.status_code,
+            )
 
         content = candidate.get("content")
         if not isinstance(content, dict):
-            raise RuntimeError(  # noqa: TRY004
-                "Malformed Gemini API response: missing or invalid 'content' object"
+            raise FallbackEligibleInferenceError(
+                "Malformed Gemini API response: missing or invalid 'content' object",
+                provider_name="gemini",
+                reason="malformed_response",
+                status_code=response.status_code,
             )
 
         parts = content.get("parts")
         if not isinstance(parts, list) or not parts:
-            raise RuntimeError(
-                "Malformed Gemini API response: missing or invalid 'parts' list"
+            raise FallbackEligibleInferenceError(
+                "Malformed Gemini API response: missing or invalid 'parts' list",
+                provider_name="gemini",
+                reason="malformed_response",
+                status_code=response.status_code,
             )
 
         text_parts: list[str] = []
@@ -179,8 +252,11 @@ class GeminiClient:
 
         response_text = "".join(text_parts)
         if not response_text.strip():
-            raise RuntimeError(
-                "Malformed Gemini API response: candidate produced empty or whitespace-only text"
+            raise FallbackEligibleInferenceError(
+                "Malformed Gemini API response: candidate produced empty or whitespace-only text",
+                provider_name="gemini",
+                reason="malformed_response",
+                status_code=response.status_code,
             )
 
         finish_reason = candidate.get("finishReason")

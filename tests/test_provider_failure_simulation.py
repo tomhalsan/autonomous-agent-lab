@@ -19,6 +19,9 @@ import httpx
 import pytest
 from agent_contracts import (
     AgentEvent,
+    FallbackEligibleInferenceError,
+    InferenceError,
+    NonFallbackInferenceError,
     TaskRequested,
     TaskResult,
 )
@@ -136,7 +139,71 @@ class FaultInjectingClient:
                 request=req,
             )
 
+        if self.fault_mode == "empty_candidates":
+            return httpx.Response(
+                status_code=200,
+                json={"candidates": []},
+                request=req,
+            )
+
+        if self.fault_mode == "safety_block" and self.provider == "gemini":
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "promptFeedback": {
+                        "blockReason": f"SAFETY: {self.secret_token}",
+                    },
+                },
+                request=req,
+            )
+
+        if self.fault_mode == "safety_finish_reason" and self.provider == "gemini":
+            return httpx.Response(
+                status_code=200,
+                json={
+                    "candidates": [
+                        {
+                            "finishReason": "SAFETY",
+                            "content": {"parts": []},
+                        }
+                    ]
+                },
+                request=req,
+            )
+
+        if self.fault_mode == "unclassified_error_envelope":
+            if self.provider == "cloudflare":
+                return httpx.Response(
+                    status_code=200,
+                    json={
+                        "success": False,
+                        "errors": [{"code": 99999, "message": f"Unrecognized API error with {self.secret_token}"}],
+                    },
+                    request=req,
+                )
+            if self.provider == "gemini":
+                return httpx.Response(
+                    status_code=200,
+                    json={
+                        "error": {
+                            "code": 99999,
+                            "message": f"Unrecognized API error with {self.secret_token}",
+                        }
+                    },
+                    request=req,
+                )
+
         if self.provider == "cloudflare":
+            if self.fault_mode in ("http_400", "http_401", "http_403", "http_404"):
+                code = int(self.fault_mode.split("_")[1])
+                return httpx.Response(
+                    status_code=code,
+                    json={
+                        "success": False,
+                        "errors": [{"code": 10000 + code, "message": f"Client error {code} with {self.secret_token}"}],
+                    },
+                    request=req,
+                )
             if self.fault_mode == "http_429":
                 return httpx.Response(
                     status_code=429,
@@ -168,6 +235,19 @@ class FaultInjectingClient:
                 )
 
         elif self.provider == "gemini":
+            if self.fault_mode in ("http_400", "http_401", "http_403", "http_404"):
+                code = int(self.fault_mode.split("_")[1])
+                return httpx.Response(
+                    status_code=code,
+                    json={
+                        "error": {
+                            "code": code,
+                            "message": f"Client error {code} with {self.secret_token}",
+                            "status": "INVALID_ARGUMENT" if code == 400 else "PERMISSION_DENIED",
+                        }
+                    },
+                    request=req,
+                )
             if self.fault_mode == "http_429":
                 return httpx.Response(
                     status_code=429,
@@ -312,7 +392,7 @@ async def test_adapter_protocol_fault_simulation_and_sanitization(
     provider_type: str,
     fault_mode: str,
 ) -> None:
-    """Verifies infrastructure adapters cleanly transform protocol faults into sanitized RuntimeError."""
+    """Verifies infrastructure adapters transform protocol faults into FallbackEligibleInferenceError without claiming provider recovery."""
     secret_token = f"super-secret-{provider_type}-token-xyz"
     client = FaultInjectingClient(
         provider=provider_type,
@@ -322,23 +402,186 @@ async def test_adapter_protocol_fault_simulation_and_sanitization(
 
     worker_provider = _create_worker_faulty_provider(provider_type, client)
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
         await worker_provider.generate("Test prompt")
 
     err_text = str(exc_info.value)
     # 1. Error message must not leak credentials
     assert secret_token not in err_text
-    # 2. Error message captures fault characteristics
+    # 2. Inheritance and typed attributes
+    assert isinstance(exc_info.value, FallbackEligibleInferenceError)
+    assert isinstance(exc_info.value, InferenceError)
+    assert isinstance(exc_info.value, RuntimeError)
+    assert not isinstance(exc_info.value, NonFallbackInferenceError)
+    assert exc_info.value.provider_name == provider_type
+    # 3. Error message captures fault characteristics
     if fault_mode == "http_429":
         assert "429" in err_text
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.reason == "rate_limited"
     elif fault_mode == "http_500":
         assert "500" in err_text
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.reason == "server_error_500"
     elif fault_mode == "http_503":
         assert "503" in err_text
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.reason == "server_error_503"
     elif fault_mode == "timeout":
         assert "timed out" in err_text.lower() or "timeout" in err_text.lower()
+        assert exc_info.value.reason == "timeout"
     elif fault_mode == "malformed_json":
         assert "invalid json" in err_text.lower()
+        assert exc_info.value.reason == "malformed_response"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("provider_type", ["cloudflare", "gemini"])
+@pytest.mark.parametrize(
+    "fault_mode",
+    ["http_400", "http_401", "http_403", "http_404"],
+)
+async def test_adapter_non_fallback_fault_simulation(
+    provider_type: str,
+    fault_mode: str,
+) -> None:
+    """Verifies infrastructure adapters cleanly transform permanent 4xx protocol faults into NonFallbackInferenceError."""
+    secret_token = f"super-secret-perm-{provider_type}-token-xyz"
+    client = FaultInjectingClient(
+        provider=provider_type,
+        fault_mode=fault_mode,
+        secret_token=secret_token,
+    )
+
+    worker_provider = _create_worker_faulty_provider(provider_type, client)
+
+    with pytest.raises(NonFallbackInferenceError) as exc_info:
+        await worker_provider.generate("Test prompt")
+
+    err_text = str(exc_info.value)
+    # 1. Error message must not leak credentials
+    assert secret_token not in err_text
+    # 2. Inheritance contracts
+    assert isinstance(exc_info.value, InferenceError)
+    assert isinstance(exc_info.value, RuntimeError)
+    assert not isinstance(exc_info.value, FallbackEligibleInferenceError)
+    # 3. Attributes
+    assert exc_info.value.provider_name == provider_type
+    expected_status = int(fault_mode.split("_")[1])
+    assert exc_info.value.status_code == expected_status
+    assert exc_info.value.reason == f"client_error_{expected_status}"
+    assert str(expected_status) in err_text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("provider_type", ["cloudflare", "gemini"])
+@pytest.mark.parametrize(
+    "fault_mode",
+    ["http_429", "http_500", "http_503", "timeout", "malformed_json"],
+)
+async def test_research_adapter_protocol_fault_simulation(
+    provider_type: str,
+    fault_mode: str,
+) -> None:
+    """Verifies research adapters transform protocol faults into FallbackEligibleInferenceError."""
+    secret_token = f"super-secret-research-{provider_type}-xyz"
+    client = FaultInjectingClient(
+        provider=provider_type,
+        fault_mode=fault_mode,
+        secret_token=secret_token,
+    )
+
+    research_provider = _create_research_faulty_provider(provider_type, client)
+
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await research_provider.synthesize("Test question", "Test evidence")
+
+    assert secret_token not in str(exc_info.value)
+    assert isinstance(exc_info.value, FallbackEligibleInferenceError)
+    assert isinstance(exc_info.value, InferenceError)
+    assert isinstance(exc_info.value, RuntimeError)
+    assert not isinstance(exc_info.value, NonFallbackInferenceError)
+    assert exc_info.value.provider_name == provider_type
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("block_mode", ["safety_block", "safety_finish_reason"])
+async def test_gemini_blocked_generation_is_non_fallback(block_mode: str) -> None:
+    """Verifies explicit policy/safety blocks are classified as NonFallbackInferenceError, not fallback eligible."""
+    secret_token = "secret-safety-prompt-leak-token"
+    client = FaultInjectingClient(
+        provider="gemini",
+        fault_mode=block_mode,
+        secret_token=secret_token,
+    )
+    provider = _create_worker_faulty_provider("gemini", client)
+
+    with pytest.raises(NonFallbackInferenceError) as exc_info:
+        await provider.generate("Test prompt triggering safety policy")
+
+    err_text = str(exc_info.value)
+    # 1. Credentials/tokens are sanitized
+    assert secret_token not in err_text
+    # 2. Inheritance
+    assert isinstance(exc_info.value, InferenceError)
+    assert isinstance(exc_info.value, RuntimeError)
+    assert not isinstance(exc_info.value, FallbackEligibleInferenceError)
+    # 3. Explicit block characteristics
+    assert "blocked" in err_text.lower()
+    assert exc_info.value.reason is not None and "blocked" in exc_info.value.reason.lower()
+    assert exc_info.value.provider_name == "gemini"
+
+
+@pytest.mark.anyio
+async def test_gemini_malformed_response_distinguishable_from_block() -> None:
+    """Verifies missing candidates without safety blockReason is classified as FallbackEligibleInferenceError."""
+    secret_token = "secret-malformed-response-token"
+    client = FaultInjectingClient(
+        provider="gemini",
+        fault_mode="empty_candidates",
+        secret_token=secret_token,
+    )
+    provider = _create_worker_faulty_provider("gemini", client)
+
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.generate("Test prompt")
+
+    err_text = str(exc_info.value)
+    assert secret_token not in err_text
+    assert isinstance(exc_info.value, InferenceError)
+    assert isinstance(exc_info.value, RuntimeError)
+    assert not isinstance(exc_info.value, NonFallbackInferenceError)
+    assert exc_info.value.reason == "malformed_response"
+    assert "candidates" in err_text.lower()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("provider_type", ["cloudflare", "gemini"])
+async def test_adapter_unclassified_error_envelope_is_non_fallback(
+    provider_type: str,
+) -> None:
+    """Verifies error envelopes with unrecognized non-fallback status codes default to NonFallbackInferenceError."""
+    secret_token = f"super-secret-unclassified-{provider_type}-xyz"
+    client = FaultInjectingClient(
+        provider=provider_type,
+        fault_mode="unclassified_error_envelope",
+        secret_token=secret_token,
+    )
+    provider = _create_worker_faulty_provider(provider_type, client)
+
+    with pytest.raises(NonFallbackInferenceError) as exc_info:
+        await provider.generate("Test prompt")
+
+    err_text = str(exc_info.value)
+    # 1. Credentials are not leaked
+    assert secret_token not in err_text
+    # 2. Inheritance
+    assert isinstance(exc_info.value, InferenceError)
+    assert isinstance(exc_info.value, RuntimeError)
+    assert not isinstance(exc_info.value, FallbackEligibleInferenceError)
+    # 3. Explicit unclassified reason
+    assert exc_info.value.provider_name == provider_type
+    assert exc_info.value.reason == "unclassified_api_error"
 
 
 # ==============================================================================

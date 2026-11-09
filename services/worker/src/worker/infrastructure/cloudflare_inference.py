@@ -3,7 +3,11 @@ import os
 from typing import Any
 
 import httpx
-from agent_contracts import InferenceProviderHealth
+from agent_contracts import (
+    FallbackEligibleInferenceError,
+    InferenceProviderHealth,
+    NonFallbackInferenceError,
+)
 from agent_infrastructure import CloudflareHealthProbe
 
 logger = logging.getLogger(__name__)
@@ -108,25 +112,43 @@ class CloudflareInferenceProvider:
             else:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     response = await client.post(endpoint, headers=headers, json=payload)
-        except Exception as exc:
+        except httpx.TimeoutException as exc:
+            err_msg = self._redact(str(exc))
+            logger.error("Cloudflare Workers AI generate request timed out: %s", err_msg)
+            raise FallbackEligibleInferenceError(
+                f"Cloudflare Workers AI request failed: {err_msg}",
+                provider_name=self.provider_name,
+                reason="timeout",
+            ) from exc
+        except httpx.RequestError as exc:
             err_msg = self._redact(str(exc))
             logger.error("Cloudflare Workers AI HTTP request failed: %s", err_msg)
-            raise RuntimeError(f"Cloudflare Workers AI request failed: {err_msg}") from exc
+            raise FallbackEligibleInferenceError(
+                f"Cloudflare Workers AI request failed: {err_msg}",
+                provider_name=self.provider_name,
+                reason="connection_error",
+            ) from exc
 
         try:
             data = response.json()
-        except Exception as exc:
+        except (ValueError, TypeError) as exc:
             logger.error(
                 "Cloudflare Workers AI returned unparseable JSON (status %d)",
                 response.status_code,
             )
-            raise RuntimeError(
-                f"Cloudflare Workers AI returned invalid JSON (status {response.status_code})"
+            raise FallbackEligibleInferenceError(
+                f"Cloudflare Workers AI returned invalid JSON (status {response.status_code})",
+                provider_name=self.provider_name,
+                reason="malformed_response",
+                status_code=response.status_code,
             ) from exc
 
         if not isinstance(data, dict):
-            raise RuntimeError(  # noqa: TRY004
-                "Malformed Cloudflare Workers AI response: top-level JSON must be an object"
+            raise FallbackEligibleInferenceError(
+                "Malformed Cloudflare Workers AI response: top-level JSON must be an object",
+                provider_name=self.provider_name,
+                reason="malformed_response",
+                status_code=response.status_code,
             )
 
         if response.status_code >= 400 or not data.get("success", True):
@@ -141,20 +163,44 @@ class CloudflareInferenceProvider:
                 response.status_code,
                 err_msg,
             )
-            raise RuntimeError(
-                f"Cloudflare Workers AI API error (status {response.status_code}): {err_msg}"
+            full_msg = f"Cloudflare Workers AI API error (status {response.status_code}): {err_msg}"
+            if response.status_code == 429 or (500 <= response.status_code <= 599):
+                raise FallbackEligibleInferenceError(
+                    full_msg,
+                    provider_name=self.provider_name,
+                    reason="rate_limited" if response.status_code == 429 else f"server_error_{response.status_code}",
+                    status_code=response.status_code,
+                )
+            if 400 <= response.status_code < 500:
+                raise NonFallbackInferenceError(
+                    full_msg,
+                    provider_name=self.provider_name,
+                    reason=f"client_error_{response.status_code}",
+                    status_code=response.status_code,
+                )
+            raise NonFallbackInferenceError(
+                full_msg,
+                provider_name=self.provider_name,
+                reason="unclassified_api_error",
+                status_code=response.status_code,
             )
 
         result_payload = data.get("result")
         if not isinstance(result_payload, dict):
-            raise RuntimeError(  # noqa: TRY004
-                "Malformed Cloudflare Workers AI response: missing or invalid 'result' object"
+            raise FallbackEligibleInferenceError(
+                "Malformed Cloudflare Workers AI response: missing or invalid 'result' object",
+                provider_name=self.provider_name,
+                reason="malformed_response",
+                status_code=response.status_code,
             )
 
         response_text = result_payload.get("response")
         if response_text is None or not isinstance(response_text, str):
-            raise RuntimeError(
-                "Malformed Cloudflare Workers AI response: missing 'result.response' string"
+            raise FallbackEligibleInferenceError(
+                "Malformed Cloudflare Workers AI response: missing 'result.response' string",
+                provider_name=self.provider_name,
+                reason="malformed_response",
+                status_code=response.status_code,
             )
 
         finish_reason = (
