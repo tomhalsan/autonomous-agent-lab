@@ -82,7 +82,22 @@ class AgentEvent:
     occurred_at: str
     task_id: str | None = None
     routing_decision: dict[str, Any] | None = None
+    fallback_transition: FallbackTransition | None = None
     version: int = 1
+
+    def __post_init__(self) -> None:
+        if isinstance(self.fallback_transition, dict):
+            object.__setattr__(
+                self,
+                "fallback_transition",
+                FallbackTransition.from_dict(self.fallback_transition),
+            )
+        elif self.fallback_transition is not None and not isinstance(
+            self.fallback_transition, FallbackTransition
+        ):
+            raise TypeError(
+                f"fallback_transition must be FallbackTransition, dict, or None, got {type(self.fallback_transition).__name__}"
+            )
 
     @classmethod
     def create(
@@ -92,6 +107,7 @@ class AgentEvent:
         detail: str,
         task_id: str | None = None,
         routing_decision: dict[str, Any] | None = None,
+        fallback_transition: FallbackTransition | None = None,
     ) -> "AgentEvent":
         return cls(
             agent_id=agent_id,
@@ -100,12 +116,15 @@ class AgentEvent:
             occurred_at=now_iso(),
             task_id=task_id,
             routing_decision=routing_decision,
+            fallback_transition=fallback_transition,
         )
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
         if self.routing_decision is None:
             data.pop("routing_decision", None)
+        if self.fallback_transition is None:
+            data.pop("fallback_transition", None)
         return data
 
     def to_json(self) -> str:

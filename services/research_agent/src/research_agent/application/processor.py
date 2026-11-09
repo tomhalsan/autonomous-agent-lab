@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 from agent_contracts import AgentEvent, TaskRequested
 
@@ -9,6 +12,9 @@ from research_agent.application.ports import (
     ResultStore,
 )
 from research_agent.domain.models import ResearchResult
+
+if TYPE_CHECKING:
+    from research_agent.application.fallback import ResearchFallbackCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +36,14 @@ class ResearchProcessor:
         executor: ResearchExecutor,
         result_store: ResultStore | None = None,
         inference_provider: InferenceProvider | None = None,
+        fallback_coordinator: ResearchFallbackCoordinator | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.bus = bus
         self.executor = executor
         self.result_store = result_store
         self.inference_provider = inference_provider
+        self.fallback_coordinator = fallback_coordinator
 
     async def run_once(self, task: TaskRequested) -> None:
         logger.info("Research agent %s processing task %s", self.agent_id, task.task_id)
@@ -47,7 +55,18 @@ class ResearchProcessor:
         try:
             result = await self.executor.execute(task)
 
-            if self.inference_provider is not None:
+            if self.fallback_coordinator is not None:
+                synthesis = await self.fallback_coordinator.synthesize(
+                    question=task.prompt, evidence=result.output, task_id=task.task_id
+                )
+                result = ResearchResult(
+                    task_id=task.task_id,
+                    output=synthesis.content,
+                    acknowledged=result.acknowledged,
+                    truncated=synthesis.truncated,
+                    sources=result.sources,
+                )
+            elif self.inference_provider is not None:
                 synthesis = await self.inference_provider.synthesize(
                     question=task.prompt, evidence=result.output
                 )

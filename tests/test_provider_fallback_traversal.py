@@ -2,20 +2,41 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from agent_contracts import (
+    AgentEvent,
     AllInferenceProvidersFailedError,
     FallbackEligibleInferenceError,
     FallbackTransition,
     InferenceError,
     InferenceHealthStatus,
+    InferenceProviderHealth,
     NonFallbackInferenceError,
     ProviderFailureSummary,
+    TaskRequested,
+    TaskResult,
 )
-from agent_policy import RankedProviderCandidate
-from research_agent.application.fallback import FallbackResearchSynthesizer
-from research_agent.domain.models import SynthesisResult
-from worker.application.fallback import FallbackInferenceProvider
+from agent_policy import (
+    RankedProviderCandidate,
+)
+from research_agent.application.fallback import (
+    FallbackResearchSynthesizer,
+    ResearchFallbackCoordinator,
+)
+from research_agent.application.processor import (
+    ResearchProcessor,
+)
+from research_agent.domain.models import ResearchResult, SynthesisResult
+from worker.application.fallback import (
+    FallbackInferenceProvider,
+    WorkerFallbackCoordinator,
+)
+from worker.application.processor import (
+    TaskExecutionError,
+    TaskProcessor,
+)
 
 
 def _make_candidate(provider_name: str, priority_index: int = 0) -> RankedProviderCandidate:
@@ -790,3 +811,584 @@ async def test_research_fallback_transition_parity() -> None:
         reason="server_error_503",
         attempt_index=0,
     )
+
+
+# ==============================================================================
+# Runtime Health & Fallback Coordinator Tests (Issue #16 Increment 4)
+# ==============================================================================
+
+
+class MockRuntimeWorkerProvider:
+    def __init__(
+        self,
+        name: str,
+        health_status: InferenceHealthStatus = InferenceHealthStatus.HEALTHY,
+        health_delay: float = 0.0,
+        health_error: Exception | None = None,
+        generate_behavior: str | Exception = "mock worker output",
+    ) -> None:
+        self.name = name
+        self.health_status = health_status
+        self.health_delay = health_delay
+        self.health_error = health_error
+        self.generate_behavior = generate_behavior
+        self.health_checked = False
+        self.generate_called = False
+        self.received_prompts: list[str] = []
+
+    async def check_health(self) -> InferenceProviderHealth:
+        self.health_checked = True
+        if self.health_delay > 0:
+            await asyncio.sleep(self.health_delay)
+        if self.health_error is not None:
+            raise self.health_error
+        return InferenceProviderHealth(
+            provider_name=self.name,
+            status=self.health_status,
+            reason=f"Status is {self.health_status.value}",
+        )
+
+    async def generate(self, prompt: str) -> str:
+        self.generate_called = True
+        self.received_prompts.append(prompt)
+        if isinstance(self.generate_behavior, Exception):
+            raise self.generate_behavior
+        return self.generate_behavior
+
+
+class MockRuntimeResearchProvider:
+    def __init__(
+        self,
+        name: str,
+        health_status: InferenceHealthStatus = InferenceHealthStatus.HEALTHY,
+        health_delay: float = 0.0,
+        health_error: Exception | None = None,
+        synthesize_behavior: SynthesisResult | Exception | None = None,
+    ) -> None:
+        self.name = name
+        self.health_status = health_status
+        self.health_delay = health_delay
+        self.health_error = health_error
+        self.synthesize_behavior = synthesize_behavior or SynthesisResult(
+            question="default question",
+            content="synthesized content",
+            evidence="grounded evidence",
+            provider=name,
+            model="default-model",
+        )
+        self.health_checked = False
+        self.synthesize_called = False
+        self.received_calls: list[tuple[str, str]] = []
+
+    async def check_health(self) -> InferenceProviderHealth:
+        self.health_checked = True
+        if self.health_delay > 0:
+            await asyncio.sleep(self.health_delay)
+        if self.health_error is not None:
+            raise self.health_error
+        return InferenceProviderHealth(
+            provider_name=self.name,
+            status=self.health_status,
+            reason=f"Status is {self.health_status.value}",
+        )
+
+    async def synthesize(self, question: str, evidence: str) -> SynthesisResult:
+        self.synthesize_called = True
+        self.received_calls.append((question, evidence))
+        if isinstance(self.synthesize_behavior, Exception):
+            raise self.synthesize_behavior
+        return self.synthesize_behavior
+
+
+class MockMessageBus:
+    def __init__(self, fail_publish: bool = False) -> None:
+        self.published: list[AgentEvent] = []
+        self.saved_results: dict[str, TaskResult | ResearchResult] = {}
+        self.fail_publish = fail_publish
+
+    async def publish(self, event: AgentEvent) -> None:
+        if self.fail_publish:
+            raise RuntimeError("Simulated bus transport failure")
+        self.published.append(event)
+
+    async def save(self, result: TaskResult | ResearchResult) -> None:
+        self.saved_results[result.task_id] = result
+
+    async def next_task(self) -> TaskRequested:
+        raise NotImplementedError
+
+
+class MockResearchExecutor:
+    def __init__(self, output: str = "Research ground evidence") -> None:
+        self.output = output
+
+    async def execute(self, task: TaskRequested) -> ResearchResult:
+        return ResearchResult(
+            task_id=task.task_id,
+            output=self.output,
+            acknowledged=True,
+            sources=["https://example.com/ref1"],
+        )
+
+
+def test_worker_coordinator_validation() -> None:
+    bus = MockMessageBus()
+    provider = MockRuntimeWorkerProvider("p1")
+
+    with pytest.raises(ValueError, match="agent_id must be a non-empty string"):
+        WorkerFallbackCoordinator(
+            agent_id="  ",
+            bus=bus,
+            preferences=["p1"],
+            providers={"p1": provider},
+        )
+
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        WorkerFallbackCoordinator(
+            agent_id="worker-1",
+            bus=bus,
+            preferences=["p1"],
+            providers={"p1": provider},
+            probe_timeout_seconds=-0.5,
+        )
+
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        WorkerFallbackCoordinator(
+            agent_id="worker-1",
+            bus=bus,
+            preferences=["p1"],
+            providers={"p1": provider},
+            probe_timeout_seconds=True,  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="Configured provider 'p2' is missing"):
+        WorkerFallbackCoordinator(
+            agent_id="worker-1",
+            bus=bus,
+            preferences=["p1", "p2"],
+            providers={"p1": provider},
+        )
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_healthy_priority_order() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider("p1", health_status=InferenceHealthStatus.HEALTHY, generate_behavior="out-p1")
+    p2 = MockRuntimeWorkerProvider("p2", health_status=InferenceHealthStatus.HEALTHY, generate_behavior="out-p2")
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    task = TaskRequested.create("Test prompt")
+    result = await coordinator.generate(task)
+
+    assert result == "out-p1"
+    assert p1.health_checked is True
+    assert p2.health_checked is True
+    assert p1.generate_called is True
+    assert p2.generate_called is False
+    assert len(bus.published) == 0
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_concurrent_probing_and_timeout(caplog: pytest.LogCaptureFixture) -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        health_delay=0.01,
+        generate_behavior="fast output",
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        health_delay=0.5,
+        generate_behavior="slow output",
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+        probe_timeout_seconds=0.05,
+    )
+    task = TaskRequested.create("Fast prompt")
+
+    with caplog.at_level("WARNING"):
+        result = await coordinator.generate(task)
+
+    assert result == "fast output"
+    assert p1.generate_called is True
+    assert p2.generate_called is False
+    assert "Health probe timed out for provider p2 (timeout=0.05s)" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_probe_failure_isolation(caplog: pytest.LogCaptureFixture) -> None:
+    bus = MockMessageBus()
+    secret_text = "SECRET_TOKEN_DO_NOT_LEAK"
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_error=RuntimeError(f"Connection dropped with {secret_text}"),
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior="recovered output",
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    task = TaskRequested.create("Isolation prompt")
+
+    with caplog.at_level("WARNING"):
+        result = await coordinator.generate(task)
+
+    assert result == "recovered output"
+    assert p2.generate_called is True
+    assert "Health probe failed for provider p1 (error_type=RuntimeError)" in caplog.text
+    assert secret_text not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_degraded_outranked_by_healthy() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.DEGRADED,
+        generate_behavior="p1 output",
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior="p2 output",
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    task = TaskRequested.create("Check degradation ranking")
+    result = await coordinator.generate(task)
+
+    assert result == "p2 output"
+    assert p2.generate_called is True
+    assert p1.generate_called is False
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_fallback_publishes_event_with_task_id() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=FallbackEligibleInferenceError("Rate limited", reason="rate_limited", status_code=429),
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior="secondary output",
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    task = TaskRequested.create("Fallback prompt")
+    result = await coordinator.generate(task)
+
+    assert result == "secondary output"
+    assert p1.generate_called is True
+    assert p2.generate_called is True
+
+    assert len(bus.published) == 1
+    event = bus.published[0]
+    assert event.state == "fallback"
+    assert event.agent_id == "worker-1"
+    assert event.task_id == task.task_id
+    assert "rate_limited" in event.detail
+    assert event.fallback_transition == FallbackTransition(
+        failed_provider="p1",
+        target_provider="p2",
+        reason="rate_limited",
+        attempt_index=0,
+    )
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_non_fallback_error_stops() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=NonFallbackInferenceError("400 Bad Request", reason="bad_request", status_code=400),
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior="should not run",
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    task = TaskRequested.create("Bad request prompt")
+
+    with pytest.raises(NonFallbackInferenceError) as exc_info:
+        await coordinator.generate(task)
+
+    assert exc_info.value.reason == "bad_request"
+    assert p1.generate_called is True
+    assert p2.generate_called is False
+    assert len(bus.published) == 0
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_all_probes_unavailable_raises_generic_exhaustion() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider("p1", health_status=InferenceHealthStatus.UNAVAILABLE)
+    p2 = MockRuntimeWorkerProvider("p2", health_status=InferenceHealthStatus.UNAVAILABLE)
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    task = TaskRequested.create("No candidates prompt")
+
+    with pytest.raises(AllInferenceProvidersFailedError) as exc_info:
+        await coordinator.generate(task)
+
+    assert str(exc_info.value) == AllInferenceProvidersFailedError.MESSAGE
+    assert exc_info.value.failures == ()
+    assert p1.generate_called is False
+    assert p2.generate_called is False
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_event_publish_failure_does_not_abort_recovery() -> None:
+    bus = MockMessageBus(fail_publish=True)
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=FallbackEligibleInferenceError("Timeout", reason="timeout"),
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior="recovered value",
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    task = TaskRequested.create("Publish failure prompt")
+    result = await coordinator.generate(task)
+
+    assert result == "recovered value"
+    assert p2.generate_called is True
+
+
+@pytest.mark.anyio
+async def test_worker_task_processor_end_to_end_fallback_lifecycle() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=FallbackEligibleInferenceError("503", reason="server_error_503", status_code=503),
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior="final answer",
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    processor = TaskProcessor(
+        agent_id="worker-1",
+        bus=bus,
+        result_store=bus,
+        fallback_coordinator=coordinator,
+    )
+    task = TaskRequested.create("End to end prompt")
+    await processor.run_once(task)
+
+    # Event sequence: working -> fallback -> idle
+    assert len(bus.published) == 3
+    ev_working, ev_fallback, ev_idle = bus.published
+
+    assert ev_working.state == "working"
+    assert ev_working.task_id == task.task_id
+
+    assert ev_fallback.state == "fallback"
+    assert ev_fallback.task_id == task.task_id
+    assert ev_fallback.fallback_transition == FallbackTransition("p1", "p2", "server_error_503", 0)
+
+    assert ev_idle.state == "idle"
+    assert ev_idle.task_id == task.task_id
+
+    assert task.task_id in bus.saved_results
+    assert bus.saved_results[task.task_id].output == "final answer"
+
+
+@pytest.mark.anyio
+async def test_worker_task_processor_end_to_end_exhaustion_lifecycle() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=FallbackEligibleInferenceError("503", reason="server_error_503"),
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=FallbackEligibleInferenceError("429", reason="rate_limited"),
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    processor = TaskProcessor(
+        agent_id="worker-1",
+        bus=bus,
+        result_store=bus,
+        fallback_coordinator=coordinator,
+    )
+    task = TaskRequested.create("Exhaustion prompt")
+
+    with pytest.raises(TaskExecutionError) as exc_info:
+        await processor.run_once(task)
+
+    assert isinstance(exc_info.value.original_error, AllInferenceProvidersFailedError)
+    assert exc_info.value.task_id == task.task_id
+
+    # Event sequence: working -> fallback -> error -> idle
+    assert len(bus.published) == 4
+    ev_working, ev_fallback, ev_error, ev_idle = bus.published
+
+    assert ev_working.state == "working"
+    assert ev_fallback.state == "fallback"
+    assert ev_error.state == "error"
+    assert ev_error.detail == AllInferenceProvidersFailedError.MESSAGE
+    assert ev_idle.state == "idle"
+
+
+@pytest.mark.anyio
+async def test_research_fallback_coordinator_parity() -> None:
+    bus = MockMessageBus()
+    synthesis = SynthesisResult(
+        question="Consensus models",
+        content="Paxos and Raft comparison",
+        evidence="Evidence text",
+        provider="p2",
+        model="m2",
+        truncated=False,
+    )
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError("500", reason="server_error_500", status_code=500),
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=synthesis,
+    )
+
+    coordinator = ResearchFallbackCoordinator(
+        agent_id="research-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    result = await coordinator.synthesize("Consensus models", "Evidence text", task_id="task-r-1")
+
+    assert result == synthesis
+    assert p1.synthesize_called is True
+    assert p2.synthesize_called is True
+    assert len(bus.published) == 1
+    event = bus.published[0]
+    assert event.state == "fallback"
+    assert event.agent_id == "research-1"
+    assert event.task_id == "task-r-1"
+    assert event.fallback_transition == FallbackTransition("p1", "p2", "server_error_500", 0)
+
+
+@pytest.mark.anyio
+async def test_research_processor_end_to_end_fallback_lifecycle() -> None:
+    bus = MockMessageBus()
+    synthesis = SynthesisResult(
+        question="Grounded query",
+        content="Synthesized research findings",
+        evidence="Ground evidence",
+        provider="p2",
+        model="m2",
+    )
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError("Timeout", reason="timeout"),
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=synthesis,
+    )
+
+    coordinator = ResearchFallbackCoordinator(
+        agent_id="research-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    executor = MockResearchExecutor(output="Ground evidence")
+    processor = ResearchProcessor(
+        agent_id="research-1",
+        bus=bus,
+        executor=executor,
+        result_store=bus,
+        fallback_coordinator=coordinator,
+    )
+    task = TaskRequested.create("Grounded query")
+    await processor.run_once(task)
+
+    # Lifecycle: working -> fallback -> idle
+    assert len(bus.published) == 3
+    ev_working, ev_fallback, ev_idle = bus.published
+
+    assert ev_working.state == "working"
+    assert ev_fallback.state == "fallback"
+    assert ev_fallback.fallback_transition == FallbackTransition("p1", "p2", "timeout", 0)
+    assert ev_idle.state == "idle"
+
+    assert task.task_id in bus.saved_results
+    saved = bus.saved_results[task.task_id]
+    assert saved.output == "Synthesized research findings"
+    assert saved.sources == ("https://example.com/ref1",)

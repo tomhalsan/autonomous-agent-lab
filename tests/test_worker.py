@@ -9,6 +9,7 @@ import redis.asyncio as redis
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
+    FallbackTransition,
     TaskRequested,
     TaskResult,
 )
@@ -688,6 +689,107 @@ async def test_run_worker_unsupported_inference_provider_fails_startup(
             await run_worker()
 
         mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_run_worker_multi_provider_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_ID", "worker-multi")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub,cloudflare")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acc-multi")
+    monkeypatch.setenv("CLOUDFLARE_AI_API_TOKEN", "tok-multi")
+
+    with patch("worker.main.RedisBus") as mock_bus_cls, patch("worker.main.TaskProcessor"):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from worker.main import run_worker
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_worker()
+
+        mock_bus.register.assert_awaited_once()
+        metadata = mock_bus.register.call_args[0][0]
+        assert metadata.providers == {"inference_provider": "stub,cloudflare"}
+
+
+@pytest.mark.anyio
+async def test_run_worker_missing_secondary_credentials_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub,cloudflare")
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AI_API_TOKEN", raising=False)
+
+    with patch("worker.main.RedisBus") as mock_bus_cls, patch("worker.main.TaskProcessor"):
+        from worker.main import run_worker
+
+        with pytest.raises(
+            ValueError, match="CLOUDFLARE_ACCOUNT_ID environment variable is required"
+        ):
+            await run_worker()
+
+        mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_run_worker_unsupported_secondary_provider_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub,invalid_vendor")
+
+    with patch("worker.main.RedisBus") as mock_bus_cls, patch("worker.main.TaskProcessor"):
+        from worker.main import run_worker
+
+        with pytest.raises(
+            ValueError, match="Unsupported inference provider: 'invalid_vendor'"
+        ):
+            await run_worker()
+
+        mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_worker_redis_bus_serializes_fallback_transition_as_json() -> None:
+    bus = RedisBus("redis://localhost:6379/0", queue_name="agent.tasks.general")
+    bus.client.sadd = AsyncMock()  # type: ignore[method-assign]
+    bus.client.hset = AsyncMock()  # type: ignore[method-assign]
+    bus.client.xadd = AsyncMock()  # type: ignore[method-assign]
+
+    transition = FallbackTransition(
+        failed_provider="cloudflare",
+        target_provider="gemini",
+        reason="rate_limited",
+        attempt_index=0,
+    )
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state="fallback",
+        detail="Inference fallback: cloudflare -> gemini (rate_limited)",
+        task_id="task-json-1",
+        fallback_transition=transition,
+    )
+
+    await bus.publish(event)
+
+    # Check xadd mapping
+    bus.client.xadd.assert_awaited_once()
+    _, call_mapping = bus.client.xadd.await_args[0]
+    assert "fallback_transition" in call_mapping
+    raw_ft = call_mapping["fallback_transition"]
+    parsed = json.loads(raw_ft)
+    assert parsed == transition.to_dict()
+    assert parsed["failed_provider"] == "cloudflare"
+    assert parsed["target_provider"] == "gemini"
+
+    # Check hset mapping
+    bus.client.hset.assert_awaited_once()
+    kwargs = bus.client.hset.await_args[1]
+    hset_mapping = kwargs.get("mapping", {})
+    assert "fallback_transition" in hset_mapping
+    assert json.loads(hset_mapping["fallback_transition"]) == transition.to_dict()
 
 
 @pytest.mark.anyio

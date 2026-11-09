@@ -2,23 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 from agent_contracts import (
+    AgentEvent,
     AllInferenceProvidersFailedError,
     FallbackEligibleInferenceError,
     FallbackTransition,
+    InferenceProviderHealth,
     NonFallbackInferenceError,
     ProviderFailureSummary,
 )
-from agent_policy import RankedProviderCandidate
+from agent_policy import (
+    DeterministicProviderSelector,
+    RankedProviderCandidate,
+    SelectionStrategy,
+    parse_provider_priority,
+)
 
-from research_agent.application.ports import InferenceProvider
+from research_agent.application.ports import (
+    InferenceHealthProbe,
+    InferenceProvider,
+    MessageBus,
+    RuntimeInferenceProvider,
+)
 from research_agent.domain.models import SynthesisResult
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS: float = 1.0
 
 
 class FallbackResearchSynthesizer:
@@ -134,3 +149,116 @@ class FallbackResearchSynthesizer:
             # Any unexpected exception escapes immediately without catching or reclassifying
 
         raise AllInferenceProvidersFailedError(failures=failures)
+
+
+class ResearchFallbackCoordinator:
+    """Application coordinator managing per-task concurrent health probes and research synthesis fallback."""
+
+    def __init__(
+        self,
+        agent_id: str,
+        bus: MessageBus,
+        preferences: Sequence[str],
+        providers: Mapping[str, RuntimeInferenceProvider],
+        selector: DeterministicProviderSelector | None = None,
+        probe_timeout_seconds: float = DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS,
+    ) -> None:
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            raise ValueError("agent_id must be a non-empty string")
+        if (
+            type(probe_timeout_seconds) is bool
+            or not isinstance(probe_timeout_seconds, (int, float))
+            or probe_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                f"probe_timeout_seconds must be a positive number, got {probe_timeout_seconds!r}"
+            )
+
+        self.agent_id = agent_id.strip()
+        self.bus = bus
+        self.preferences = parse_provider_priority(None, default=preferences)
+        self.selector = selector or DeterministicProviderSelector()
+        self.probe_timeout_seconds = float(probe_timeout_seconds)
+
+        normalized_providers: dict[str, RuntimeInferenceProvider] = {}
+        for name, provider in providers.items():
+            normalized_providers[name.strip().lower()] = provider
+
+        for pref in self.preferences:
+            if pref not in normalized_providers:
+                raise ValueError(
+                    f"Configured provider {pref!r} is missing from provided runtime providers"
+                )
+
+        self._providers = normalized_providers
+
+    @property
+    def providers(self) -> Mapping[str, RuntimeInferenceProvider]:
+        """Immutable mapping of retained runtime providers."""
+        return self._providers
+
+    async def _probe_single(
+        self,
+        provider_name: str,
+        probe: InferenceHealthProbe,
+        timeout_seconds: float,
+    ) -> InferenceProviderHealth | None:
+        try:
+            return await asyncio.wait_for(probe.check_health(), timeout=timeout_seconds)
+        except TimeoutError:
+            logger.warning(
+                "Health probe timed out for provider %s (timeout=%.2fs)",
+                provider_name,
+                timeout_seconds,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Health probe failed for provider %s (error_type=%s)",
+                provider_name,
+                type(exc).__name__,
+            )
+            return None
+
+    async def synthesize(
+        self,
+        question: str,
+        evidence: str,
+        task_id: str,
+    ) -> SynthesisResult:
+        """Execute research synthesis with per-task concurrent health probing and deterministic fallback."""
+        probe_tasks = [
+            self._probe_single(name, self._providers[name], self.probe_timeout_seconds)
+            for name in self.preferences
+        ]
+        probe_results = await asyncio.gather(*probe_tasks)
+        snapshots = [s for s in probe_results if s is not None]
+
+        decision = self.selector.select(
+            self.preferences,
+            snapshots,
+            strategy=SelectionStrategy.PRIORITY,
+        )
+
+        if not decision.ranked_candidates:
+            raise AllInferenceProvidersFailedError(failures=())
+
+        async def on_transition(transition: FallbackTransition) -> None:
+            event = AgentEvent.create(
+                agent_id=self.agent_id,
+                state="fallback",
+                detail=(
+                    f"Inference fallback: {transition.failed_provider} -> "
+                    f"{transition.target_provider} ({transition.reason})"
+                ),
+                task_id=task_id,
+                fallback_transition=transition,
+            )
+            await self.bus.publish(event)
+
+        synthesizer = FallbackResearchSynthesizer(
+            candidates=decision.ranked_candidates,
+            resolver=lambda name: self._providers[name],
+            on_transition=on_transition,
+        )
+        return await synthesizer.synthesize(question, evidence)

@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent_contracts import AgentEvent, TaskRequested, TaskResult
 
 from .ports import InferenceProvider, MessageBus, ResultStore
+
+if TYPE_CHECKING:
+    from worker.application.fallback import WorkerFallbackCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +29,18 @@ class TaskProcessor:
         bus: MessageBus,
         result_store: ResultStore | None = None,
         inference_provider: InferenceProvider | None = None,
+        fallback_coordinator: WorkerFallbackCoordinator | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.bus = bus
         self.result_store = result_store
         self.inference_provider = inference_provider
+        self.fallback_coordinator = fallback_coordinator
 
     async def process(self, task: TaskRequested) -> Any:
-        """Execute the task prompt using the configured inference provider."""
+        """Execute the task prompt using the configured fallback coordinator or inference provider."""
+        if self.fallback_coordinator is not None:
+            return await self.fallback_coordinator.generate(task)
         if self.inference_provider is not None:
             return await self.inference_provider.generate(task.prompt)
         return f"Completed: {task.prompt}"

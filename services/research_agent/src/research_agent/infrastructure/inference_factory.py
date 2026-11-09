@@ -1,7 +1,7 @@
 import os
 from typing import Any
 
-from research_agent.application.ports import InferenceProvider
+from research_agent.application.ports import RuntimeInferenceProvider
 from research_agent.infrastructure.cloudflare_inference import CloudflareInferenceProvider
 from research_agent.infrastructure.gemini_inference import GeminiInferenceProvider
 from research_agent.infrastructure.stub_inference import StubInferenceProvider
@@ -14,7 +14,7 @@ def create_inference_provider(
     model: str | None = None,
     client: Any | None = None,
     max_tokens: int | None = None,
-) -> InferenceProvider:
+) -> RuntimeInferenceProvider:
     """Instantiate an InferenceProvider based on the provided name or INFERENCE_PROVIDER env var.
 
     Defaults to 'stub' if no name is provided and INFERENCE_PROVIDER is unset.

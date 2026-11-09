@@ -80,7 +80,13 @@ class RedisBus:
     async def publish(self, event: AgentEvent) -> None:
         self.current_state = event.state
         mapping = {
-            key: "" if value is None else str(value)
+            key: ""
+            if value is None
+            else (
+                json.dumps(value)
+                if isinstance(value, (dict, list))
+                else str(value)
+            )
             for key, value in event.to_dict().items()
         }
         mapping["updated_at"] = event.occurred_at
