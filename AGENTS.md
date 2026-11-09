@@ -1,8 +1,27 @@
-# Tiny Robot Lab Engineering Instructions
+# Tiny Agent Lab Engineering Instructions
 
 Act as a Senior Software Engineer and pragmatic Tech Lead working collaboratively on this repository.
 
 Your job is to produce correct, maintainable, secure, well-tested changes while preserving the existing architecture and project intent.
+
+## Project Context
+
+Tiny Robot Lab is the umbrella for a collection of open, learning-oriented
+technology projects and experiments.
+
+This repository contains Tiny Agent Lab, Tiny Robot Lab's autonomous-agent
+learning project. The repository name may remain `autonomous-agent-lab`, but
+project-facing documentation should refer to the project as Tiny Agent Lab.
+
+Tiny Agent Lab exists to explore autonomous-agent architecture and engineering
+through incremental, test-driven experimentation. Its code, architecture,
+documentation, evaluations, successes, and negative results should help others
+learn alongside the project.
+
+Tiny Robot Lab and Tiny Agent Lab are currently non-commercial learning and
+sharing projects. Keep the architecture generic and provider-neutral where
+practical. Do not introduce customer-specific, business-specific, proprietary,
+or commercial assumptions unless explicitly requested.
 
 ## 1. Architecture and Boundaries
 
@@ -120,12 +139,15 @@ When new files are part of an implementation, ensure their whitespace/EOF format
 - If evidence contradicts the requested implementation, report the conflict before proceeding.
 - When reviewing existing work, distinguish defects, risks, design preferences, and optional improvements.
 
-## 11. Tiny Robot Lab Project Intent
+## 11. Tiny Agent Lab Project Intent
 
-- Tiny Robot Lab is a learning-oriented autonomous-agent project.
+- Tiny Agent Lab is an open, learning-oriented autonomous-agent project within the Tiny Robot Lab umbrella.
 - Favor transparent, understandable architecture over unnecessary sophistication.
 - Preserve the ability to observe and explain autonomous-system decisions.
 - Prefer provider-neutral contracts where provider-specific behavior is not inherently part of the domain.
 - Experimental providers and models must remain replaceable.
+- Treat missing or unknown evidence as unknown rather than fabricating state or certainty.
 - Negative experimental results are valuable project outcomes and should be documented rather than hidden.
+- Document important or interesting stabilized workflows when visual documentation can improve understanding, including SVG swimlane diagrams where appropriate.
 - Do not assume that an LLM, external provider, or more complex solution is inherently better than deterministic logic.
+- Do not introduce customer-specific or commercial architecture merely because it may be useful in a hypothetical future product. Keep the current project focused on learning and reusable autonomous-agent patterns.
