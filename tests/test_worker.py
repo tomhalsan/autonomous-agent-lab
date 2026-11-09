@@ -10,10 +10,17 @@ from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
     FallbackTransition,
+    InferenceHealthStatus,
+    InferenceResponse,
     TaskRequested,
     TaskResult,
 )
+from agent_policy import RankedProviderCandidate
 from orchestrator.infrastructure.redis_adapter import RedisGateway
+from worker.application.fallback import (
+    FallbackInferenceProvider,
+    WorkerFallbackCoordinator,
+)
 from worker.application.processor import TaskExecutionError, TaskProcessor
 from worker.infrastructure.cloudflare_inference import (
     DEFAULT_CLOUDFLARE_AI_MODEL,
@@ -349,14 +356,33 @@ async def test_run_worker_wires_result_store(monkeypatch: pytest.MonkeyPatch) ->
 async def test_stub_inference_provider_generate_default() -> None:
     provider = StubInferenceProvider()
     res = await provider.generate("Summarize daily activity")
-    assert res == "Generated response for: Summarize daily activity"
+    assert isinstance(res, InferenceResponse)
+    assert res.text == "Generated response for: Summarize daily activity"
+    assert res.provider_name == "stub"
+    assert res.model_name == "stub"
+    assert res.input_tokens is None
+    assert res.output_tokens is None
+    assert res.total_tokens is None
+    assert res.finish_reason is None
 
 
 @pytest.mark.anyio
 async def test_stub_inference_provider_generate_custom_response() -> None:
-    provider = StubInferenceProvider(custom_response="Deterministic output")
+    provider = StubInferenceProvider(
+        custom_response="Deterministic output",
+        finish_reason="stop",
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+    )
     res = await provider.generate("Any prompt")
-    assert res == "Deterministic output"
+    assert isinstance(res, InferenceResponse)
+    assert res.text == "Deterministic output"
+    assert res.provider_name == "stub"
+    assert res.finish_reason == "stop"
+    assert res.input_tokens == 10
+    assert res.output_tokens == 5
+    assert res.total_tokens == 15
 
 
 @pytest.mark.anyio
@@ -584,7 +610,9 @@ async def test_cloudflare_provider_successful_generate() -> None:
     prompt = "Explain quantum computing briefly"
     res = await provider.generate(prompt)
 
-    assert res == "This is the generated answer from Cloudflare."
+    assert isinstance(res, InferenceResponse)
+    assert res.text == "This is the generated answer from Cloudflare."
+    assert res.provider_name == "cloudflare"
     mock_client.post.assert_called_once()
     url, kwargs = mock_client.post.call_args[0][0], mock_client.post.call_args[1]
     assert (
@@ -953,7 +981,14 @@ async def test_gemini_worker_provider_successful_generate() -> None:
     )
 
     result = await provider.generate("Explain machine learning")
-    assert result == "Generated Gemini response."
+    assert isinstance(result, InferenceResponse)
+    assert result.text == "Generated Gemini response."
+    assert result.provider_name == "gemini"
+    assert result.model_name == "gemini-2.5-flash"
+    assert result.finish_reason == "stop"
+    assert result.input_tokens == 10
+    assert result.output_tokens == 5
+    assert result.total_tokens is None
     mock_client.post.assert_called_once()
     url, kwargs = mock_client.post.call_args[0][0], mock_client.post.call_args[1]
     assert "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" in url
@@ -1038,3 +1073,301 @@ def test_gemini_worker_provider_configuration_validation(
     monkeypatch.setenv("GEMINI_MAX_TOKENS", "0")
     with pytest.raises(ValueError, match="GEMINI_MAX_TOKENS must be a positive integer"):
         GeminiInferenceProvider(api_key="test-key")
+
+
+@pytest.mark.anyio
+async def test_cloudflare_worker_provider_extracts_usage_and_finish_reason() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "Response with usage data.",
+                "finish_reason": "max_tokens",
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 60,
+                    "total_tokens": 180,
+                },
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    res = await provider.generate("Tell me a story")
+    assert isinstance(res, InferenceResponse)
+    assert res.text == "Response with usage data."
+    assert res.provider_name == "cloudflare"
+    assert res.finish_reason == "max_tokens"
+    assert res.input_tokens == 120
+    assert res.output_tokens == 60
+    assert res.total_tokens == 180
+
+
+@pytest.mark.anyio
+async def test_cloudflare_worker_provider_missing_usage_defaults_none() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "Response without usage data.",
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    res = await provider.generate("Tell me a story")
+    assert isinstance(res, InferenceResponse)
+    assert res.text == "Response without usage data."
+    assert res.input_tokens is None
+    assert res.output_tokens is None
+    assert res.total_tokens is None
+    assert res.finish_reason is None
+
+
+@pytest.mark.anyio
+async def test_gemini_worker_provider_missing_usage_defaults_none() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Gemini response with no usage metadata."}],
+                        "role": "model",
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+        },
+        request=httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = GeminiInferenceProvider(
+        api_key="test-key",
+        client=mock_client,
+    )
+    res = await provider.generate("Brief answer")
+    assert isinstance(res, InferenceResponse)
+    assert res.text == "Gemini response with no usage metadata."
+    assert res.input_tokens is None
+    assert res.output_tokens is None
+    assert res.total_tokens is None
+    assert res.finish_reason == "stop"
+
+
+@pytest.mark.anyio
+async def test_stub_worker_provider_metadata_isolation() -> None:
+    default_stub = StubInferenceProvider()
+    default_res = await default_stub.generate("prompt")
+    assert default_res.input_tokens is None
+    assert default_res.output_tokens is None
+    assert default_res.total_tokens is None
+    assert default_res.finish_reason is None
+
+    configured_stub = StubInferenceProvider(
+        finish_reason="stop",
+        input_tokens=15,
+        output_tokens=30,
+        total_tokens=45,
+    )
+    conf_res = await configured_stub.generate("prompt")
+    assert conf_res.input_tokens == 15
+    assert conf_res.output_tokens == 30
+    assert conf_res.total_tokens == 45
+    assert conf_res.finish_reason == "stop"
+
+
+# ==============================================================================
+# Increment 1 Runtime Compatibility and Unwrapping Tests (Issue #17)
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_concrete_worker_providers_return_inference_response() -> None:
+    # 1. Stub
+    stub = StubInferenceProvider(custom_response="stub output")
+    stub_res = await stub.generate("test prompt")
+    assert isinstance(stub_res, InferenceResponse)
+    assert type(stub_res) is not str
+    assert stub_res.text == "stub output"
+    assert stub_res.provider_name == "stub"
+
+    # 2. Cloudflare
+    mock_cf_client = AsyncMock()
+    mock_cf_client.post.return_value = httpx.Response(
+        status_code=200,
+        json={"result": {"response": "cf output"}, "success": True, "errors": [], "messages": []},
+        request=httpx.Request("POST", "https://api.cloudflare.com"),
+    )
+    cf = CloudflareInferenceProvider(account_id="acc", api_token="tok", client=mock_cf_client)
+    cf_res = await cf.generate("test prompt")
+    assert isinstance(cf_res, InferenceResponse)
+    assert type(cf_res) is not str
+    assert cf_res.text == "cf output"
+    assert cf_res.provider_name == "cloudflare"
+
+    # 3. Gemini
+    mock_gemini_client = AsyncMock()
+    mock_gemini_client.post.return_value = httpx.Response(
+        status_code=200,
+        json={
+            "candidates": [
+                {"content": {"parts": [{"text": "gemini output"}], "role": "model"}, "finishReason": "STOP"}
+            ]
+        },
+        request=httpx.Request("POST", "https://generativelanguage.googleapis.com"),
+    )
+    gemini = GeminiInferenceProvider(api_key="key", client=mock_gemini_client)
+    gemini_res = await gemini.generate("test prompt")
+    assert isinstance(gemini_res, InferenceResponse)
+    assert type(gemini_res) is not str
+    assert gemini_res.text == "gemini output"
+    assert gemini_res.provider_name == "gemini"
+
+
+@pytest.mark.anyio
+async def test_fallback_inference_provider_unwraps_inference_response_to_plain_str() -> None:
+    candidate = RankedProviderCandidate(
+        provider_name="stub",
+        health_status=InferenceHealthStatus.HEALTHY,
+        priority_index=0,
+    )
+    provider = StubInferenceProvider(
+        custom_response="traversal output",
+        finish_reason="stop",
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+    )
+    fallback_provider = FallbackInferenceProvider(
+        candidates=[candidate],
+        resolver=lambda name: provider if name == "stub" else None,
+    )
+    result = await fallback_provider.generate("test prompt")
+    assert type(result) is str
+    assert result == "traversal output"
+    assert not isinstance(result, InferenceResponse)
+
+
+@pytest.mark.anyio
+async def test_worker_fallback_coordinator_returns_plain_str() -> None:
+    bus = FakeMessageBus()
+    provider = StubInferenceProvider(custom_response="coordinator output")
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-test",
+        bus=bus,
+        providers={"stub": provider},
+        preferences=["stub"],
+    )
+    task = TaskRequested.create("Summarize worker tasks")
+    result = await coordinator.generate(task)
+    assert type(result) is str
+    assert result == "coordinator output"
+    assert not isinstance(result, InferenceResponse)
+
+
+@pytest.mark.anyio
+async def test_task_processor_direct_provider_injection_returns_plain_str() -> None:
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    provider = StubInferenceProvider(custom_response="processor output")
+    processor = TaskProcessor(
+        agent_id="worker-compat-test",
+        bus=bus,
+        result_store=store,
+        inference_provider=provider,
+    )
+    task = TaskRequested.create("Run direct processor task")
+    result = await processor.process(task)
+    assert type(result) is str
+    assert result == "processor output"
+    assert not isinstance(result, InferenceResponse)
+
+
+@pytest.mark.anyio
+async def test_normal_runtime_task_result_output_remains_plain_str() -> None:
+    bus = FakeMessageBus()
+    store = FakeResultStore()
+    provider = StubInferenceProvider(custom_response="result store output")
+    processor = TaskProcessor(
+        agent_id="worker-compat-test",
+        bus=bus,
+        result_store=store,
+        inference_provider=provider,
+    )
+    task = TaskRequested.create("Run result verification task")
+    await processor.run_once(task)
+
+    assert task.task_id in store.saved
+    saved = store.saved[task.task_id]
+    assert isinstance(saved, TaskResult)
+    assert type(saved.output) is str
+    assert saved.output == "result store output"
+
+
+@pytest.mark.anyio
+async def test_traversal_retains_access_to_raw_inference_response_metadata() -> None:
+    captured_responses: list[InferenceResponse] = []
+
+    class CapturingProvider:
+        async def generate(self, prompt: str) -> InferenceResponse:
+            resp = InferenceResponse(
+                text=f"Handled: {prompt}",
+                provider_name="stub",
+                model_name="stub-model-v1",
+                input_tokens=25,
+                output_tokens=15,
+                total_tokens=40,
+                finish_reason="stop",
+            )
+            captured_responses.append(resp)
+            return resp
+
+    candidate = RankedProviderCandidate(
+        provider_name="capturing_stub",
+        health_status=InferenceHealthStatus.HEALTHY,
+        priority_index=0,
+    )
+    fallback_provider = FallbackInferenceProvider(
+        candidates=[candidate],
+        resolver=lambda name: CapturingProvider() if name == "capturing_stub" else None,  # type: ignore[arg-type]
+    )
+
+    unwrapped_text = await fallback_provider.generate("telemetry check")
+
+    # 1. The outward returned value from traversal is unwrapped plain str
+    assert type(unwrapped_text) is str
+    assert unwrapped_text == "Handled: telemetry check"
+
+    # 2. Inside traversal, raw InferenceResponse metadata was available in full
+    assert len(captured_responses) == 1
+    raw_response = captured_responses[0]
+    assert isinstance(raw_response, InferenceResponse)
+    assert raw_response.provider_name == "stub"
+    assert raw_response.model_name == "stub-model-v1"
+    assert raw_response.input_tokens == 25
+    assert raw_response.output_tokens == 15
+    assert raw_response.total_tokens == 40
+    assert raw_response.finish_reason == "stop"

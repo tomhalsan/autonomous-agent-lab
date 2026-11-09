@@ -2,7 +2,7 @@ import logging
 import os
 from typing import Any
 
-from agent_contracts import InferenceProviderHealth
+from agent_contracts import InferenceProviderHealth, InferenceResponse
 from agent_infrastructure import GeminiClient, GeminiHealthProbe
 
 logger = logging.getLogger(__name__)
@@ -93,9 +93,32 @@ class GeminiInferenceProvider:
         """Probe Gemini availability via the shared infrastructure health probe."""
         return await self._health_probe.check_health()
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> InferenceResponse:
         """Generate response for a general worker task prompt."""
         logger.info("Executing Gemini generation with model %s", self.model)
         payload = self._build_payload(prompt)
         response = await self._client.generate_content(payload)
-        return response.text.strip()
+
+        input_tokens = None
+        output_tokens = None
+        total_tokens = None
+        if response.usage_metadata is not None:
+            pt = response.usage_metadata.get("promptTokenCount")
+            if isinstance(pt, int) and type(pt) is not bool and pt >= 0:
+                input_tokens = pt
+            ct = response.usage_metadata.get("candidatesTokenCount")
+            if isinstance(ct, int) and type(ct) is not bool and ct >= 0:
+                output_tokens = ct
+            tt = response.usage_metadata.get("totalTokenCount")
+            if isinstance(tt, int) and type(tt) is not bool and tt >= 0:
+                total_tokens = tt
+
+        return InferenceResponse(
+            text=response.text.strip(),
+            provider_name=self.provider_name,
+            model_name=self.model,
+            finish_reason=response.finish_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )

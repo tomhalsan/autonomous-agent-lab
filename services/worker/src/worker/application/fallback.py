@@ -13,6 +13,7 @@ from agent_contracts import (
     FallbackEligibleInferenceError,
     FallbackTransition,
     InferenceProviderHealth,
+    InferenceResponse,
     NonFallbackInferenceError,
     ProviderFailureSummary,
     TaskRequested,
@@ -106,7 +107,10 @@ class FallbackInferenceProvider:
 
         for attempt_idx, candidate in enumerate(self._candidates):
             try:
-                return await current_provider.generate(prompt)
+                response = await current_provider.generate(prompt)
+                if isinstance(response, InferenceResponse):
+                    return response.text
+                return response
             except FallbackEligibleInferenceError as exc:
                 reason = (
                     exc.reason.strip()

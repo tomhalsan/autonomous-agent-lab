@@ -1,4 +1,8 @@
-from agent_contracts import InferenceHealthStatus, InferenceProviderHealth
+from agent_contracts import (
+    InferenceHealthStatus,
+    InferenceProviderHealth,
+    InferenceResponse,
+)
 
 
 class StubInferenceProvider:
@@ -14,6 +18,10 @@ class StubInferenceProvider:
         health_reason: str = "",
         health_latency_ms: float | None = 1.0,
         health_retry_after_seconds: float | None = None,
+        finish_reason: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
     ) -> None:
         self.provider_name = provider_name
         self.model_name = model_name
@@ -23,6 +31,10 @@ class StubInferenceProvider:
         self.health_reason = health_reason
         self.health_latency_ms = health_latency_ms
         self.health_retry_after_seconds = health_retry_after_seconds
+        self.finish_reason = finish_reason
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.total_tokens = total_tokens
 
     def set_health(
         self,
@@ -59,12 +71,22 @@ class StubInferenceProvider:
             reason=reason,
         )
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> InferenceResponse:
         if self.failure_trigger and self.failure_trigger in prompt:
             raise RuntimeError(f"Simulated inference failure for prompt: {prompt}")
 
-        if self.custom_response is not None:
-            return self.custom_response
-
-        return f"Generated response for: {prompt}"
+        text = (
+            self.custom_response
+            if self.custom_response is not None
+            else f"Generated response for: {prompt}"
+        )
+        return InferenceResponse(
+            text=text,
+            provider_name=self.provider_name,
+            model_name=self.model_name,
+            finish_reason=self.finish_reason,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            total_tokens=self.total_tokens,
+        )
 
