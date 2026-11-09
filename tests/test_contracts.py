@@ -2,6 +2,7 @@ import pytest
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
+    FallbackTransition,
     TaskRequested,
     TaskResult,
     Tool,
@@ -91,6 +92,57 @@ def test_task_result_rejects_empty_task_id() -> None:
 def test_task_result_rejects_empty_status() -> None:
     with pytest.raises(ValueError, match="status must not be empty"):
         TaskResult(task_id="task-123", output="some output", status="   ")
+
+
+# --- Fallback Transition Contracts Tests (Issue #16 Increment 3) ---
+
+
+def test_fallback_transition_attributes_and_normalization() -> None:
+    transition = FallbackTransition(
+        failed_provider="  CLOUDFLARE  ",
+        target_provider="  GEMINI  ",
+        reason="  rate_limited  ",
+        attempt_index=0,
+    )
+    assert transition.failed_provider == "cloudflare"
+    assert transition.target_provider == "gemini"
+    assert transition.reason == "rate_limited"
+    assert transition.attempt_index == 0
+
+
+def test_fallback_transition_validation() -> None:
+    with pytest.raises(ValueError, match="failed_provider"):
+        FallbackTransition(failed_provider="  ", target_provider="gemini", reason="timeout", attempt_index=0)
+
+    with pytest.raises(ValueError, match="target_provider"):
+        FallbackTransition(failed_provider="cloudflare", target_provider="", reason="timeout", attempt_index=0)
+
+    with pytest.raises(ValueError, match="reason"):
+        FallbackTransition(failed_provider="cloudflare", target_provider="gemini", reason="  ", attempt_index=0)
+
+    with pytest.raises(ValueError, match="attempt_index"):
+        FallbackTransition(failed_provider="cloudflare", target_provider="gemini", reason="timeout", attempt_index=-1)
+
+    with pytest.raises(ValueError, match="attempt_index"):
+        FallbackTransition(failed_provider="cloudflare", target_provider="gemini", reason="timeout", attempt_index=True)  # type: ignore[arg-type]
+
+
+def test_fallback_transition_to_dict_and_from_dict() -> None:
+    original = FallbackTransition(
+        failed_provider="cloudflare",
+        target_provider="gemini",
+        reason="timeout",
+        attempt_index=1,
+    )
+    data = original.to_dict()
+    assert data == {
+        "failed_provider": "cloudflare",
+        "target_provider": "gemini",
+        "reason": "timeout",
+        "attempt_index": 1,
+    }
+    restored = FallbackTransition.from_dict(data)
+    assert restored == original
 
 
 # --- Tool Capability Contracts Tests ---

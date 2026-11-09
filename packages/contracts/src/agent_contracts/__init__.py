@@ -19,7 +19,7 @@ from .errors import (
 )
 from .heartbeat import HeartbeatRunner, parse_heartbeat_interval
 from .inference_health import InferenceHealthStatus, InferenceProviderHealth
-from .messages import AgentEvent, TaskRequested
+from .messages import AgentEvent, FallbackTransition, TaskRequested
 from .results import TaskResult
 from .routing import RoutingDecision, RoutingProvenance
 from .tools import (
@@ -42,6 +42,7 @@ __all__ = [
     "AgentHeartbeat",
     "AllInferenceProvidersFailedError",
     "FallbackEligibleInferenceError",
+    "FallbackTransition",
     "HeartbeatRunner",
     "InferenceError",
     "InferenceHealthStatus",

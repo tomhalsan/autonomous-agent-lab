@@ -6,6 +6,7 @@ import pytest
 from agent_contracts import (
     AllInferenceProvidersFailedError,
     FallbackEligibleInferenceError,
+    FallbackTransition,
     InferenceError,
     InferenceHealthStatus,
     NonFallbackInferenceError,
@@ -506,3 +507,286 @@ def test_research_fallback_adapter_constructor_type_validation() -> None:
             candidates=["stub"],  # type: ignore[list-item]
             resolver=lambda name: RecordingMockResearchProvider(name, None),  # type: ignore[arg-type]
         )
+
+
+# ==============================================================================
+# Operational Fallback-Transition Events Tests (Issue #16 Increment 3)
+# ==============================================================================
+
+
+@pytest.mark.parametrize("adapter_cls", [FallbackInferenceProvider, FallbackResearchSynthesizer])
+def test_fallback_adapter_on_transition_validation(adapter_cls: type) -> None:
+    # 1. None is valid
+    adapter_cls(candidates=[], resolver=lambda name: None, on_transition=None)  # type: ignore[arg-type]
+
+    # 2. Callable is valid
+    async def dummy_cb(transition: FallbackTransition) -> None:
+        pass
+
+    adapter_cls(candidates=[], resolver=lambda name: None, on_transition=dummy_cb)  # type: ignore[arg-type]
+
+    # 3. Non-None, non-callable raises TypeError
+    with pytest.raises(TypeError, match="on_transition must be a Callable or None"):
+        adapter_cls(candidates=[], resolver=lambda name: None, on_transition="not-callable")  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="on_transition must be a Callable or None"):
+        adapter_cls(candidates=[], resolver=lambda name: None, on_transition=123)  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_worker_fallback_transition_emission_on_primary_failure() -> None:
+    p1 = RecordingMockWorkerProvider(
+        "p1",
+        FallbackEligibleInferenceError("500 internal", provider_name="p1", reason="server_error_500", status_code=500),
+    )
+    p2 = RecordingMockWorkerProvider("p2", "success from p2")
+    resolved: list[str] = []
+    transitions: list[FallbackTransition] = []
+
+    def resolver(name: str) -> RecordingMockWorkerProvider:
+        resolved.append(name)
+        return {"p1": p1, "p2": p2}[name]
+
+    async def on_transition(t: FallbackTransition) -> None:
+        transitions.append(t)
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+    adapter = FallbackInferenceProvider(candidates=candidates, resolver=resolver, on_transition=on_transition)
+
+    result = await adapter.generate("Test prompt")
+    assert result == "success from p2"
+    # Target provider p2 was resolved exactly once
+    assert resolved == ["p1", "p2"]
+    # Exactly one transition emitted
+    assert len(transitions) == 1
+    t = transitions[0]
+    assert t.failed_provider == "p1"
+    assert t.target_provider == "p2"
+    assert t.reason == "server_error_500"
+    assert t.attempt_index == 0
+
+
+@pytest.mark.anyio
+async def test_worker_fallback_transition_multiple_switches() -> None:
+    p1 = RecordingMockWorkerProvider(
+        "p1",
+        FallbackEligibleInferenceError("Transport timed out", provider_name="p1", reason="timeout"),
+    )
+    p2 = RecordingMockWorkerProvider(
+        "p2",
+        FallbackEligibleInferenceError("429 limit", provider_name="p2", reason="rate_limited", status_code=429),
+    )
+    p3 = RecordingMockWorkerProvider("p3", "success from p3")
+    resolved: list[str] = []
+    transitions: list[FallbackTransition] = []
+
+    def resolver(name: str) -> RecordingMockWorkerProvider:
+        resolved.append(name)
+        return {"p1": p1, "p2": p2, "p3": p3}[name]
+
+    async def on_transition(t: FallbackTransition) -> None:
+        transitions.append(t)
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1), _make_candidate("p3", 2)]
+    adapter = FallbackInferenceProvider(candidates=candidates, resolver=resolver, on_transition=on_transition)
+
+    result = await adapter.generate("Test prompt")
+    assert result == "success from p3"
+    assert resolved == ["p1", "p2", "p3"]
+    assert len(transitions) == 2
+    assert transitions[0] == FallbackTransition(
+        failed_provider="p1",
+        target_provider="p2",
+        reason="timeout",
+        attempt_index=0,
+    )
+    assert transitions[1] == FallbackTransition(
+        failed_provider="p2",
+        target_provider="p3",
+        reason="rate_limited",
+        attempt_index=1,
+    )
+
+
+@pytest.mark.anyio
+async def test_worker_fallback_transition_reason_normalization() -> None:
+    # If exc.reason is None or whitespace, fallback_eligible_error is normalized
+    p1 = RecordingMockWorkerProvider(
+        "p1",
+        FallbackEligibleInferenceError("Connection reset without reason code", provider_name="p1", reason="   "),
+    )
+    p2 = RecordingMockWorkerProvider("p2", "success from p2")
+    transitions: list[FallbackTransition] = []
+
+    def resolver(name: str) -> RecordingMockWorkerProvider:
+        return {"p1": p1, "p2": p2}[name]
+
+    async def on_transition(t: FallbackTransition) -> None:
+        transitions.append(t)
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+    adapter = FallbackInferenceProvider(candidates=candidates, resolver=resolver, on_transition=on_transition)
+
+    await adapter.generate("Test prompt")
+    assert len(transitions) == 1
+    assert transitions[0].reason == "fallback_eligible_error"
+
+
+@pytest.mark.anyio
+async def test_worker_fallback_transition_suppression() -> None:
+    transitions: list[FallbackTransition] = []
+
+    async def on_transition(t: FallbackTransition) -> None:
+        transitions.append(t)
+
+    # Case 1: Primary succeeds -> 0 transitions
+    p1_ok = RecordingMockWorkerProvider("p1", "ok")
+    adapter1 = FallbackInferenceProvider(
+        candidates=[_make_candidate("p1", 0), _make_candidate("p2", 1)],
+        resolver=lambda name: p1_ok,
+        on_transition=on_transition,
+    )
+    await adapter1.generate("Prompt")
+    assert len(transitions) == 0
+
+    # Case 2: Complete exhaustion (final candidate fails) -> only transitions for valid next providers, none for final
+    p1_fail = RecordingMockWorkerProvider(
+        "p1",
+        FallbackEligibleInferenceError("fail 1", reason="timeout"),
+    )
+    p2_fail = RecordingMockWorkerProvider(
+        "p2",
+        FallbackEligibleInferenceError("fail 2", reason="timeout"),
+    )
+
+    def resolver_exhaust(name: str) -> RecordingMockWorkerProvider:
+        return {"p1": p1_fail, "p2": p2_fail}[name]
+
+    adapter2 = FallbackInferenceProvider(
+        candidates=[_make_candidate("p1", 0), _make_candidate("p2", 1)],
+        resolver=resolver_exhaust,
+        on_transition=on_transition,
+    )
+    with pytest.raises(AllInferenceProvidersFailedError):
+        await adapter2.generate("Prompt")
+    # Emitted transition from p1 -> p2, but NO transition after p2 fails because there is no next provider
+    assert len(transitions) == 1
+    assert transitions[0].failed_provider == "p1"
+    assert transitions[0].target_provider == "p2"
+    transitions.clear()
+
+    # Case 3: NonFallbackInferenceError -> 0 transitions
+    p1_non_fallback = RecordingMockWorkerProvider(
+        "p1",
+        NonFallbackInferenceError("401 Unauthorized", reason="client_error_401", status_code=401),
+    )
+    adapter3 = FallbackInferenceProvider(
+        candidates=[_make_candidate("p1", 0), _make_candidate("p2", 1)],
+        resolver=lambda name: {"p1": p1_non_fallback, "p2": p1_ok}[name],
+        on_transition=on_transition,
+    )
+    with pytest.raises(NonFallbackInferenceError):
+        await adapter3.generate("Prompt")
+    assert len(transitions) == 0
+
+    # Case 4: Target-provider resolution fails -> 0 transitions
+    def resolver_fail_on_p2(name: str) -> RecordingMockWorkerProvider:
+        if name == "p1":
+            return p1_fail
+        raise RuntimeError("p2 resolution failed in factory")
+
+    adapter4 = FallbackInferenceProvider(
+        candidates=[_make_candidate("p1", 0), _make_candidate("p2", 1)],
+        resolver=resolver_fail_on_p2,
+        on_transition=on_transition,
+    )
+    with pytest.raises(RuntimeError, match="p2 resolution failed"):
+        await adapter4.generate("Prompt")
+    assert len(transitions) == 0
+
+    # Case 5: Empty candidate sequence -> 0 transitions
+    adapter5 = FallbackInferenceProvider(
+        candidates=[],
+        resolver=lambda name: p1_ok,
+        on_transition=on_transition,
+    )
+    with pytest.raises(AllInferenceProvidersFailedError):
+        await adapter5.generate("Prompt")
+    assert len(transitions) == 0
+
+
+@pytest.mark.anyio
+async def test_worker_fallback_transition_callback_failure_containment(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    p1 = RecordingMockWorkerProvider(
+        "p1",
+        FallbackEligibleInferenceError("Internal 500", reason="server_error_500", status_code=500),
+    )
+    p2 = RecordingMockWorkerProvider("p2", "recovered value")
+
+    def resolver(name: str) -> RecordingMockWorkerProvider:
+        return {"p1": p1, "p2": p2}[name]
+
+    secret_raw_text = "SECRET_PAYLOAD_UNAUTHORIZED_LEAK"
+
+    async def failing_on_transition(t: FallbackTransition) -> None:
+        raise RuntimeError(f"Event bus failure with {secret_raw_text}")
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+    adapter = FallbackInferenceProvider(
+        candidates=candidates,
+        resolver=resolver,
+        on_transition=failing_on_transition,
+    )
+
+    # Traversal continues successfully despite callback exception
+    with caplog.at_level("WARNING"):
+        result = await adapter.generate("Test prompt")
+
+    assert result == "recovered value"
+    assert p2.invoked is True
+    # Logger recorded failure with sanitized provider identities and exception type only
+    assert "Fallback transition notification failed from p1 to p2 (error_type=RuntimeError)" in caplog.text
+    # Raw exception text and sensitive payload are never leaked into logs
+    assert secret_raw_text not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_research_fallback_transition_parity() -> None:
+    synthesis = SynthesisResult(
+        question="What is consensus?",
+        content="Consensus findings.",
+        evidence="Evidence text",
+        provider="p2",
+        model="model-2",
+    )
+    p1 = RecordingMockResearchProvider(
+        "p1",
+        FallbackEligibleInferenceError("503 unavailable", reason="server_error_503", status_code=503),
+    )
+    p2 = RecordingMockResearchProvider("p2", synthesis)
+    transitions: list[FallbackTransition] = []
+
+    def resolver(name: str) -> RecordingMockResearchProvider:
+        return {"p1": p1, "p2": p2}[name]
+
+    async def on_transition(t: FallbackTransition) -> None:
+        transitions.append(t)
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+    adapter = FallbackResearchSynthesizer(
+        candidates=candidates,
+        resolver=resolver,
+        on_transition=on_transition,
+    )
+
+    result = await adapter.synthesize("What is consensus?", "Evidence text")
+    assert result == synthesis
+    assert len(transitions) == 1
+    assert transitions[0] == FallbackTransition(
+        failed_provider="p1",
+        target_provider="p2",
+        reason="server_error_503",
+        attempt_index=0,
+    )

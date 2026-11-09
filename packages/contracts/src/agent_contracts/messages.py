@@ -36,6 +36,45 @@ class TaskRequested:
 
 
 @dataclass(frozen=True)
+class FallbackTransition:
+    """Operational record of switching from a failed provider to a target provider."""
+
+    failed_provider: str
+    target_provider: str
+    reason: str
+    attempt_index: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.failed_provider, str) or not self.failed_provider.strip():
+            raise ValueError("failed_provider must be a non-empty string")
+        object.__setattr__(self, "failed_provider", self.failed_provider.strip().lower())
+
+        if not isinstance(self.target_provider, str) or not self.target_provider.strip():
+            raise ValueError("target_provider must be a non-empty string")
+        object.__setattr__(self, "target_provider", self.target_provider.strip().lower())
+
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise ValueError("reason must be a non-empty string")
+        object.__setattr__(self, "reason", self.reason.strip())
+
+        if (
+            type(self.attempt_index) is bool
+            or not isinstance(self.attempt_index, int)
+            or self.attempt_index < 0
+        ):
+            raise ValueError(
+                f"attempt_index must be a non-negative integer, got {self.attempt_index!r}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FallbackTransition":
+        return cls(**data)
+
+
+@dataclass(frozen=True)
 class AgentEvent:
     agent_id: str
     state: str
