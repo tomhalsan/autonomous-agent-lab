@@ -1,10 +1,17 @@
 import asyncio
+import json
 import logging
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from agent_contracts import AgentCapabilityMetadata, AgentEvent, TaskRequested, TaskResult
+from agent_contracts import (
+    AgentCapabilityMetadata,
+    AgentEvent,
+    FallbackTransition,
+    TaskRequested,
+    TaskResult,
+)
 from orchestrator.application.queries import GetAgentStates, GetRecentEvents
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
 from research_agent.domain.evaluator import EvidenceEvaluator
@@ -953,6 +960,102 @@ async def test_run_research_agent_unsupported_inference_provider_fails_startup(
             await run_research_agent()
 
         mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_multi_provider_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_ID", "research-multi")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub,cloudflare")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acc-multi")
+    monkeypatch.setenv("CLOUDFLARE_AI_API_TOKEN", "tok-multi")
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls, patch("research_agent.main.ResearchProcessor"):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_research_agent()
+
+        mock_bus.register.assert_awaited_once()
+        metadata = mock_bus.register.call_args[0][0]
+        assert metadata.providers["inference_provider"] == "stub,cloudflare"
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_missing_secondary_credentials_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub,cloudflare")
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AI_API_TOKEN", raising=False)
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls, patch("research_agent.main.ResearchProcessor"):
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(
+            ValueError, match="CLOUDFLARE_ACCOUNT_ID environment variable is required"
+        ):
+            await run_research_agent()
+
+        mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_run_research_agent_unsupported_secondary_provider_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "stub,unknown_vendor")
+
+    with patch("research_agent.main.RedisBus") as mock_bus_cls, patch("research_agent.main.ResearchProcessor"):
+        from research_agent.main import run_research_agent
+
+        with pytest.raises(
+            ValueError, match="Unsupported inference provider: 'unknown_vendor'"
+        ):
+            await run_research_agent()
+
+        mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_research_agent_redis_bus_serializes_fallback_transition_as_json() -> None:
+    bus = RedisBus("redis://localhost:6379/0", queue_name="agent.tasks.research")
+    bus.client.sadd = AsyncMock()  # type: ignore[method-assign]
+    bus.client.hset = AsyncMock()  # type: ignore[method-assign]
+    bus.client.xadd = AsyncMock()  # type: ignore[method-assign]
+
+    transition = FallbackTransition(
+        failed_provider="cloudflare",
+        target_provider="gemini",
+        reason="rate_limited",
+        attempt_index=0,
+    )
+    event = AgentEvent.create(
+        agent_id="research-agent-1",
+        state="fallback",
+        detail="Inference fallback: cloudflare -> gemini (rate_limited)",
+        task_id="task-json-r-1",
+        fallback_transition=transition,
+    )
+
+    await bus.publish(event)
+
+    bus.client.xadd.assert_awaited_once()
+    _, call_mapping = bus.client.xadd.await_args[0]
+    assert "fallback_transition" in call_mapping
+    parsed = json.loads(call_mapping["fallback_transition"])
+    assert parsed == transition.to_dict()
+
+    bus.client.hset.assert_awaited_once()
+    kwargs = bus.client.hset.await_args[1]
+    hset_mapping = kwargs.get("mapping", {})
+    assert "fallback_transition" in hset_mapping
+    assert json.loads(hset_mapping["fallback_transition"]) == transition.to_dict()
 
 
 # --- Infrastructure Adapter Tests: CloudflareInferenceProvider ---

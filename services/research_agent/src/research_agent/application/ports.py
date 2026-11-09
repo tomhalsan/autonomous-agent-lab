@@ -38,3 +38,8 @@ class InferenceHealthProbe(Protocol):
     """Application port for active or passive inference provider health probing."""
 
     async def check_health(self) -> InferenceProviderHealth: ...
+
+
+@runtime_checkable
+class RuntimeInferenceProvider(InferenceProvider, InferenceHealthProbe, Protocol):
+    """Application port combining research synthesis and health probing capabilities."""

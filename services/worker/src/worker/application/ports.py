@@ -31,3 +31,8 @@ class InferenceHealthProbe(Protocol):
 
     async def check_health(self) -> InferenceProviderHealth: ...
 
+
+@runtime_checkable
+class RuntimeInferenceProvider(InferenceProvider, InferenceHealthProbe, Protocol):
+    """Application port combining prompt generation and health probing capabilities."""
+

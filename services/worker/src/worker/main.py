@@ -9,7 +9,10 @@ from agent_contracts import (
     HeartbeatRunner,
     parse_heartbeat_interval,
 )
+from agent_policy import parse_provider_priority
 
+from worker.application.fallback import WorkerFallbackCoordinator
+from worker.application.ports import RuntimeInferenceProvider
 from worker.application.processor import TaskExecutionError, TaskProcessor
 from worker.infrastructure.inference_factory import create_inference_provider
 from worker.infrastructure.redis_bus import RedisBus
@@ -33,13 +36,24 @@ async def run_worker(heartbeat_interval: float | None = None) -> None:
         else parse_heartbeat_interval(os.getenv("HEARTBEAT_INTERVAL_SECONDS"))
     )
 
-    inference_provider = create_inference_provider(inference_provider_name)
+    preferences = parse_provider_priority(inference_provider_name, default=("stub",))
+    providers: dict[str, RuntimeInferenceProvider] = {
+        name: create_inference_provider(name) for name in preferences
+    }
+
     bus = RedisBus(redis_url, queue_name=task_queue)
+    fallback_coordinator = WorkerFallbackCoordinator(
+        agent_id=agent_id,
+        bus=bus,
+        preferences=preferences,
+        providers=providers,
+    )
     processor = TaskProcessor(
         agent_id,
         bus,
         result_store=bus,
-        inference_provider=inference_provider,
+        inference_provider=providers[preferences[0]],
+        fallback_coordinator=fallback_coordinator,
     )
 
     metadata = AgentCapabilityMetadata(

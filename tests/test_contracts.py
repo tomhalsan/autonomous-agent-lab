@@ -2,6 +2,7 @@ import pytest
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
+    FallbackTransition,
     TaskRequested,
     TaskResult,
     Tool,
@@ -91,6 +92,126 @@ def test_task_result_rejects_empty_task_id() -> None:
 def test_task_result_rejects_empty_status() -> None:
     with pytest.raises(ValueError, match="status must not be empty"):
         TaskResult(task_id="task-123", output="some output", status="   ")
+
+
+# --- Fallback Transition Contracts Tests (Issue #16 Increment 3) ---
+
+
+def test_fallback_transition_attributes_and_normalization() -> None:
+    transition = FallbackTransition(
+        failed_provider="  CLOUDFLARE  ",
+        target_provider="  GEMINI  ",
+        reason="  rate_limited  ",
+        attempt_index=0,
+    )
+    assert transition.failed_provider == "cloudflare"
+    assert transition.target_provider == "gemini"
+    assert transition.reason == "rate_limited"
+    assert transition.attempt_index == 0
+
+
+def test_fallback_transition_validation() -> None:
+    with pytest.raises(ValueError, match="failed_provider"):
+        FallbackTransition(failed_provider="  ", target_provider="gemini", reason="timeout", attempt_index=0)
+
+    with pytest.raises(ValueError, match="target_provider"):
+        FallbackTransition(failed_provider="cloudflare", target_provider="", reason="timeout", attempt_index=0)
+
+    with pytest.raises(ValueError, match="reason"):
+        FallbackTransition(failed_provider="cloudflare", target_provider="gemini", reason="  ", attempt_index=0)
+
+    with pytest.raises(ValueError, match="attempt_index"):
+        FallbackTransition(failed_provider="cloudflare", target_provider="gemini", reason="timeout", attempt_index=-1)
+
+    with pytest.raises(ValueError, match="attempt_index"):
+        FallbackTransition(failed_provider="cloudflare", target_provider="gemini", reason="timeout", attempt_index=True)  # type: ignore[arg-type]
+
+
+def test_fallback_transition_to_dict_and_from_dict() -> None:
+    original = FallbackTransition(
+        failed_provider="cloudflare",
+        target_provider="gemini",
+        reason="timeout",
+        attempt_index=1,
+    )
+    data = original.to_dict()
+    assert data == {
+        "failed_provider": "cloudflare",
+        "target_provider": "gemini",
+        "reason": "timeout",
+        "attempt_index": 1,
+    }
+    restored = FallbackTransition.from_dict(data)
+    assert restored == original
+
+
+def test_agent_event_carries_fallback_transition() -> None:
+    transition = FallbackTransition(
+        failed_provider="cloudflare",
+        target_provider="gemini",
+        reason="rate_limited",
+        attempt_index=0,
+    )
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state="fallback",
+        detail="Inference fallback: cloudflare -> gemini (rate_limited)",
+        task_id="task-fb-1",
+        fallback_transition=transition,
+    )
+    assert event.fallback_transition == transition
+    assert event.state == "fallback"
+    assert event.task_id == "task-fb-1"
+
+    data = event.to_dict()
+    assert "fallback_transition" in data
+    assert data["fallback_transition"] == transition.to_dict()
+
+
+def test_agent_event_serialization_round_trip_with_fallback_transition() -> None:
+    transition = FallbackTransition(
+        failed_provider="cloudflare",
+        target_provider="gemini",
+        reason="timeout",
+        attempt_index=1,
+    )
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state="fallback",
+        detail="Inference fallback: cloudflare -> gemini (timeout)",
+        task_id="task-fb-2",
+        fallback_transition=transition,
+    )
+    json_str = event.to_json()
+    restored = AgentEvent.from_json(json_str)
+    assert restored == event
+    assert isinstance(restored.fallback_transition, FallbackTransition)
+    assert restored.fallback_transition.failed_provider == "cloudflare"
+    assert restored.fallback_transition.target_provider == "gemini"
+    assert restored.fallback_transition.reason == "timeout"
+    assert restored.fallback_transition.attempt_index == 1
+
+
+def test_agent_event_omits_fallback_transition_when_none() -> None:
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state="idle",
+        detail="Waiting for work",
+    )
+    assert event.fallback_transition is None
+    data = event.to_dict()
+    assert "fallback_transition" not in data
+
+
+def test_agent_event_rejects_invalid_fallback_transition_type() -> None:
+    with pytest.raises(TypeError, match="fallback_transition must be FallbackTransition"):
+        AgentEvent(
+            agent_id="worker-1",
+            state="fallback",
+            detail="detail",
+            occurred_at="2026-11-09T00:00:00Z",
+            fallback_transition="invalid-transition",  # type: ignore[arg-type]
+        )
 
 
 # --- Tool Capability Contracts Tests ---

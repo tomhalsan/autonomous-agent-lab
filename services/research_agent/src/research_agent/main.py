@@ -9,7 +9,10 @@ from agent_contracts import (
     HeartbeatRunner,
     parse_heartbeat_interval,
 )
+from agent_policy import parse_provider_priority
 
+from research_agent.application.fallback import ResearchFallbackCoordinator
+from research_agent.application.ports import RuntimeInferenceProvider
 from research_agent.application.processor import ResearchExecutionError, ResearchProcessor
 from research_agent.infrastructure.executor_factory import create_research_executor
 from research_agent.infrastructure.inference_factory import create_inference_provider
@@ -36,14 +39,25 @@ async def run_research_agent(heartbeat_interval: float | None = None) -> None:
     )
 
     executor = create_research_executor(executor_name)
-    inference_provider = create_inference_provider(inference_provider_name)
+    preferences = parse_provider_priority(inference_provider_name, default=("stub",))
+    providers: dict[str, RuntimeInferenceProvider] = {
+        name: create_inference_provider(name) for name in preferences
+    }
+
     bus = RedisBus(redis_url, queue_name=task_queue)
+    fallback_coordinator = ResearchFallbackCoordinator(
+        agent_id=agent_id,
+        bus=bus,
+        preferences=preferences,
+        providers=providers,
+    )
     processor = ResearchProcessor(
         agent_id,
         bus,
         executor,
         result_store=bus,
-        inference_provider=inference_provider,
+        inference_provider=providers[preferences[0]],
+        fallback_coordinator=fallback_coordinator,
     )
 
     metadata = AgentCapabilityMetadata(
