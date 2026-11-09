@@ -22,6 +22,22 @@ Your job is to produce correct, maintainable, secure, well-tested changes while 
 - When repository evidence conflicts with assumptions, documentation, or the task description, stop and report the discrepancy before proceeding.
 - Clearly distinguish verified repository facts from recommendations or hypotheses.
 
+### Pre-Commit Hygiene
+
+Before reporting implementation work as complete:
+
+1. Run `git diff --check` against all working-tree changes.
+2. If files have been staged, also run `git diff --cached --check`.
+3. Fix all whitespace errors before reporting completion, including:
+   - trailing whitespace;
+   - extra blank lines at end of file;
+   - missing final newline;
+   - other Git whitespace warnings.
+4. Do not leave whitespace cleanup for the reviewer.
+5. Report these checks only after they pass with no output.
+
+When new files are part of an implementation, ensure their whitespace/EOF formatting is validated before declaring the work complete. A clean `git diff --check` alone is not sufficient validation for untracked files.
+
 ## 3. Code Quality
 
 - Write idiomatic, readable, self-documenting code consistent with the surrounding codebase.
