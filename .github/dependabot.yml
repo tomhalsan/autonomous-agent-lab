@@ -7,33 +7,23 @@ updates:
       interval: "monthly"
     open-pull-requests-limit: 5
 
-  # Python dependencies (root development and test requirements)
+  # Python dependencies across the repository and services.
+  # Group the same dependency across directories so shared dependencies
+  # are updated together rather than producing one PR per service.
   - package-ecosystem: "pip"
-    directory: "/"
+    directories:
+      - "/"
+      - "/services/orchestrator"
+      - "/services/worker"
+      - "/services/research_agent"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5
-
-  # Python dependencies (orchestrator service)
-  - package-ecosystem: "pip"
-    directory: "/services/orchestrator"
-    schedule:
-      interval: "monthly"
-    open-pull-requests-limit: 5
-
-  # Python dependencies (worker service)
-  - package-ecosystem: "pip"
-    directory: "/services/worker"
-    schedule:
-      interval: "monthly"
-    open-pull-requests-limit: 5
-
-  # Python dependencies (research agent service)
-  - package-ecosystem: "pip"
-    directory: "/services/research_agent"
-    schedule:
-      interval: "monthly"
-    open-pull-requests-limit: 5
+    groups:
+      shared-dependencies:
+        patterns:
+          - "*"
+        group-by: dependency-name
 
   # Docker base images (orchestrator service)
   - package-ecosystem: "docker"
