@@ -11,9 +11,11 @@ from .availability import (
 from .candidates import AgentCandidate
 from .capabilities import AgentCapabilityMetadata
 from .errors import (
+    AllInferenceProvidersFailedError,
     FallbackEligibleInferenceError,
     InferenceError,
     NonFallbackInferenceError,
+    ProviderFailureSummary,
 )
 from .heartbeat import HeartbeatRunner, parse_heartbeat_interval
 from .inference_health import InferenceHealthStatus, InferenceProviderHealth
@@ -38,6 +40,7 @@ __all__ = [
     "AgentEvent",
     "AgentExecutionState",
     "AgentHeartbeat",
+    "AllInferenceProvidersFailedError",
     "FallbackEligibleInferenceError",
     "HeartbeatRunner",
     "InferenceError",
@@ -45,6 +48,7 @@ __all__ = [
     "InferenceProviderHealth",
     "LivenessPolicy",
     "NonFallbackInferenceError",
+    "ProviderFailureSummary",
     "RoutingDecision",
     "RoutingProvenance",
     "TaskRequested",
