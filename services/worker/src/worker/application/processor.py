@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from agent_contracts import AgentEvent, TaskRequested, TaskResult
+from agent_contracts import AgentEvent, InferenceResponse, TaskRequested, TaskResult
 
 from .ports import InferenceProvider, MessageBus, ResultStore
 
@@ -42,7 +42,10 @@ class TaskProcessor:
         if self.fallback_coordinator is not None:
             return await self.fallback_coordinator.generate(task)
         if self.inference_provider is not None:
-            return await self.inference_provider.generate(task.prompt)
+            res = await self.inference_provider.generate(task.prompt)
+            if isinstance(res, InferenceResponse):
+                return res.text
+            return res
         return f"Completed: {task.prompt}"
 
     async def run_once(self, task: TaskRequested) -> None:

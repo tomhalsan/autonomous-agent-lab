@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi import HTTPException
 from orchestrator.config import Settings
@@ -152,6 +154,38 @@ async def test_create_app_with_fakes_and_endpoints() -> None:
     events_res = await events(request=req, limit=10)
     assert events_res == [{"event_id": "1", "state": "idle"}]
     assert fake_reader.last_events_limit == 10
+
+
+@pytest.mark.anyio
+async def test_events_endpoint_preserves_inference_telemetry() -> None:
+    telemetry_payload = {
+        "provider_name": "cloudflare",
+        "attempt_index": 0,
+        "latency_ms": 12.5,
+        "status": "succeeded",
+    }
+    fake_reader = FakeStateReader(
+        events_data=[
+            {
+                "event_id": "1",
+                "state": "working",
+                "task_id": "task-test-1",
+                "inference_telemetry": json.dumps(telemetry_payload),
+            }
+        ]
+    )
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+    events_res = await events(request=req, limit=5)
+    assert len(events_res) == 1
+    assert events_res[0]["task_id"] == "task-test-1"
+    assert "inference_telemetry" in events_res[0]
+    parsed_telem = json.loads(events_res[0]["inference_telemetry"])
+    assert parsed_telem["provider_name"] == "cloudflare"
+    assert parsed_telem["status"] == "succeeded"
 
 
 @pytest.mark.anyio

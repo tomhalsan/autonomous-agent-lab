@@ -18,6 +18,7 @@ import httpx
 import pytest
 from agent_contracts import (
     AgentEvent,
+    InferenceResponse,
     TaskRequested,
     TaskResult,
 )
@@ -197,15 +198,17 @@ async def test_worker_inference_provider_contract_compliance(provider_type: str)
     prompt = "Summarize queue metrics across nodes"
     output = await provider.generate(prompt)
 
-    # 1. Output must be a non-empty string
-    assert isinstance(output, str)
-    assert len(output.strip()) > 0
+    # 1. Output must be an InferenceResponse satisfying the worker port contract
+    assert isinstance(output, InferenceResponse)
+    assert isinstance(output.text, str)
+    assert len(output.text.strip()) > 0
+    assert output.provider_name == provider_type
 
     # 2. Provider implementation details must not leak into output
-    assert "status_code" not in output
-    assert "candidates" not in output
-    assert "test-token" not in output
-    assert "test-gemini-key" not in output
+    assert "status_code" not in output.text
+    assert "candidates" not in output.text
+    assert "test-token" not in output.text
+    assert "test-gemini-key" not in output.text
 
 
 @pytest.mark.anyio

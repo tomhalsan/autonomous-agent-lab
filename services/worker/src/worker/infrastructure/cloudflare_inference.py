@@ -6,6 +6,7 @@ import httpx
 from agent_contracts import (
     FallbackEligibleInferenceError,
     InferenceProviderHealth,
+    InferenceResponse,
     NonFallbackInferenceError,
 )
 from agent_infrastructure import CloudflareHealthProbe
@@ -97,7 +98,7 @@ class CloudflareInferenceProvider:
         """Probe Cloudflare Workers AI availability via the shared infrastructure health probe."""
         return await self._health_probe.check_health()
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str) -> InferenceResponse:
         logger.info("Executing Cloudflare Workers AI generation with model %s", self.model)
         endpoint = f"{self._base_url}/{self._account_id}/ai/run/{self.model.lstrip('/')}"
         headers = {
@@ -219,4 +220,27 @@ class CloudflareInferenceProvider:
                 finish_reason,
             )
 
-        return response_text.strip()
+        raw_usage = result_payload.get("usage") or data.get("usage")
+        input_tokens = None
+        output_tokens = None
+        total_tokens = None
+        if isinstance(raw_usage, dict):
+            pt = raw_usage.get("prompt_tokens")
+            if isinstance(pt, int) and type(pt) is not bool and pt >= 0:
+                input_tokens = pt
+            ct = raw_usage.get("completion_tokens")
+            if isinstance(ct, int) and type(ct) is not bool and ct >= 0:
+                output_tokens = ct
+            tt = raw_usage.get("total_tokens")
+            if isinstance(tt, int) and type(tt) is not bool and tt >= 0:
+                total_tokens = tt
+
+        return InferenceResponse(
+            text=response_text.strip(),
+            provider_name=self.provider_name,
+            model_name=self.model,
+            finish_reason=str(finish_reason) if finish_reason is not None else None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )

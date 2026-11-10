@@ -1,18 +1,23 @@
-"""Deterministic inference provider fallback traversal for Worker (Issue #16 Increment 2 & 3)."""
+"""Deterministic inference provider fallback traversal for Worker (Issue #16 Increment 2 & 3, Issue #17 Increment 2)."""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
 import logging
+import re
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any
 
 from agent_contracts import (
     AgentEvent,
     AllInferenceProvidersFailedError,
     FallbackEligibleInferenceError,
     FallbackTransition,
+    InferenceExecutionTelemetry,
     InferenceProviderHealth,
+    InferenceResponse,
     NonFallbackInferenceError,
     ProviderFailureSummary,
     TaskRequested,
@@ -36,6 +41,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS: float = 1.0
 
 
+def _sanitize_failure_reason(reason: str | None, default: str) -> str:
+    if isinstance(reason, str):
+        cleaned = reason.strip().lower()
+        if re.fullmatch(r"[a-z0-9_]+", cleaned):
+            return cleaned
+    return default
+
+
+def _sanitize_status_code(code: Any) -> int | None:
+    if isinstance(code, int) and type(code) is not bool and 100 <= code <= 599:
+        return code
+    return None
+
+
 class FallbackInferenceProvider:
     """Application adapter implementing InferenceProvider with deterministic fallback traversal.
 
@@ -44,6 +63,7 @@ class FallbackInferenceProvider:
     Stops immediately on first success, NonFallbackInferenceError, resolver failure, or unexpected exception.
     Advances to next candidate only when an already-resolved provider raises FallbackEligibleInferenceError.
     Emits FallbackTransition best-effort before invoking the already-resolved target provider.
+    Measures and emits InferenceExecutionTelemetry best-effort for every actual provider attempt.
     """
 
     def __init__(
@@ -51,6 +71,8 @@ class FallbackInferenceProvider:
         candidates: Sequence[RankedProviderCandidate],
         resolver: Callable[[str], InferenceProvider],
         on_transition: Callable[[FallbackTransition], Awaitable[None]] | None = None,
+        on_telemetry: Callable[[InferenceExecutionTelemetry], Awaitable[None]] | None = None,
+        clock: Callable[[], int] = time.perf_counter_ns,
     ) -> None:
         if not callable(resolver):
             raise TypeError(
@@ -59,6 +81,14 @@ class FallbackInferenceProvider:
         if on_transition is not None and not callable(on_transition):
             raise TypeError(
                 f"on_transition must be a Callable or None, got {type(on_transition).__name__}"
+            )
+        if on_telemetry is not None and not callable(on_telemetry):
+            raise TypeError(
+                f"on_telemetry must be a Callable or None, got {type(on_telemetry).__name__}"
+            )
+        if not callable(clock):
+            raise TypeError(
+                f"clock must be a Callable[[], int], got {type(clock).__name__}"
             )
         for idx, cand in enumerate(candidates):
             if not isinstance(cand, RankedProviderCandidate):
@@ -69,6 +99,8 @@ class FallbackInferenceProvider:
         self._candidates: tuple[RankedProviderCandidate, ...] = tuple(candidates)
         self._resolver = resolver
         self._on_transition = on_transition
+        self._on_telemetry = on_telemetry
+        self._clock = clock
 
     @property
     def candidates(self) -> tuple[RankedProviderCandidate, ...]:
@@ -90,8 +122,22 @@ class FallbackInferenceProvider:
                 type(exc).__name__,
             )
 
+    async def _notify_telemetry(self, telemetry: InferenceExecutionTelemetry) -> None:
+        if self._on_telemetry is None:
+            return
+        try:
+            res = self._on_telemetry(telemetry)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Inference telemetry notification failed for provider %s (error_type=%s)",
+                telemetry.provider_name,
+                type(exc).__name__,
+            )
+
     async def generate(self, prompt: str) -> str:
-        """Execute prompt generation with deterministic fallback traversal."""
+        """Execute prompt generation with deterministic fallback traversal and attempt telemetry."""
         if not self._candidates:
             raise AllInferenceProvidersFailedError(failures=())
 
@@ -105,19 +151,67 @@ class FallbackInferenceProvider:
         failures: list[ProviderFailureSummary] = []
 
         for attempt_idx, candidate in enumerate(self._candidates):
+            t_start = self._clock()
             try:
-                return await current_provider.generate(prompt)
-            except FallbackEligibleInferenceError as exc:
-                reason = (
-                    exc.reason.strip()
-                    if exc.reason and exc.reason.strip()
-                    else "fallback_eligible_error"
+                response = await current_provider.generate(prompt)
+                t_end = self._clock()
+                latency_ms = max(0.0, (t_end - t_start) / 1_000_000.0)
+
+                input_tokens = None
+                output_tokens = None
+                total_tokens = None
+                finish_reason = None
+                model_name = None
+                response_text = ""
+
+                if isinstance(response, InferenceResponse):
+                    input_tokens = response.input_tokens
+                    output_tokens = response.output_tokens
+                    total_tokens = response.total_tokens
+                    finish_reason = response.finish_reason
+                    model_name = response.model_name
+                    response_text = response.text
+                elif isinstance(response, str):
+                    response_text = response
+                else:
+                    response_text = str(response)
+
+                telemetry = InferenceExecutionTelemetry(
+                    provider_name=candidate.provider_name,
+                    attempt_index=attempt_idx,
+                    latency_ms=latency_ms,
+                    status="succeeded",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    finish_reason=finish_reason,
+                    model_name=model_name,
+                    failure_reason=None,
+                    status_code=None,
                 )
+                await self._notify_telemetry(telemetry)
+                return response_text
+            except FallbackEligibleInferenceError as exc:
+                t_end = self._clock()
+                latency_ms = max(0.0, (t_end - t_start) / 1_000_000.0)
+                reason = _sanitize_failure_reason(exc.reason, "fallback_eligible_error")
+                status_code = _sanitize_status_code(exc.status_code)
+
+                telemetry = InferenceExecutionTelemetry(
+                    provider_name=candidate.provider_name,
+                    attempt_index=attempt_idx,
+                    latency_ms=latency_ms,
+                    status="fallback_eligible_failure",
+                    failure_reason=reason,
+                    status_code=status_code,
+                )
+                await self._notify_telemetry(telemetry)
+
                 failures.append(
                     ProviderFailureSummary(
                         provider_name=candidate.provider_name,
                         reason=reason,
-                        status_code=exc.status_code,
+                        status_code=status_code,
                     )
                 )
 
@@ -142,17 +236,42 @@ class FallbackInferenceProvider:
 
                 current_candidate = next_candidate
                 current_provider = next_provider
-            except NonFallbackInferenceError:
+            except NonFallbackInferenceError as exc:
+                t_end = self._clock()
+                latency_ms = max(0.0, (t_end - t_start) / 1_000_000.0)
+                reason = _sanitize_failure_reason(exc.reason, "non_fallback_error")
+                status_code = _sanitize_status_code(exc.status_code)
+
+                telemetry = InferenceExecutionTelemetry(
+                    provider_name=candidate.provider_name,
+                    attempt_index=attempt_idx,
+                    latency_ms=latency_ms,
+                    status="non_fallback_failure",
+                    failure_reason=reason,
+                    status_code=status_code,
+                )
+                await self._notify_telemetry(telemetry)
                 raise
-            except (ValueError, TypeError):
+            except Exception:
+                t_end = self._clock()
+                latency_ms = max(0.0, (t_end - t_start) / 1_000_000.0)
+
+                telemetry = InferenceExecutionTelemetry(
+                    provider_name=candidate.provider_name,
+                    attempt_index=attempt_idx,
+                    latency_ms=latency_ms,
+                    status="unexpected_failure",
+                    failure_reason="unexpected_error",
+                    status_code=None,
+                )
+                await self._notify_telemetry(telemetry)
                 raise
-            # Any unexpected exception escapes immediately without catching or reclassifying
 
         raise AllInferenceProvidersFailedError(failures=failures)
 
 
 class WorkerFallbackCoordinator:
-    """Application coordinator managing per-task concurrent health probes and inference fallback."""
+    """Application coordinator managing per-task concurrent health probes, fallback, and telemetry."""
 
     def __init__(
         self,
@@ -162,6 +281,7 @@ class WorkerFallbackCoordinator:
         providers: Mapping[str, RuntimeInferenceProvider],
         selector: DeterministicProviderSelector | None = None,
         probe_timeout_seconds: float = DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS,
+        clock: Callable[[], int] = time.perf_counter_ns,
     ) -> None:
         if not isinstance(agent_id, str) or not agent_id.strip():
             raise ValueError("agent_id must be a non-empty string")
@@ -173,12 +293,17 @@ class WorkerFallbackCoordinator:
             raise ValueError(
                 f"probe_timeout_seconds must be a positive number, got {probe_timeout_seconds!r}"
             )
+        if not callable(clock):
+            raise TypeError(
+                f"clock must be a Callable[[], int], got {type(clock).__name__}"
+            )
 
         self.agent_id = agent_id.strip()
         self.bus = bus
         self.preferences = parse_provider_priority(None, default=preferences)
         self.selector = selector or DeterministicProviderSelector()
         self.probe_timeout_seconds = float(probe_timeout_seconds)
+        self._clock = clock
 
         normalized_providers: dict[str, RuntimeInferenceProvider] = {}
         for name, provider in providers.items():
@@ -221,7 +346,7 @@ class WorkerFallbackCoordinator:
             return None
 
     async def generate(self, task: TaskRequested) -> str:
-        """Execute task generation with per-task concurrent health probing and deterministic fallback."""
+        """Execute task generation with per-task concurrent health probing, fallback, and attempt telemetry."""
         probe_tasks = [
             self._probe_single(name, self._providers[name], self.probe_timeout_seconds)
             for name in self.preferences
@@ -251,9 +376,24 @@ class WorkerFallbackCoordinator:
             )
             await self.bus.publish(event)
 
+        async def on_telemetry(telemetry: InferenceExecutionTelemetry) -> None:
+            event = AgentEvent.create(
+                agent_id=self.agent_id,
+                state="working",
+                detail=(
+                    f"Inference attempt {telemetry.attempt_index} "
+                    f"{telemetry.status} ({telemetry.provider_name})"
+                ),
+                task_id=task.task_id,
+                inference_telemetry=telemetry,
+            )
+            await self.bus.publish(event)
+
         provider = FallbackInferenceProvider(
             candidates=decision.ranked_candidates,
             resolver=lambda name: self._providers[name],
             on_transition=on_transition,
+            on_telemetry=on_telemetry,
+            clock=self._clock,
         )
         return await provider.generate(task.prompt)

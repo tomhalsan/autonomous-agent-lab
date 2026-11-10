@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from agent_contracts import (
@@ -11,8 +12,10 @@ from agent_contracts import (
     FallbackEligibleInferenceError,
     FallbackTransition,
     InferenceError,
+    InferenceExecutionTelemetry,
     InferenceHealthStatus,
     InferenceProviderHealth,
+    InferenceResponse,
     NonFallbackInferenceError,
     ProviderFailureSummary,
     TaskRequested,
@@ -990,7 +993,14 @@ async def test_worker_coordinator_healthy_priority_order() -> None:
     assert p2.health_checked is True
     assert p1.generate_called is True
     assert p2.generate_called is False
-    assert len(bus.published) == 0
+    assert len(bus.published) == 1
+    event = bus.published[0]
+    assert event.state == "working"
+    assert event.task_id == task.task_id
+    assert event.inference_telemetry is not None
+    assert event.inference_telemetry.status == "succeeded"
+    assert event.inference_telemetry.provider_name == "p1"
+    assert event.inference_telemetry.attempt_index == 0
 
 
 @pytest.mark.anyio
@@ -1113,18 +1123,35 @@ async def test_worker_coordinator_fallback_publishes_event_with_task_id() -> Non
     assert p1.generate_called is True
     assert p2.generate_called is True
 
-    assert len(bus.published) == 1
-    event = bus.published[0]
-    assert event.state == "fallback"
-    assert event.agent_id == "worker-1"
-    assert event.task_id == task.task_id
-    assert "rate_limited" in event.detail
-    assert event.fallback_transition == FallbackTransition(
+    assert len(bus.published) == 3
+    ev_telemetry_0, ev_transition, ev_telemetry_1 = bus.published
+
+    assert ev_telemetry_0.state == "working"
+    assert ev_telemetry_0.task_id == task.task_id
+    assert ev_telemetry_0.inference_telemetry is not None
+    assert ev_telemetry_0.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telemetry_0.inference_telemetry.provider_name == "p1"
+    assert ev_telemetry_0.inference_telemetry.attempt_index == 0
+    assert ev_telemetry_0.inference_telemetry.failure_reason == "rate_limited"
+    assert ev_telemetry_0.inference_telemetry.status_code == 429
+
+    assert ev_transition.state == "fallback"
+    assert ev_transition.agent_id == "worker-1"
+    assert ev_transition.task_id == task.task_id
+    assert "rate_limited" in ev_transition.detail
+    assert ev_transition.fallback_transition == FallbackTransition(
         failed_provider="p1",
         target_provider="p2",
         reason="rate_limited",
         attempt_index=0,
     )
+
+    assert ev_telemetry_1.state == "working"
+    assert ev_telemetry_1.task_id == task.task_id
+    assert ev_telemetry_1.inference_telemetry is not None
+    assert ev_telemetry_1.inference_telemetry.status == "succeeded"
+    assert ev_telemetry_1.inference_telemetry.provider_name == "p2"
+    assert ev_telemetry_1.inference_telemetry.attempt_index == 1
 
 
 @pytest.mark.anyio
@@ -1155,7 +1182,16 @@ async def test_worker_coordinator_non_fallback_error_stops() -> None:
     assert exc_info.value.reason == "bad_request"
     assert p1.generate_called is True
     assert p2.generate_called is False
-    assert len(bus.published) == 0
+    assert len(bus.published) == 1
+    event = bus.published[0]
+    assert event.state == "working"
+    assert event.task_id == task.task_id
+    assert event.inference_telemetry is not None
+    assert event.inference_telemetry.status == "non_fallback_failure"
+    assert event.inference_telemetry.provider_name == "p1"
+    assert event.inference_telemetry.attempt_index == 0
+    assert event.inference_telemetry.failure_reason == "bad_request"
+    assert event.inference_telemetry.status_code == 400
 
 
 @pytest.mark.anyio
@@ -1237,16 +1273,31 @@ async def test_worker_task_processor_end_to_end_fallback_lifecycle() -> None:
     task = TaskRequested.create("End to end prompt")
     await processor.run_once(task)
 
-    # Event sequence: working -> fallback -> idle
-    assert len(bus.published) == 3
-    ev_working, ev_fallback, ev_idle = bus.published
+    # Event sequence: task working -> telemetry p1 -> fallback -> telemetry p2 -> idle
+    assert len(bus.published) == 5
+    ev_task_working, ev_telem1, ev_fallback, ev_telem2, ev_idle = bus.published
 
-    assert ev_working.state == "working"
-    assert ev_working.task_id == task.task_id
+    assert ev_task_working.state == "working"
+    assert ev_task_working.task_id == task.task_id
+    assert ev_task_working.inference_telemetry is None
+
+    assert ev_telem1.state == "working"
+    assert ev_telem1.task_id == task.task_id
+    assert ev_telem1.inference_telemetry is not None
+    assert ev_telem1.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telem1.inference_telemetry.provider_name == "p1"
+    assert ev_telem1.inference_telemetry.attempt_index == 0
 
     assert ev_fallback.state == "fallback"
     assert ev_fallback.task_id == task.task_id
     assert ev_fallback.fallback_transition == FallbackTransition("p1", "p2", "server_error_503", 0)
+
+    assert ev_telem2.state == "working"
+    assert ev_telem2.task_id == task.task_id
+    assert ev_telem2.inference_telemetry is not None
+    assert ev_telem2.inference_telemetry.status == "succeeded"
+    assert ev_telem2.inference_telemetry.provider_name == "p2"
+    assert ev_telem2.inference_telemetry.attempt_index == 1
 
     assert ev_idle.state == "idle"
     assert ev_idle.task_id == task.task_id
@@ -1289,12 +1340,26 @@ async def test_worker_task_processor_end_to_end_exhaustion_lifecycle() -> None:
     assert isinstance(exc_info.value.original_error, AllInferenceProvidersFailedError)
     assert exc_info.value.task_id == task.task_id
 
-    # Event sequence: working -> fallback -> error -> idle
-    assert len(bus.published) == 4
-    ev_working, ev_fallback, ev_error, ev_idle = bus.published
+    # Event sequence: task working -> telemetry p1 -> fallback -> telemetry p2 -> error -> idle
+    assert len(bus.published) == 6
+    ev_task_working, ev_telem1, ev_fallback, ev_telem2, ev_error, ev_idle = bus.published
 
-    assert ev_working.state == "working"
+    assert ev_task_working.state == "working"
+    assert ev_task_working.inference_telemetry is None
+
+    assert ev_telem1.state == "working"
+    assert ev_telem1.inference_telemetry is not None
+    assert ev_telem1.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telem1.inference_telemetry.provider_name == "p1"
+
     assert ev_fallback.state == "fallback"
+    assert ev_fallback.fallback_transition == FallbackTransition("p1", "p2", "server_error_503", 0)
+
+    assert ev_telem2.state == "working"
+    assert ev_telem2.inference_telemetry is not None
+    assert ev_telem2.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telem2.inference_telemetry.provider_name == "p2"
+
     assert ev_error.state == "error"
     assert ev_error.detail == AllInferenceProvidersFailedError.MESSAGE
     assert ev_idle.state == "idle"
@@ -1333,12 +1398,32 @@ async def test_research_fallback_coordinator_parity() -> None:
     assert result == synthesis
     assert p1.synthesize_called is True
     assert p2.synthesize_called is True
-    assert len(bus.published) == 1
-    event = bus.published[0]
-    assert event.state == "fallback"
-    assert event.agent_id == "research-1"
-    assert event.task_id == "task-r-1"
-    assert event.fallback_transition == FallbackTransition("p1", "p2", "server_error_500", 0)
+    assert len(bus.published) == 3
+    ev_telemetry_0, ev_transition, ev_telemetry_1 = bus.published
+
+    assert ev_telemetry_0.state == "working"
+    assert ev_telemetry_0.agent_id == "research-1"
+    assert ev_telemetry_0.task_id == "task-r-1"
+    assert ev_telemetry_0.inference_telemetry is not None
+    assert ev_telemetry_0.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telemetry_0.inference_telemetry.provider_name == "p1"
+    assert ev_telemetry_0.inference_telemetry.attempt_index == 0
+    assert ev_telemetry_0.inference_telemetry.failure_reason == "server_error_500"
+    assert ev_telemetry_0.inference_telemetry.status_code == 500
+
+    assert ev_transition.state == "fallback"
+    assert ev_transition.agent_id == "research-1"
+    assert ev_transition.task_id == "task-r-1"
+    assert ev_transition.fallback_transition == FallbackTransition("p1", "p2", "server_error_500", 0)
+
+    assert ev_telemetry_1.state == "working"
+    assert ev_telemetry_1.agent_id == "research-1"
+    assert ev_telemetry_1.task_id == "task-r-1"
+    assert ev_telemetry_1.inference_telemetry is not None
+    assert ev_telemetry_1.inference_telemetry.status == "succeeded"
+    assert ev_telemetry_1.inference_telemetry.provider_name == "p2"
+    assert ev_telemetry_1.inference_telemetry.attempt_index == 1
+    assert ev_telemetry_1.inference_telemetry.model_name == "m2"
 
 
 @pytest.mark.anyio
@@ -1379,16 +1464,1008 @@ async def test_research_processor_end_to_end_fallback_lifecycle() -> None:
     task = TaskRequested.create("Grounded query")
     await processor.run_once(task)
 
-    # Lifecycle: working -> fallback -> idle
-    assert len(bus.published) == 3
-    ev_working, ev_fallback, ev_idle = bus.published
+    # Lifecycle: task working -> telemetry p1 -> fallback -> telemetry p2 -> idle
+    assert len(bus.published) == 5
+    ev_task_working, ev_telem1, ev_fallback, ev_telem2, ev_idle = bus.published
 
-    assert ev_working.state == "working"
+    assert ev_task_working.state == "working"
+    assert ev_task_working.task_id == task.task_id
+    assert ev_task_working.inference_telemetry is None
+
+    assert ev_telem1.state == "working"
+    assert ev_telem1.task_id == task.task_id
+    assert ev_telem1.inference_telemetry is not None
+    assert ev_telem1.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telem1.inference_telemetry.provider_name == "p1"
+    assert ev_telem1.inference_telemetry.attempt_index == 0
+
     assert ev_fallback.state == "fallback"
     assert ev_fallback.fallback_transition == FallbackTransition("p1", "p2", "timeout", 0)
+
+    assert ev_telem2.state == "working"
+    assert ev_telem2.task_id == task.task_id
+    assert ev_telem2.inference_telemetry is not None
+    assert ev_telem2.inference_telemetry.status == "succeeded"
+    assert ev_telem2.inference_telemetry.provider_name == "p2"
+    assert ev_telem2.inference_telemetry.attempt_index == 1
+
     assert ev_idle.state == "idle"
+    assert ev_idle.task_id == task.task_id
 
     assert task.task_id in bus.saved_results
     saved = bus.saved_results[task.task_id]
     assert saved.output == "Synthesized research findings"
     assert saved.sources == ("https://example.com/ref1",)
+
+
+# ==============================================================================
+# Issue #17 Increment 2: Inference Execution Telemetry Traversal Tests
+# ==============================================================================
+
+
+class DeterministicClock:
+    def __init__(self, timestamps_ns: list[int]) -> None:
+        self._timestamps = list(timestamps_ns)
+        self._idx = 0
+
+    def __call__(self) -> int:
+        if self._idx < len(self._timestamps):
+            val = self._timestamps[self._idx]
+            self._idx += 1
+            return val
+        return self._timestamps[-1] if self._timestamps else 0
+
+
+@pytest.mark.anyio
+async def test_fallback_telemetry_single_successful_attempt() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+
+    class MockProvider:
+        async def generate(self, prompt: str) -> InferenceResponse:
+            return InferenceResponse(
+                text=f"Response for {prompt}",
+                provider_name="p1",
+                model_name="test-model-v1",
+                input_tokens=100,
+                output_tokens=50,
+                total_tokens=150,
+                finish_reason="stop",
+            )
+
+    clock = DeterministicClock([10_000_000, 35_000_000])  # 25.0 ms delta
+    candidate = _make_candidate("p1", 0)
+
+    async def on_telemetry(t: InferenceExecutionTelemetry) -> None:
+        telemetry_records.append(t)
+
+    adapter = FallbackInferenceProvider(
+        candidates=[candidate],
+        resolver=lambda name: MockProvider() if name == "p1" else None,  # type: ignore[return-value]
+        on_telemetry=on_telemetry,
+        clock=clock,
+    )
+    result = await adapter.generate("Test prompt")
+
+    assert type(result) is str
+    assert result == "Response for Test prompt"
+    assert len(telemetry_records) == 1
+
+    t = telemetry_records[0]
+    assert t.attempt_index == 0
+    assert t.status == "succeeded"
+    assert t.provider_name == "p1"
+    assert t.model_name == "test-model-v1"
+    assert t.input_tokens == 100
+    assert t.output_tokens == 50
+    assert t.total_tokens == 150
+    assert t.finish_reason == "stop"
+    assert t.failure_reason is None
+    assert t.status_code is None
+    assert t.latency_ms == 25.0
+
+
+@pytest.mark.anyio
+async def test_fallback_telemetry_missing_metadata_defaults_none() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+
+    class MockProvider:
+        async def generate(self, prompt: str) -> InferenceResponse:
+            return InferenceResponse(
+                text="Bare response",
+                provider_name="p1",
+            )
+
+    candidate = _make_candidate("p1", 0)
+
+    adapter = FallbackInferenceProvider(
+        candidates=[candidate],
+        resolver=lambda name: MockProvider() if name == "p1" else None,  # type: ignore[return-value]
+        on_telemetry=lambda t: telemetry_records.append(t),  # type: ignore[arg-type,return-value]
+    )
+    result = await adapter.generate("Test prompt")
+    assert result == "Bare response"
+    assert len(telemetry_records) == 1
+
+    t = telemetry_records[0]
+    assert t.input_tokens is None
+    assert t.output_tokens is None
+    assert t.total_tokens is None
+    assert t.finish_reason is None
+    assert t.model_name is None
+
+
+@pytest.mark.anyio
+async def test_fallback_telemetry_sequence_primary_fail_secondary_success() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+    transitions: list[FallbackTransition] = []
+
+    p1 = RecordingMockWorkerProvider(
+        "p1",
+        FallbackEligibleInferenceError("Rate limited", reason="rate_limited", status_code=429),
+    )
+    p2 = RecordingMockWorkerProvider("p2", "secondary success")
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+
+    adapter = FallbackInferenceProvider(
+        candidates=candidates,
+        resolver=lambda name: p1 if name == "p1" else p2,
+        on_transition=lambda tr: transitions.append(tr),  # type: ignore[arg-type,return-value]
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+    result = await adapter.generate("Sequence prompt")
+
+    assert result == "secondary success"
+    assert len(telemetry_records) == 2
+
+    # Attempt 0: p1 fallback-eligible failure
+    t0 = telemetry_records[0]
+    assert t0.attempt_index == 0
+    assert t0.provider_name == "p1"
+    assert t0.status == "fallback_eligible_failure"
+    assert t0.failure_reason == "rate_limited"
+    assert t0.status_code == 429
+
+    # Attempt 1: p2 success
+    t1 = telemetry_records[1]
+    assert t1.attempt_index == 1
+    assert t1.provider_name == "p2"
+    assert t1.status == "succeeded"
+    assert t1.failure_reason is None
+    assert t1.status_code is None
+
+    # Transition occurred truthfully between attempt 0 and 1
+    assert len(transitions) == 1
+    assert transitions[0] == FallbackTransition(
+        failed_provider="p1",
+        target_provider="p2",
+        reason="rate_limited",
+        attempt_index=0,
+    )
+
+
+@pytest.mark.anyio
+async def test_fallback_telemetry_exhaustion_all_candidates_fail() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+
+    p1 = RecordingMockWorkerProvider(
+        "p1",
+        FallbackEligibleInferenceError("500", reason="server_error_500", status_code=500),
+    )
+    p2 = RecordingMockWorkerProvider(
+        "p2",
+        FallbackEligibleInferenceError("503", reason="server_error_503", status_code=503),
+    )
+    p3 = RecordingMockWorkerProvider(
+        "p3",
+        FallbackEligibleInferenceError("429", reason="rate_limited", status_code=429),
+    )
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1), _make_candidate("p3", 2)]
+    providers = {"p1": p1, "p2": p2, "p3": p3}
+
+    adapter = FallbackInferenceProvider(
+        candidates=candidates,
+        resolver=lambda name: providers[name],
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(AllInferenceProvidersFailedError) as exc_info:
+        await adapter.generate("Exhaustion test")
+
+    assert len(telemetry_records) == 3
+    assert [t.attempt_index for t in telemetry_records] == [0, 1, 2]
+    assert [t.provider_name for t in telemetry_records] == ["p1", "p2", "p3"]
+    assert all(t.status == "fallback_eligible_failure" for t in telemetry_records)
+    # Ensure no duplicate terminal telemetry was emitted
+    assert len(exc_info.value.failures) == 3
+    assert exc_info.value.failures[0].provider_name == "p1"
+    assert exc_info.value.failures[1].provider_name == "p2"
+    assert exc_info.value.failures[2].provider_name == "p3"
+
+
+@pytest.mark.anyio
+async def test_fallback_telemetry_non_fallback_failure_stops() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+    transitions: list[FallbackTransition] = []
+
+    p1 = RecordingMockWorkerProvider(
+        "p1",
+        NonFallbackInferenceError("Safety blocked", reason="blocked_safety", status_code=400),
+    )
+    p2 = RecordingMockWorkerProvider("p2", "should not run")
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+
+    adapter = FallbackInferenceProvider(
+        candidates=candidates,
+        resolver=lambda name: p1 if name == "p1" else p2,
+        on_transition=lambda tr: transitions.append(tr),  # type: ignore[arg-type,return-value]
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(NonFallbackInferenceError) as exc_info:
+        await adapter.generate("Safety prompt")
+
+    assert exc_info.value.reason == "blocked_safety"
+    assert p1.invoked is True
+    assert p2.invoked is False
+    assert len(transitions) == 0
+
+    assert len(telemetry_records) == 1
+    t0 = telemetry_records[0]
+    assert t0.attempt_index == 0
+    assert t0.provider_name == "p1"
+    assert t0.status == "non_fallback_failure"
+    assert t0.failure_reason == "blocked_safety"
+    assert t0.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_fallback_telemetry_unexpected_exception_re_raised() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+    transitions: list[FallbackTransition] = []
+
+    p1 = RecordingMockWorkerProvider(
+        "p1",
+        RuntimeError("Database crashed: SENSITIVE_INTERNAL_ENDPOINT_VALUE/tokens?key=abc"),
+    )
+    p2 = RecordingMockWorkerProvider("p2", "should not run")
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+
+    adapter = FallbackInferenceProvider(
+        candidates=candidates,
+        resolver=lambda name: p1 if name == "p1" else p2,
+        on_transition=lambda tr: transitions.append(tr),  # type: ignore[arg-type,return-value]
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await adapter.generate("Unexpected failure prompt")
+
+    assert "SENSITIVE_INTERNAL_ENDPOINT_VALUE" in str(exc_info.value)
+    assert p1.invoked is True
+    assert p2.invoked is False
+    assert len(transitions) == 0
+
+    assert len(telemetry_records) == 1
+    t0 = telemetry_records[0]
+    assert t0.attempt_index == 0
+    assert t0.provider_name == "p1"
+    assert t0.status == "unexpected_failure"
+    assert t0.failure_reason == "unexpected_error"
+    assert t0.status_code is None
+    # Verify raw exception text is NOT present in telemetry
+    assert "SENSITIVE_INTERNAL_ENDPOINT_VALUE" not in t0.to_json()
+    assert "tokens?key=abc" not in t0.to_json()
+
+
+@pytest.mark.anyio
+async def test_fallback_telemetry_no_telemetry_on_resolver_failure() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+
+    candidates = [_make_candidate("missing_provider", 0)]
+
+    adapter = FallbackInferenceProvider(
+        candidates=candidates,
+        resolver=lambda name: None,  # type: ignore[return-value]
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(TypeError, match="Resolver returned None"):
+        await adapter.generate("Prompt")
+
+    assert len(telemetry_records) == 0
+
+
+@pytest.mark.anyio
+async def test_fallback_telemetry_callback_failure_containment(caplog: pytest.LogCaptureFixture) -> None:
+    # 8a. Successful attempt with callback failure does not prevent return
+    class SuccessProvider:
+        async def generate(self, prompt: str) -> str:
+            return "Clean output"
+
+    async def broken_telemetry(t: InferenceExecutionTelemetry) -> None:
+        raise RuntimeError("Telemetry bus failure")
+
+    adapter = FallbackInferenceProvider(
+        candidates=[_make_candidate("p1", 0)],
+        resolver=lambda name: SuccessProvider(),  # type: ignore[return-value]
+        on_telemetry=broken_telemetry,
+    )
+    result = await adapter.generate("Prompt")
+    assert result == "Clean output"
+    assert "Inference telemetry notification failed for provider p1 (error_type=RuntimeError)" in caplog.text
+    assert "Telemetry bus failure" not in caplog.text
+
+    # 8b. Fallback progression is not stopped by callback failure
+    p1 = RecordingMockWorkerProvider("p1", FallbackEligibleInferenceError("429", reason="rate_limited"))
+    p2 = RecordingMockWorkerProvider("p2", "recovered output")
+    adapter_fallback = FallbackInferenceProvider(
+        candidates=[_make_candidate("p1", 0), _make_candidate("p2", 1)],
+        resolver=lambda name: p1 if name == "p1" else p2,
+        on_telemetry=broken_telemetry,
+    )
+    res_fallback = await adapter_fallback.generate("Prompt")
+    assert res_fallback == "recovered output"
+
+    # 8c. Non-fallback error is preserved and not replaced by callback failure
+    p_non_fallback = RecordingMockWorkerProvider(
+        "p1",
+        NonFallbackInferenceError("Bad request", reason="bad_request", status_code=400),
+    )
+    adapter_nf = FallbackInferenceProvider(
+        candidates=[_make_candidate("p1", 0)],
+        resolver=lambda name: p_non_fallback,
+        on_telemetry=broken_telemetry,
+    )
+    with pytest.raises(NonFallbackInferenceError) as exc_nf:
+        await adapter_nf.generate("Prompt")
+    assert exc_nf.value.reason == "bad_request"
+
+    # 8d. Unexpected exception is preserved and not replaced by callback failure
+    p_unexpected = RecordingMockWorkerProvider("p1", ValueError("Invalid argument in provider"))
+    adapter_un = FallbackInferenceProvider(
+        candidates=[_make_candidate("p1", 0)],
+        resolver=lambda name: p_unexpected,
+        on_telemetry=broken_telemetry,
+    )
+    with pytest.raises(ValueError, match="Invalid argument in provider"):
+        await adapter_un.generate("Prompt")
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_publishes_working_event_with_telemetry() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=InferenceResponse(
+            text="Coordinator success",
+            provider_name="p1",
+            model_name="p1-model",
+            input_tokens=12,
+            output_tokens=6,
+            total_tokens=18,
+            finish_reason="stop",
+        ),
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-agent-99",
+        bus=bus,
+        preferences=["p1"],
+        providers={"p1": p1},
+    )
+    task = TaskRequested.create("Verify coordinator publication prompt")
+    result = await coordinator.generate(task)
+
+    assert result == "Coordinator success"
+    assert len(bus.published) == 1
+    event = bus.published[0]
+    assert event.state == "working"
+    assert event.agent_id == "worker-agent-99"
+    assert event.task_id == task.task_id
+    assert event.detail == "Inference attempt 0 succeeded (p1)"
+    # Verify sanitized detail: no prompt, output, URLs, etc.
+    assert "Verify coordinator publication prompt" not in event.detail
+    assert "Coordinator success" not in event.detail
+    assert event.inference_telemetry is not None
+    assert event.inference_telemetry.status == "succeeded"
+    assert event.inference_telemetry.provider_name == "p1"
+    assert event.inference_telemetry.model_name == "p1-model"
+    assert event.inference_telemetry.input_tokens == 12
+    assert event.inference_telemetry.output_tokens == 6
+    assert event.inference_telemetry.total_tokens == 18
+
+
+@pytest.mark.anyio
+async def test_worker_coordinator_and_task_processor_runtime_compatibility() -> None:
+    bus = MockMessageBus()
+    p1 = MockRuntimeWorkerProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=FallbackEligibleInferenceError("503", reason="server_error_503"),
+    )
+    p2 = MockRuntimeWorkerProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=InferenceResponse(
+            text="End-to-end preserved plain string",
+            provider_name="p2",
+        ),
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-compat",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    processor = TaskProcessor(
+        agent_id="worker-compat",
+        bus=bus,
+        result_store=bus,
+        fallback_coordinator=coordinator,
+    )
+    task = TaskRequested.create("Runtime compat task")
+    await processor.run_once(task)
+
+    assert task.task_id in bus.saved_results
+    saved = bus.saved_results[task.task_id]
+    assert isinstance(saved, TaskResult)
+    assert type(saved.output) is str
+    assert saved.output == "End-to-end preserved plain string"
+
+    # Event sequence: task working -> telemetry p1 -> fallback -> telemetry p2 -> idle
+    assert len(bus.published) == 5
+    assert bus.published[0].state == "working"
+    assert bus.published[0].inference_telemetry is None
+
+    assert bus.published[1].state == "working"
+    assert bus.published[1].inference_telemetry is not None
+    assert bus.published[1].inference_telemetry.status == "fallback_eligible_failure"
+
+    assert bus.published[2].state == "fallback"
+    assert bus.published[2].fallback_transition is not None
+
+    assert bus.published[3].state == "working"
+    assert bus.published[3].inference_telemetry is not None
+    assert bus.published[3].inference_telemetry.status == "succeeded"
+
+    assert bus.published[4].state == "idle"
+
+
+# ==============================================================================
+# Issue #17 Increment 3: Research Agent Inference Execution Telemetry Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_research_fallback_telemetry_single_successful_attempt() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+
+    synthesis = SynthesisResult(
+        question="What is consensus?",
+        content="Paxos and Raft comparison",
+        evidence="Evidence text",
+        provider="r1",
+        model="r1-model-v2",
+        finish_reason="stop",
+        usage={"prompt_tokens": 80, "completion_tokens": 40, "total_tokens": 120},
+    )
+
+    class MockResearchProvider:
+        async def synthesize(self, question: str, evidence: str) -> SynthesisResult:
+            return synthesis
+
+    clock = DeterministicClock([5_000_000, 30_000_000])  # 25.0 ms delta
+    candidate = _make_candidate("r1", 0)
+
+    adapter = FallbackResearchSynthesizer(
+        candidates=[candidate],
+        resolver=lambda name: MockResearchProvider() if name == "r1" else None,  # type: ignore[return-value]
+        on_telemetry=lambda t: telemetry_records.append(t),  # type: ignore[arg-type,return-value]
+        clock=clock,
+    )
+    result = await adapter.synthesize("What is consensus?", "Evidence text")
+
+    assert isinstance(result, SynthesisResult)
+    assert result == synthesis
+    assert len(telemetry_records) == 1
+
+    t = telemetry_records[0]
+    assert t.attempt_index == 0
+    assert t.status == "succeeded"
+    assert t.provider_name == "r1"
+    assert t.model_name == "r1-model-v2"
+    assert t.finish_reason == "stop"
+    assert t.input_tokens == 80
+    assert t.output_tokens == 40
+    assert t.total_tokens == 120
+    assert t.failure_reason is None
+    assert t.status_code is None
+    assert t.latency_ms == 25.0
+
+
+@pytest.mark.anyio
+async def test_research_fallback_telemetry_missing_metadata_defaults_none() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+
+    synthesis = SynthesisResult(
+        question="Question",
+        content="Content without usage or model",
+        evidence="Evidence",
+        provider="r1",
+        model="",
+        finish_reason=None,
+        usage=None,
+    )
+
+    class MockResearchProvider:
+        async def synthesize(self, question: str, evidence: str) -> SynthesisResult:
+            return synthesis
+
+    candidate = _make_candidate("r1", 0)
+
+    adapter = FallbackResearchSynthesizer(
+        candidates=[candidate],
+        resolver=lambda name: MockResearchProvider() if name == "r1" else None,  # type: ignore[return-value]
+        on_telemetry=lambda t: telemetry_records.append(t),  # type: ignore[arg-type,return-value]
+    )
+    result = await adapter.synthesize("Question", "Evidence")
+    assert result == synthesis
+    assert len(telemetry_records) == 1
+
+    t = telemetry_records[0]
+    assert t.input_tokens is None
+    assert t.output_tokens is None
+    assert t.total_tokens is None
+    assert t.finish_reason is None
+    assert t.model_name is None
+
+
+@pytest.mark.anyio
+async def test_research_fallback_telemetry_sequence_primary_fail_secondary_success() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+    transitions: list[FallbackTransition] = []
+
+    synthesis = SynthesisResult(
+        question="What is Paxos?",
+        content="Paxos details",
+        evidence="Evidence",
+        provider="p2",
+        model="p2-model",
+    )
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError("429 Rate limited", reason="rate_limited", status_code=429),
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=synthesis,
+    )
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+
+    adapter = FallbackResearchSynthesizer(
+        candidates=candidates,
+        resolver=lambda name: p1 if name == "p1" else p2,
+        on_transition=lambda tr: transitions.append(tr),  # type: ignore[arg-type,return-value]
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+    result = await adapter.synthesize("What is Paxos?", "Evidence")
+
+    assert result == synthesis
+    assert len(telemetry_records) == 2
+
+    # Attempt 0: p1 fallback-eligible failure
+    t0 = telemetry_records[0]
+    assert t0.attempt_index == 0
+    assert t0.provider_name == "p1"
+    assert t0.status == "fallback_eligible_failure"
+    assert t0.failure_reason == "rate_limited"
+    assert t0.status_code == 429
+
+    # Transition occurred truthfully between attempt 0 and 1
+    assert len(transitions) == 1
+    assert transitions[0] == FallbackTransition(
+        failed_provider="p1",
+        target_provider="p2",
+        reason="rate_limited",
+        attempt_index=0,
+    )
+
+    # Attempt 1: p2 success
+    t1 = telemetry_records[1]
+    assert t1.attempt_index == 1
+    assert t1.provider_name == "p2"
+    assert t1.status == "succeeded"
+    assert t1.failure_reason is None
+    assert t1.status_code is None
+
+
+@pytest.mark.anyio
+async def test_research_fallback_telemetry_exhaustion_all_candidates_fail() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError("500", reason="server_error_500", status_code=500),
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError("503", reason="server_error_503", status_code=503),
+    )
+    p3 = MockRuntimeResearchProvider(
+        "p3",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError("429", reason="rate_limited", status_code=429),
+    )
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1), _make_candidate("p3", 2)]
+    providers = {"p1": p1, "p2": p2, "p3": p3}
+
+    adapter = FallbackResearchSynthesizer(
+        candidates=candidates,
+        resolver=lambda name: providers[name],
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(AllInferenceProvidersFailedError) as exc_info:
+        await adapter.synthesize("Research question", "Evidence text")
+
+    assert len(telemetry_records) == 3
+    assert [t.attempt_index for t in telemetry_records] == [0, 1, 2]
+    assert [t.provider_name for t in telemetry_records] == ["p1", "p2", "p3"]
+    assert all(t.status == "fallback_eligible_failure" for t in telemetry_records)
+    # Ensure no duplicate terminal telemetry was emitted
+    assert len(exc_info.value.failures) == 3
+
+
+@pytest.mark.anyio
+async def test_research_fallback_telemetry_non_fallback_failure_stops() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+    transitions: list[FallbackTransition] = []
+
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=NonFallbackInferenceError("Policy block", reason="blocked_safety", status_code=400),
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior="should not be called",
+    )
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+
+    adapter = FallbackResearchSynthesizer(
+        candidates=candidates,
+        resolver=lambda name: p1 if name == "p1" else p2,
+        on_transition=lambda tr: transitions.append(tr),  # type: ignore[arg-type,return-value]
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(NonFallbackInferenceError) as exc_info:
+        await adapter.synthesize("Blocked question", "Evidence")
+
+    assert exc_info.value.reason == "blocked_safety"
+    assert p1.synthesize_called is True
+    assert p2.synthesize_called is False
+    assert len(transitions) == 0
+
+    assert len(telemetry_records) == 1
+    t0 = telemetry_records[0]
+    assert t0.attempt_index == 0
+    assert t0.provider_name == "p1"
+    assert t0.status == "non_fallback_failure"
+    assert t0.failure_reason == "blocked_safety"
+    assert t0.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_research_fallback_telemetry_unexpected_failure_re_raised() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+    transitions: list[FallbackTransition] = []
+
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=RuntimeError("Internal GPU failure: SENSITIVE_RESEARCH_ENDPOINT_VALUE/api?secret=tok"),
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior="should not run",
+    )
+
+    candidates = [_make_candidate("p1", 0), _make_candidate("p2", 1)]
+
+    adapter = FallbackResearchSynthesizer(
+        candidates=candidates,
+        resolver=lambda name: p1 if name == "p1" else p2,
+        on_transition=lambda tr: transitions.append(tr),  # type: ignore[arg-type,return-value]
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await adapter.synthesize("Question", "Evidence")
+
+    assert "SENSITIVE_RESEARCH_ENDPOINT_VALUE" in str(exc_info.value)
+    assert p1.synthesize_called is True
+    assert p2.synthesize_called is False
+    assert len(transitions) == 0
+
+    assert len(telemetry_records) == 1
+    t0 = telemetry_records[0]
+    assert t0.attempt_index == 0
+    assert t0.provider_name == "p1"
+    assert t0.status == "unexpected_failure"
+    assert t0.failure_reason == "unexpected_error"
+    assert t0.status_code is None
+    # Verify raw exception text is absent from telemetry
+    assert "SENSITIVE_RESEARCH_ENDPOINT_VALUE" not in t0.to_json()
+    assert "secret=tok" not in t0.to_json()
+
+
+@pytest.mark.anyio
+async def test_research_fallback_telemetry_no_telemetry_on_resolver_failure() -> None:
+    telemetry_records: list[InferenceExecutionTelemetry] = []
+
+    candidates = [_make_candidate("missing_research_provider", 0)]
+
+    adapter = FallbackResearchSynthesizer(
+        candidates=candidates,
+        resolver=lambda name: None,  # type: ignore[return-value]
+        on_telemetry=lambda te: telemetry_records.append(te),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(TypeError, match="Resolver returned None"):
+        await adapter.synthesize("Question", "Evidence")
+
+    assert len(telemetry_records) == 0
+
+
+@pytest.mark.anyio
+async def test_research_fallback_telemetry_callback_failure_containment(caplog: pytest.LogCaptureFixture) -> None:
+    synthesis = SynthesisResult(
+        question="Question",
+        content="Synthesis content",
+        evidence="Evidence",
+        provider="p1",
+    )
+
+    # 8a. Successful attempt with callback failure does not prevent return
+    class SuccessProvider:
+        async def synthesize(self, question: str, evidence: str) -> SynthesisResult:
+            return synthesis
+
+    async def broken_telemetry(t: InferenceExecutionTelemetry) -> None:
+        raise RuntimeError("Telemetry collector crashed")
+
+    adapter = FallbackResearchSynthesizer(
+        candidates=[_make_candidate("p1", 0)],
+        resolver=lambda name: SuccessProvider(),  # type: ignore[return-value]
+        on_telemetry=broken_telemetry,
+    )
+    result = await adapter.synthesize("Question", "Evidence")
+    assert result == synthesis
+    assert "Inference telemetry notification failed for provider p1 (error_type=RuntimeError)" in caplog.text
+    assert "Telemetry collector crashed" not in caplog.text
+
+    # 8b. Fallback progression continues despite callback failure
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError("429", reason="rate_limited"),
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=synthesis,
+    )
+    adapter_fallback = FallbackResearchSynthesizer(
+        candidates=[_make_candidate("p1", 0), _make_candidate("p2", 1)],
+        resolver=lambda name: p1 if name == "p1" else p2,
+        on_telemetry=broken_telemetry,
+    )
+    res_fallback = await adapter_fallback.synthesize("Question", "Evidence")
+    assert res_fallback == synthesis
+
+    # 8c. Non-fallback error is preserved despite callback failure
+    p_non_fallback = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=NonFallbackInferenceError("400", reason="bad_request", status_code=400),
+    )
+    adapter_nf = FallbackResearchSynthesizer(
+        candidates=[_make_candidate("p1", 0)],
+        resolver=lambda name: p_non_fallback,
+        on_telemetry=broken_telemetry,
+    )
+    with pytest.raises(NonFallbackInferenceError) as exc_nf:
+        await adapter_nf.synthesize("Question", "Evidence")
+    assert exc_nf.value.reason == "bad_request"
+
+    # 8d. Unexpected exception is preserved despite callback failure
+    p_unexpected = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=ValueError("Value error in research synthesis"),
+    )
+    adapter_un = FallbackResearchSynthesizer(
+        candidates=[_make_candidate("p1", 0)],
+        resolver=lambda name: p_unexpected,
+        on_telemetry=broken_telemetry,
+    )
+    with pytest.raises(ValueError, match="Value error in research synthesis"):
+        await adapter_un.synthesize("Question", "Evidence")
+
+
+@pytest.mark.anyio
+async def test_research_coordinator_publishes_working_event_with_telemetry() -> None:
+    bus = MockMessageBus()
+    synthesis = SynthesisResult(
+        question="Analysis question",
+        content="Research synthesis findings",
+        evidence="Grounded evidence",
+        provider="p1",
+        model="gemini-2.5-flash",
+        finish_reason="stop",
+        usage={"promptTokenCount": 55, "candidatesTokenCount": 25, "totalTokenCount": 80},
+    )
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=synthesis,
+    )
+
+    coordinator = ResearchFallbackCoordinator(
+        agent_id="research-coordinator-test",
+        bus=bus,
+        preferences=["p1"],
+        providers={"p1": p1},
+    )
+    result = await coordinator.synthesize(
+        question="Analysis question",
+        evidence="Grounded evidence",
+        task_id="task-rc-101",
+    )
+
+    assert result == synthesis
+    assert len(bus.published) == 1
+    event = bus.published[0]
+    assert event.state == "working"
+    assert event.agent_id == "research-coordinator-test"
+    assert event.task_id == "task-rc-101"
+    assert event.detail == "Inference attempt 0 succeeded (p1)"
+    # Verify sanitized detail: no question, evidence, synthesis content, URLs, headers, or credentials
+    assert "Analysis question" not in event.detail
+    assert "Grounded evidence" not in event.detail
+    assert "Research synthesis findings" not in event.detail
+
+    assert event.inference_telemetry is not None
+    assert event.inference_telemetry.status == "succeeded"
+    assert event.inference_telemetry.provider_name == "p1"
+    assert event.inference_telemetry.model_name == "gemini-2.5-flash"
+    assert event.inference_telemetry.finish_reason == "stop"
+    assert event.inference_telemetry.input_tokens == 55
+    assert event.inference_telemetry.output_tokens == 25
+    assert event.inference_telemetry.total_tokens == 80
+
+
+@pytest.mark.anyio
+async def test_inference_telemetry_event_stream_serialization() -> None:
+    """Verifies that inference_telemetry survives AgentEvent -> Redis mapping serialization."""
+    telemetry = InferenceExecutionTelemetry(
+        provider_name="cloudflare",
+        attempt_index=1,
+        latency_ms=45.5,
+        status="succeeded",
+        input_tokens=150,
+        output_tokens=75,
+        total_tokens=225,
+        finish_reason="stop",
+        model_name="@cf/meta/llama-3.1-8b-instruct",
+    )
+    event = AgentEvent.create(
+        agent_id="research-agent-1",
+        state="working",
+        detail="Inference attempt 1 succeeded (cloudflare)",
+        task_id="task-serialization-1",
+        inference_telemetry=telemetry,
+    )
+
+    # Use existing Redis mapping serialization logic from RedisBus
+    mapping = {
+        key: ""
+        if value is None
+        else (
+            json.dumps(value)
+            if isinstance(value, (dict, list))
+            else str(value)
+        )
+        for key, value in event.to_dict().items()
+    }
+    mapping["updated_at"] = event.occurred_at
+
+    assert "inference_telemetry" in mapping
+    raw_telem_json = mapping["inference_telemetry"]
+    assert isinstance(raw_telem_json, str)
+    deserialized_data = json.loads(raw_telem_json)
+    restored_telem = InferenceExecutionTelemetry.from_dict(deserialized_data)
+    assert restored_telem == telemetry
+    assert restored_telem.provider_name == "cloudflare"
+    assert restored_telem.attempt_index == 1
+    assert restored_telem.latency_ms == 45.5
+    assert restored_telem.input_tokens == 150
+    assert restored_telem.output_tokens == 75
+    assert restored_telem.total_tokens == 225
+
+
+@pytest.mark.anyio
+async def test_issue_19_fallback_telemetry_coexistence_and_ordering() -> None:
+    """Verifies #19 evidence: FallbackTransition and per-attempt InferenceExecutionTelemetry coexist in order."""
+    bus = MockMessageBus()
+    synthesis = SynthesisResult(
+        question="Consensus models",
+        content="Raft comparison findings",
+        evidence="Evidence text",
+        provider="p2",
+        model="m2",
+    )
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError("429 Rate limit", reason="rate_limited", status_code=429),
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=synthesis,
+    )
+
+    coordinator = ResearchFallbackCoordinator(
+        agent_id="research-issue-19",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+    )
+    result = await coordinator.synthesize("Consensus models", "Evidence text", task_id="task-19-order")
+    assert result == synthesis
+
+    # Event sequence:
+    # 1. Primary attempt telemetry (fallback_eligible_failure)
+    # 2. Fallback transition event
+    # 3. Secondary attempt telemetry (succeeded)
+    assert len(bus.published) == 3
+
+    ev_telem0 = bus.published[0]
+    assert ev_telem0.state == "working"
+    assert ev_telem0.task_id == "task-19-order"
+    assert ev_telem0.inference_telemetry is not None
+    assert ev_telem0.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telem0.inference_telemetry.provider_name == "p1"
+    assert ev_telem0.inference_telemetry.attempt_index == 0
+    assert ev_telem0.inference_telemetry.failure_reason == "rate_limited"
+    assert ev_telem0.inference_telemetry.status_code == 429
+
+    ev_transition = bus.published[1]
+    assert ev_transition.state == "fallback"
+    assert ev_transition.task_id == "task-19-order"
+    assert ev_transition.fallback_transition == FallbackTransition("p1", "p2", "rate_limited", 0)
+
+    ev_telem1 = bus.published[2]
+    assert ev_telem1.state == "working"
+    assert ev_telem1.task_id == "task-19-order"
+    assert ev_telem1.inference_telemetry is not None
+    assert ev_telem1.inference_telemetry.status == "succeeded"
+    assert ev_telem1.inference_telemetry.provider_name == "p2"
+    assert ev_telem1.inference_telemetry.attempt_index == 1

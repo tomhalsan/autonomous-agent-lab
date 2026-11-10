@@ -3,6 +3,8 @@ from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
     FallbackTransition,
+    InferenceExecutionTelemetry,
+    InferenceResponse,
     TaskRequested,
     TaskResult,
     Tool,
@@ -463,3 +465,337 @@ def test_tool_contracts_have_no_external_dependencies() -> None:
         assert term not in tools_module.__dict__
 
 
+# --- InferenceResponse Contract Tests ---
+
+
+def test_inference_response_round_trip() -> None:
+    original = InferenceResponse(
+        text="Sample output content",
+        provider_name="Cloudflare",
+        model_name=" @cf/meta/llama-3.1-8b-instruct ",
+        finish_reason=" STOP ",
+        input_tokens=12,
+        output_tokens=34,
+        total_tokens=46,
+    )
+    assert original.provider_name == "cloudflare"
+    assert original.model_name == "@cf/meta/llama-3.1-8b-instruct"
+    assert original.finish_reason == "stop"
+
+    restored = InferenceResponse.from_json(original.to_json())
+    assert restored == original
+    assert restored.text == "Sample output content"
+    assert restored.input_tokens == 12
+    assert restored.output_tokens == 34
+    assert restored.total_tokens == 46
+
+
+def test_inference_response_preserves_text_exact_whitespace() -> None:
+    exact_text = "  Leading and trailing whitespace preserved\n\n- item 1\n"
+    resp = InferenceResponse(text=exact_text, provider_name="gemini")
+    assert resp.text == exact_text
+
+
+def test_inference_response_minimal_defaults() -> None:
+    resp = InferenceResponse(text="Minimal", provider_name="stub")
+    assert resp.text == "Minimal"
+    assert resp.provider_name == "stub"
+    assert resp.model_name is None
+    assert resp.finish_reason is None
+    assert resp.input_tokens is None
+    assert resp.output_tokens is None
+    assert resp.total_tokens is None
+
+
+def test_inference_response_rejects_empty_provider_name() -> None:
+    with pytest.raises(ValueError, match="provider_name must be a non-empty string"):
+        InferenceResponse(text="output", provider_name="   ")
+
+
+def test_inference_response_rejects_non_string_text() -> None:
+    with pytest.raises(TypeError, match="text must be a str"):
+        InferenceResponse(text=12345, provider_name="stub")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field_name", ["input_tokens", "output_tokens", "total_tokens"])
+def test_inference_response_rejects_bool_as_token_count(field_name: str) -> None:
+    kwargs = {"text": "hello", "provider_name": "stub", field_name: True}
+    with pytest.raises(TypeError, match=f"{field_name} must be an int or None"):
+        InferenceResponse(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field_name", ["input_tokens", "output_tokens", "total_tokens"])
+def test_inference_response_rejects_negative_token_count(field_name: str) -> None:
+    kwargs = {"text": "hello", "provider_name": "stub", field_name: -1}
+    with pytest.raises(ValueError, match=f"{field_name} must be a non-negative integer"):
+        InferenceResponse(**kwargs)
+
+
+def test_inference_response_rejects_empty_optional_strings() -> None:
+    with pytest.raises(ValueError, match="model_name must be a non-empty string if specified"):
+        InferenceResponse(text="hi", provider_name="stub", model_name="  ")
+
+    with pytest.raises(ValueError, match="finish_reason must be a non-empty string if specified"):
+        InferenceResponse(text="hi", provider_name="stub", finish_reason="  ")
+
+
+# --- InferenceExecutionTelemetry Contract Tests ---
+
+
+def test_inference_telemetry_succeeded_round_trip() -> None:
+    original = InferenceExecutionTelemetry(
+        provider_name=" Gemini ",
+        attempt_index=0,
+        latency_ms=123.45,
+        status="succeeded",
+        input_tokens=50,
+        output_tokens=25,
+        total_tokens=75,
+        finish_reason="STOP",
+        model_name=" gemini-2.5-flash ",
+    )
+    assert original.provider_name == "gemini"
+    assert original.finish_reason == "stop"
+    assert original.model_name == "gemini-2.5-flash"
+    assert original.latency_ms == 123.45
+
+    restored = InferenceExecutionTelemetry.from_json(original.to_json())
+    assert restored == original
+    assert restored.failure_reason is None
+    assert restored.status_code is None
+
+
+def test_inference_telemetry_failure_round_trip() -> None:
+    original = InferenceExecutionTelemetry(
+        provider_name="cloudflare",
+        attempt_index=1,
+        latency_ms=45,
+        status="fallback_eligible_failure",
+        failure_reason="rate_limited",
+        status_code=429,
+        model_name="@cf/meta/llama-3.1-8b-instruct",
+    )
+    assert original.latency_ms == 45.0
+    restored = InferenceExecutionTelemetry.from_json(original.to_json())
+    assert restored == original
+    assert restored.failure_reason == "rate_limited"
+    assert restored.status_code == 429
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["fallback_eligible_failure", "non_fallback_failure", "unexpected_failure"],
+)
+def test_inference_telemetry_failure_statuses_require_failure_reason(status: str) -> None:
+    with pytest.raises(ValueError, match=f"{status} status requires a non-empty failure_reason"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=10.0,
+            status=status,
+            failure_reason=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "valid_slug",
+    [
+        "rate_limited",
+        "timeout",
+        "connection_error",
+        "server_error_500",
+        "http_429",
+        "malformed_response",
+        "blocked_safety",
+        "unexpected_error",
+        "fallback_eligible_error",
+    ],
+)
+def test_inference_telemetry_accepts_valid_failure_reason_slugs(valid_slug: str) -> None:
+    telemetry = InferenceExecutionTelemetry(
+        provider_name="stub",
+        attempt_index=0,
+        latency_ms=10.0,
+        status="fallback_eligible_failure",
+        failure_reason=valid_slug,
+    )
+    assert telemetry.failure_reason == valid_slug
+
+
+@pytest.mark.parametrize(
+    ("invalid_reason", "description"),
+    [
+        ("HTTP 429 Rate limit exceeded", "prose"),
+        ("rate_limited!", "punctuation"),
+        ("error; drop table", "SQL/punctuation"),
+        ("https://api.cloudflare.com/client/v4/accounts", "URL"),
+        ("Bearer test-secret-token-12345", "authorization header"),
+        ("Traceback (most recent call last):\n  File ...", "stack trace"),
+        ("timeout\n", "newline"),
+        ("timeout-error", "hyphen"),
+    ],
+)
+def test_inference_telemetry_rejects_invalid_failure_reason(
+    invalid_reason: str,
+    description: str,
+) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=10.0,
+            status="fallback_eligible_failure",
+            failure_reason=invalid_reason,
+        )
+    assert "failure_reason must contain only lowercase letters, digits, and underscores" in str(exc_info.value)
+    # Ensure sensitive inputs are not retained or leaked in the error message
+    assert invalid_reason not in str(exc_info.value)
+
+
+def test_inference_telemetry_succeeded_rejects_failure_reason_or_status_code() -> None:
+    with pytest.raises(ValueError, match="succeeded status requires failure_reason to be None"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=10.0,
+            status="succeeded",
+            failure_reason="rate_limited",
+        )
+
+    with pytest.raises(ValueError, match="succeeded status requires status_code to be None"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=10.0,
+            status="succeeded",
+            status_code=200,
+        )
+
+
+def test_inference_telemetry_rejects_invalid_status() -> None:
+    with pytest.raises(ValueError, match="Invalid status"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=10.0,
+            status="unknown_status",
+            failure_reason="error",
+        )
+
+
+def test_inference_telemetry_rejects_invalid_attempt_index() -> None:
+    with pytest.raises(ValueError, match="attempt_index must be a non-negative integer"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=True,  # type: ignore[arg-type]
+            latency_ms=10.0,
+            status="succeeded",
+        )
+
+    with pytest.raises(ValueError, match="attempt_index must be a non-negative integer"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=-1,
+            latency_ms=10.0,
+            status="succeeded",
+        )
+
+
+def test_inference_telemetry_rejects_invalid_latency() -> None:
+    with pytest.raises(ValueError, match="latency_ms must be a non-negative number"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=True,  # type: ignore[arg-type]
+            status="succeeded",
+        )
+
+    with pytest.raises(ValueError, match="latency_ms must be a non-negative number"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=-5.0,
+            status="succeeded",
+        )
+
+
+def test_inference_telemetry_rejects_invalid_status_code() -> None:
+    with pytest.raises(TypeError, match="status_code must be an int or None"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=10.0,
+            status="fallback_eligible_failure",
+            failure_reason="timeout",
+            status_code=True,  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="status_code must be a valid HTTP status"):
+        InferenceExecutionTelemetry(
+            provider_name="stub",
+            attempt_index=0,
+            latency_ms=10.0,
+            status="fallback_eligible_failure",
+            failure_reason="timeout",
+            status_code=999,
+        )
+
+
+# --- AgentEvent Inference Telemetry Integration Tests ---
+
+
+def test_agent_event_with_inference_telemetry_round_trip() -> None:
+    telemetry = InferenceExecutionTelemetry(
+        provider_name="cloudflare",
+        attempt_index=0,
+        latency_ms=145.2,
+        status="succeeded",
+        input_tokens=100,
+        output_tokens=50,
+        total_tokens=150,
+        finish_reason="stop",
+        model_name="@cf/meta/llama-3.1-8b-instruct",
+    )
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state="working",
+        detail="Inference attempt 0 succeeded (cloudflare)",
+        task_id="task-telem-1",
+        inference_telemetry=telemetry,
+    )
+    assert event.inference_telemetry == telemetry
+
+    data = event.to_dict()
+    assert "inference_telemetry" in data
+    assert data["inference_telemetry"] == telemetry.to_dict()
+
+    restored = AgentEvent.from_json(event.to_json())
+    assert restored == event
+    assert isinstance(restored.inference_telemetry, InferenceExecutionTelemetry)
+    assert restored.inference_telemetry.provider_name == "cloudflare"
+    assert restored.inference_telemetry.input_tokens == 100
+    assert restored.inference_telemetry.output_tokens == 50
+    assert restored.inference_telemetry.total_tokens == 150
+
+
+def test_agent_event_omits_inference_telemetry_when_none() -> None:
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state="working",
+        detail="Processing task",
+        task_id="task-telem-2",
+    )
+    assert event.inference_telemetry is None
+    data = event.to_dict()
+    assert "inference_telemetry" not in data
+
+
+def test_agent_event_rejects_invalid_inference_telemetry_type() -> None:
+    with pytest.raises(TypeError, match="inference_telemetry must be InferenceExecutionTelemetry"):
+        AgentEvent(
+            agent_id="worker-1",
+            state="working",
+            detail="detail",
+            occurred_at="2026-11-09T00:00:00Z",
+            inference_telemetry="invalid_telemetry",  # type: ignore[arg-type]
+        )

@@ -5,6 +5,7 @@ from agent_contracts import (
     AgentEvent,
     AgentHeartbeat,
     InferenceProviderHealth,
+    InferenceResponse,
     TaskRequested,
     TaskResult,
 )
@@ -22,7 +23,7 @@ class ResultStore(Protocol):
 
 
 class InferenceProvider(Protocol):
-    async def generate(self, prompt: str) -> str: ...
+    async def generate(self, prompt: str) -> InferenceResponse: ...
 
 
 @runtime_checkable
