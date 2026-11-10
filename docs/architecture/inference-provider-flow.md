@@ -32,25 +32,25 @@ The core architecture follows a single dominant numbered execution grammar that 
         ↓
 2. Check Provider Health
         ↓
-3. Select Eligible Provider
-        ↓
-4. Invoke Provider
-        ↓
-5. Succeeded?
-    ↙           ↘
- YES             NO
-  ↓               ↓
-6. Return Result   7. Fallback Allowed?
-  ↓                  ↙             ↘
-TASK COMPLETE       YES             NO
-                     ↓               ↓
-                8. Next Provider   9. Stop / Fail
+3. Select Eligible Provider ──[0 eligible: no invocation]──┐
+        ↓ (eligible ≥ 1)                                   │
+4. Invoke Provider                                         │
+        ↓                                                  │
+5. Succeeded?                                              │
+    ↙           ↘                                          │
+ YES             NO                                        │
+  ↓               ↓                                        │
+6. Return Result   7. Fallback Allowed?                    │
+  ↓                  ↙             ↘                       │
+TASK COMPLETE       YES             NO                     │
+                     ↓               ↓                     │
+                8. Next Provider   9. Stop / Fail ◄────────┘
                      │
                      └──────────────↺ 4. Invoke Provider
 ```
 
 ### Step 1: Inference Needed (Agent)
-- **Shared Semantics**: General Worker and Research Agent share identical inference selection, fallback, and telemetry contracts. Worker inference generates direct completions (`provider.generate()`), while Research Agent inference conditions synthesis on retrieved research evidence (`provider.synthesize()`).
+- **Shared Workflow**: General Worker and Research Agent share probing, deterministic selection, and fallback loop traversal. Worker inference generates direct completions (`provider.generate()`), while Research Agent inference conditions synthesis on retrieved research evidence (`provider.synthesize()`). The services do not have identical end-to-end resilience semantics, differing in post-failure state retention and task result schemas.
 - **Initiation**: The agent receives a task from the transport queue (`TaskRequested`: `task_id`, `prompt`).
 - **Coordinator Lifecycle**: `WorkerFallbackCoordinator` or `ResearchFallbackCoordinator` initializes per-task execution.
 
@@ -61,10 +61,10 @@ TASK COMPLETE       YES             NO
 - **Truthful Snapshots**: Probes return point-in-time `InferenceProviderHealth` snapshots. A failed or timed-out probe produces **no snapshot**; missing health is treated as unknown. **The system never assumes or fabricates a healthy state.**
 
 ### Step 3: Select Eligible Provider (Selection)
-- **Deterministic Priority Policy**: `DeterministicProviderSelector` evaluates the configured preferences and authentic health snapshots using `SelectionStrategy.PRIORITY`.
-- **Ranking Invariants**: All verified `HEALTHY` candidates are ranked first in configured priority order, followed by any `DEGRADED` candidates in configured priority order.
-- **Exclusion**: Providers that are `RATE_LIMITED`, `QUOTA_EXHAUSTED`, `UNAVAILABLE`, or unknown (missing health snapshot) are strictly excluded.
-- **Outcome**: Produces an immutable, ordered candidate sequence for traversal.
+- **Deterministic Priority Policy**: `DeterministicProviderSelector` evaluates configured preferences and authentic health snapshots using `SelectionStrategy.PRIORITY`.
+- **Ranking Invariants**: All verified `HEALTHY` candidates rank ahead of `DEGRADED` candidates; configured priority determines candidate order within the same health class.
+- **Exclusion**: Constrained (`RATE_LIMITED` / `QUOTA_EXHAUSTED`), `UNAVAILABLE`, and missing-health candidates are strictly excluded.
+- **Outcome & Zero-Candidate Path**: Produces an immutable, ordered candidate sequence for traversal. If no configured provider is eligible after selection, execution terminates immediately (advancing directly to Step 9 / failure) without performing any provider invocation; consequently, no attempt telemetry is created for an invocation that never occurred.
 
 ### Step 4: Invoke Provider (Execution)
 - **Active Candidate Invocation**: The coordinator attempts inference against the current candidate.
@@ -78,7 +78,7 @@ TASK COMPLETE       YES             NO
 
 ### Step 6: Return Result & TASK COMPLETE (Success Path)
 - **Output Processing**: Normalizes response text and metadata.
-- **Persistence**: The agent constructs a `TaskResult` (or `ResearchResult` with citations and attribution sources) and persists it to the `ResultStore`.
+- **Persistence**: The agent constructs and persists a result payload to the `ResultStore`. General Worker persists a `TaskResult` containing text output (without source citations); Research Agent persists a `ResearchResult` preserving structured source attributions when research evidence was retrieved.
 - **Explicit Success Endpoint (`TASK COMPLETE`)**: Execution reaches an unmistakable terminal destination. The task is fully complete, the result is saved, and the agent state transitions from `working` to `idle`.
 
 ### Step 7: Fallback Allowed? (Decision)
@@ -89,15 +89,15 @@ TASK COMPLETE       YES             NO
 - **Branch NO**: Advances to **Step 9 (Stop / Fail)**.
 
 ### Step 8: Next Provider (Fallback Loop)
-- **Candidate Advancement**: Selects the next eligible candidate in the priority chain (e.g., advancing from Provider A to Provider B).
-- **Audit Event**: Emits a `FallbackTransition` operational event recording the switch reason and target provider.
+- **Candidate Advancement**: Selects the next eligible candidate in the ranked candidate chain (ordered by health tier, then configured priority).
+- **Audit Event**: Emits a `FallbackTransition` operational event recording the switch reason and target provider after resolving the next candidate.
 - **Loopback Execution**: Curves directly back into **Step 4 (Invoke Provider)** to attempt inference with the newly resolved provider.
 
 ### Step 9: Stop / Fail (Terminal Failure)
 - **Execution Halt**: Traversal immediately terminates without further retries.
-- **Terminal Error State**: Occurs when the failure is permanent (non-fallback client error, invalid credentials, policy/safety block) or when all candidate providers in the chain have been exhausted.
+- **Terminal Error State**: Occurs when failure is permanent (non-fallback client error, invalid credentials, policy/safety block), when all candidate providers in the chain have been exhausted, or when zero eligible candidates exist after initial health selection.
 - **Error Preservation**: The original underlying exception is preserved and re-raised (`TaskExecutionError` or `ResearchExecutionError`).
-- **Agent State**: Emits an `AgentEvent` recording the failure state, then returns the agent to `idle` so it can accept subsequent tasks.
+- **Post-Failure Agent State**: The agent publishes an `error` state event with failure details. Services differ in post-failure state handling: General Worker publishes an `idle` event immediately after the error event so the worker can accept subsequent tasks, whereas Research Agent retains the `error` state without an immediate transition back to `idle`.
 
 ---
 
@@ -152,14 +152,15 @@ Operational telemetry is a secondary side channel watching execution. Attempt te
 - **Fields Captured**: `failed_provider`, `target_provider`, sanitized `reason`, and `attempt_index`.
 
 ### 3. Operational Stream & Prototype Console
-- **Asynchronous Transport**: Both tributaries merge into standard `AgentEvent` envelopes and publish over Redis to `agent.events`. Transport failures are caught and logged; they never crash or abort ongoing inference fallback.
-- **Bounded Retention**: `agent.events` acts as a sliding-window operational audit stream for live observability, not a permanent analytics warehouse.
-- **Prototype Console Visibility**:
-  - **Live Activity Timeline**: Visual badges indicate `failed_provider → target_provider` switches with sanitized reasons.
-  - **Telemetry Card**: Displays execution latency (ms), provider name, model name, and attempt number.
-  - **Grounded Results**: Formatted markdown with numbered findings and verified clickable citation links (`rel="noopener noreferrer"`).
+- **Inline Awaited Event Publication**: Both tributaries construct `AgentEvent` envelopes and publish them over Redis to `agent.events`. Telemetry and fallback-transition notification callbacks are awaited inline by the coordinator rather than run as detached background tasks. Callback errors are caught and contained so event publishing failures do not abort ongoing fallback traversal.
+- **Bounded Retention**: `agent.events` acts as a sliding-window operational audit stream (capped at approximately 500 entries) for live observability, not a permanent analytics warehouse.
+- **Prototype Console Observability & Distinct Retrieval Paths**:
+  - **Distinct Data Retrieval Paths**: The Prototype Console retrieves task outcomes from persistent result storage via `GET /api/tasks/{task_id}/result`, successful inference metadata via dedicated task-scoped query `GET /api/tasks/{task_id}/telemetry`, and timeline activity via the general sliding-window event feed `GET /api/events`.
+  - **Live Activity Timeline**: Visual badges display `failed_provider → target_provider` switches, sanitized reasons, and 1-based attempt index parsed from `FallbackTransition` event payloads.
+  - **Telemetry Card**: Displays execution latency (ms), provider name, model name, and 1-based attempt index retrieved from the task-scoped telemetry query for the successful attempt.
+  - **Task Results**: Formatted output text loaded from the result store API (not from the event stream); citation links and source attributions are presented only where supported (e.g. grounded research tasks).
   - **Credential Security**: Tokens, API keys, private endpoints, and raw tracebacks are strictly quarantined on the server side and never sent to the browser.
-  - **Execution Semantics**: Prototype Console observes the outcome; it does not cause or gate task completion.
+  - **Execution Semantics**: Prototype Console observes task completion; it does not cause or gate task completion.
 
 ---
 
@@ -200,6 +201,6 @@ Tiny Agent Lab enforces four core truthfulness rules:
 
 1. **`Configured ≠ Healthy`**: Static presence in `INFERENCE_PROVIDER` proves only that credentials or configurations were syntactically present at startup. It does not indicate that the remote endpoint is reachable or healthy at execution time.
 2. **`Selected ≠ Successful`**: Being ranked as Candidate #1 by policy does not guarantee that inference will succeed. Live network errors, upstream capacity drops, and rate limits can occur immediately after selection.
-3. **`Unknown ≠ Healthy`**: A provider whose health probe times out, throws an exception, or fails to connect produces no health snapshot. Missing health is treated as unknown and excluded from selection. **The system never fabricates or assumes a healthy state.**
-4. **`1 Provider Invocation = 1 Telemetry Record`**: Telemetry is emitted on every actual attempt. If a provider is not invoked, zero telemetry is emitted for it. When candidate exhaustion occurs, every attempted provider already has its own attempt record; no synthetic or duplicate terminal attempt telemetry is created.
+3. **`Unknown ≠ Healthy`**: A provider whose health probe times out, throws an exception, or fails to connect produces no health snapshot. Missing health is treated as unknown and excluded from selection; missing snapshots are never treated as healthy. Coordinator-level probe timeouts or unhandled exceptions yield no snapshot and remain unknown; provider adapters may return explicit `UNAVAILABLE` snapshots.
+4. **`1 Provider Invocation = 1 Telemetry Record`**: Telemetry is emitted on every actual attempt. If a provider is not invoked (e.g., when zero eligible candidates exist), zero telemetry is emitted for it. When candidate exhaustion occurs, every attempted provider already has its own attempt record; no synthetic or duplicate terminal attempt telemetry is created.
 5. **No Fabricated State**: Token counts, health status, and failure summaries are never invented or guessed. Unknown values remain explicitly unknown.
