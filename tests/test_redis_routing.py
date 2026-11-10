@@ -3,7 +3,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from agent_contracts import TaskRequested
+from agent_contracts import InferenceExecutionTelemetry, TaskRequested
 from orchestrator.domain.capability import AgentCapability
 from orchestrator.infrastructure.redis_adapter import RedisGateway
 from research_agent.domain.models import ResearchResult
@@ -275,5 +275,155 @@ async def test_redis_gateway_agents_legacy_fallback() -> None:
     assert agents[0]["providers"] == {}
     assert agents[0]["state"] == "idle"
 
+
+# ==============================================================================
+# RedisGateway Task Inference Telemetry Query Tests (Issue #18 Increment 1)
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_task_inference_telemetry_newest_successful() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    telem_cf_failed = InferenceExecutionTelemetry(
+        provider_name="cloudflare",
+        attempt_index=0,
+        latency_ms=120.0,
+        status="fallback_eligible_failure",
+        failure_reason="provider_unavailable_error",
+    )
+    telem_gemini_success = InferenceExecutionTelemetry(
+        provider_name="gemini",
+        attempt_index=1,
+        latency_ms=85.5,
+        status="succeeded",
+        model_name="gemini-2.5-flash",
+        finish_reason="stop",
+    )
+
+    # xrevrange returns newest entries first
+    gateway._client.xrevrange = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            (
+                "1000-2",
+                {
+                    "task_id": "task-test-1",
+                    "inference_telemetry": json.dumps(telem_gemini_success.to_dict()),
+                },
+            ),
+            (
+                "1000-1",
+                {
+                    "task_id": "task-test-1",
+                    "inference_telemetry": json.dumps(telem_cf_failed.to_dict()),
+                },
+            ),
+        ]
+    )
+
+    result = await gateway.task_inference_telemetry("task-test-1")
+    assert result is not None
+    assert result["task_id"] == "task-test-1"
+    assert result["inference_telemetry"]["provider_name"] == "gemini"
+    assert result["inference_telemetry"]["status"] == "succeeded"
+    assert result["inference_telemetry"]["attempt_index"] == 1
+    assert result["inference_telemetry"]["latency_ms"] == 85.5
+    gateway._client.xrevrange.assert_awaited_once_with("agent.events")
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_task_inference_telemetry_ignores_failed() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    telem_failed = InferenceExecutionTelemetry(
+        provider_name="cloudflare",
+        attempt_index=0,
+        latency_ms=120.0,
+        status="fallback_eligible_failure",
+        failure_reason="provider_unavailable_error",
+    )
+    gateway._client.xrevrange = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            (
+                "1000-1",
+                {
+                    "task_id": "task-test-failed",
+                    "inference_telemetry": json.dumps(telem_failed.to_dict()),
+                },
+            )
+        ]
+    )
+
+    result = await gateway.task_inference_telemetry("task-test-failed")
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_task_inference_telemetry_ignores_other_tasks() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    telem_success = InferenceExecutionTelemetry(
+        provider_name="gemini",
+        attempt_index=0,
+        latency_ms=90.0,
+        status="succeeded",
+        model_name="gemini-2.5-flash",
+    )
+    gateway._client.xrevrange = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            (
+                "1000-1",
+                {
+                    "task_id": "task-other",
+                    "inference_telemetry": json.dumps(telem_success.to_dict()),
+                },
+            )
+        ]
+    )
+
+    result = await gateway.task_inference_telemetry("task-target")
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_task_inference_telemetry_handles_malformed_and_invalid() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.xrevrange = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            # Malformed JSON
+            (
+                "1000-3",
+                {
+                    "task_id": "task-malformed",
+                    "inference_telemetry": "{invalid json",
+                },
+            ),
+            # Non-dict JSON (e.g. JSON array or int)
+            (
+                "1000-2",
+                {
+                    "task_id": "task-malformed",
+                    "inference_telemetry": json.dumps(["not", "an", "object"]),
+                },
+            ),
+            # Dict missing required fields according to InferenceExecutionTelemetry
+            (
+                "1000-1",
+                {
+                    "task_id": "task-malformed",
+                    "inference_telemetry": json.dumps({"incomplete": "dict"}),
+                },
+            ),
+        ]
+    )
+
+    result = await gateway.task_inference_telemetry("task-malformed")
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_task_inference_telemetry_returns_none_when_empty() -> None:
+    gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.xrevrange = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    result = await gateway.task_inference_telemetry("task-any")
+    assert result is None
 
 

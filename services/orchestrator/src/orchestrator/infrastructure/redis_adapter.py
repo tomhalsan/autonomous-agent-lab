@@ -2,7 +2,12 @@ import json
 from typing import Any
 
 import redis.asyncio as redis
-from agent_contracts import AgentEvent, RoutingDecision, TaskRequested
+from agent_contracts import (
+    AgentEvent,
+    InferenceExecutionTelemetry,
+    RoutingDecision,
+    TaskRequested,
+)
 
 from orchestrator.domain.capability import AgentCapability
 
@@ -120,6 +125,34 @@ class RedisGateway:
                 except (json.JSONDecodeError, TypeError):
                     pass
 
+        return None
+
+    async def task_inference_telemetry(self, task_id: str) -> dict[str, Any] | None:
+        rows = await self._client.xrevrange("agent.events")
+        for _event_id, fields in rows:
+            if fields.get("task_id") != task_id:
+                continue
+            raw_telem = fields.get("inference_telemetry")
+            if not raw_telem:
+                continue
+            try:
+                telem_data = (
+                    json.loads(raw_telem) if isinstance(raw_telem, str) else raw_telem
+                )
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(telem_data, dict):
+                continue
+            validated: InferenceExecutionTelemetry | None = None
+            try:
+                validated = InferenceExecutionTelemetry.from_dict(telem_data)
+            except (KeyError, TypeError, ValueError):
+                pass
+            if validated is not None and validated.status == "succeeded":
+                return {
+                    "task_id": task_id,
+                    "inference_telemetry": validated.to_dict(),
+                }
         return None
 
     async def publish(self, event: AgentEvent) -> None:

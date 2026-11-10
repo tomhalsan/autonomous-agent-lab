@@ -63,6 +63,34 @@ class FakeStateReader:
                 return json.loads(rd) if isinstance(rd, str) else rd
         return None
 
+    async def task_inference_telemetry(self, task_id: str) -> dict[str, Any] | None:
+        for event in self.events_data:
+            if event.get("task_id") == task_id and event.get("inference_telemetry"):
+                raw_telem = event["inference_telemetry"]
+                import json
+
+                try:
+                    telem = (
+                        json.loads(raw_telem) if isinstance(raw_telem, str) else raw_telem
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(telem, dict):
+                    continue
+                from agent_contracts import InferenceExecutionTelemetry
+
+                validated = None
+                try:
+                    validated = InferenceExecutionTelemetry.from_dict(telem)
+                except (KeyError, TypeError, ValueError):
+                    pass
+                if validated is not None and validated.status == "succeeded":
+                    return {
+                        "task_id": task_id,
+                        "inference_telemetry": validated.to_dict(),
+                    }
+        return None
+
 
 class FakeResultReader:
     def __init__(
@@ -267,4 +295,54 @@ async def test_get_task_result_query_not_found() -> None:
 
     result = await query.execute("non-existent-task")
     assert result is None
+
+
+@pytest.mark.anyio
+async def test_get_task_inference_telemetry_query_success() -> None:
+    from orchestrator.application.queries import GetTaskInferenceTelemetry
+
+    expected_telem = {
+        "provider_name": "cloudflare",
+        "attempt_index": 0,
+        "latency_ms": 94.3,
+        "status": "succeeded",
+        "model_name": "@cf/meta/llama-3.1-8b-instruct",
+        "finish_reason": "stop",
+    }
+    reader = FakeStateReader(
+        events_data=[
+            {
+                "task_id": "task-telemetry-1",
+                "inference_telemetry": expected_telem,
+            }
+        ]
+    )
+    query = GetTaskInferenceTelemetry(reader)
+    result = await query.execute("task-telemetry-1")
+    assert result is not None
+    assert result["task_id"] == "task-telemetry-1"
+    assert result["inference_telemetry"]["provider_name"] == "cloudflare"
+    assert result["inference_telemetry"]["status"] == "succeeded"
+
+
+@pytest.mark.anyio
+async def test_get_task_inference_telemetry_query_not_found() -> None:
+    from orchestrator.application.queries import GetTaskInferenceTelemetry
+
+    reader = FakeStateReader(events_data=[])
+    query = GetTaskInferenceTelemetry(reader)
+    result = await query.execute("task-missing")
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_get_task_inference_telemetry_query_empty_task_id_raises() -> None:
+    from orchestrator.application.queries import GetTaskInferenceTelemetry
+
+    reader = FakeStateReader()
+    query = GetTaskInferenceTelemetry(reader)
+    with pytest.raises(ValueError, match="task_id must not be empty"):
+        await query.execute("")
+    with pytest.raises(ValueError, match="task_id must not be empty"):
+        await query.execute("   ")
 
