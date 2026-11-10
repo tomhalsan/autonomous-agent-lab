@@ -204,3 +204,79 @@ Tiny Agent Lab enforces four core truthfulness rules:
 3. **`Unknown ≠ Healthy`**: A provider whose health probe times out, throws an exception, or fails to connect produces no health snapshot. Missing health is treated as unknown and excluded from selection; missing snapshots are never treated as healthy. Coordinator-level probe timeouts or unhandled exceptions yield no snapshot and remain unknown; provider adapters may return explicit `UNAVAILABLE` snapshots.
 4. **`1 Provider Invocation = 1 Telemetry Record`**: Telemetry is emitted on every actual attempt. If a provider is not invoked (e.g., when zero eligible candidates exist), zero telemetry is emitted for it. When candidate exhaustion occurs, every attempted provider already has its own attempt record; no synthetic or duplicate terminal attempt telemetry is created.
 5. **No Fabricated State**: Token counts, health status, and failure summaries are never invented or guessed. Unknown values remain explicitly unknown.
+
+---
+
+## Release v0.4.0 Deployment Validation (home-core Baseline)
+
+### Deployment Target & Environment
+- **Host**: `home-core` (bare-metal home server).
+- **Deployment**: Docker Compose (`compose.yaml`).
+- **Deployed Branch**: `main` (Release `v0.4.0`).
+- **Prototype Console**: Visibly identifies `v0.4.0`.
+- **Configured External Providers**:
+  - **Inference**: Cloudflare Workers AI only (`INFERENCE_PROVIDER=cloudflare`, model `@cf/meta/llama-3.1-8b-instruct`).
+  - **Research Retrieval**: Tavily Search API (`RESEARCH_EXECUTOR=tavily`).
+  - **Failure Isolation**: No stub or secondary inference provider was added to mask failures; Cloudflare operated as the single production inference provider under live evaluation.
+
+### Operational Validation Completed
+
+#### 1. General Worker
+- **Task Routing**: Correctly routed incoming `GENERAL` tasks to the General Worker (`worker-1`).
+- **Health & Selection**: Cloudflare health probe evaluated the configured model alias and remained the single eligible inference provider (`DEGRADED` status preserving execution eligibility).
+- **Inference Execution**: Three consecutive General Worker inference tasks completed successfully end-to-end.
+- **Observed Inference Latencies (Raw Provider Boundary)**:
+  - Task 1: `809.0 ms`
+  - Task 2: `921.4 ms`
+  - Task 3: `717.8 ms`
+- **Telemetry Presentation**: Successful attempt telemetry was emitted to `agent.events` and presented in the Prototype Console telemetry card.
+- **Attempt Tracking**: Each successful run was attempt 1 (`attempt_index=0`, displayed as attempt 1).
+- **Fallback Verification**: Zero fallback transitions occurred, as primary inference succeeded on the first attempt.
+- **Lifecycle Cleanliness**: General Worker transitioned cleanly from `working` back to `idle` after each task completion.
+
+#### 2. Research Agent
+- **Task Routing**: Correctly routed an incoming natural-language `RESEARCH` task to the specialized Research Agent (`research-agent-1`).
+- **Grounded Retrieval**: Tavily search executed successfully, retrieving relevant public web evidence.
+- **Synthesis Execution**: Cloudflare synthesis completed successfully with evidence conditioning.
+- **Observed Synthesis Latency (Raw Provider Boundary)**: `2764.0 ms`.
+- **Attempt Tracking**: Completed on attempt 1.
+- **Result Presentation**: Grounded research findings with structured numbered findings and clickable source citations were persisted to `ResultStore` and presented in the Prototype Console.
+- **Lifecycle Cleanliness**: Research Agent returned cleanly to `idle` upon task completion.
+
+### Validation Boundary
+- **Cross-Provider Fallback Not Exercised**: Live cross-provider fallback traversal was **not** exercised during this deployment run on `home-core`.
+- **Single-Provider Configuration**: Cloudflare Workers AI was intentionally the only configured inference provider during this validation exercise.
+- **Demonstrated Scope**: This deployment validation proves the single-provider selection, execution, telemetry, General Worker, and Research Agent operational paths.
+- **Multi-Provider Fallback Coverage**: Multi-provider fallback behavior remains covered by deterministic automated simulation suites, but was not demonstrated by this live deployment exercise.
+
+### Deployment Defects Discovered and Resolved
+
+Live deployment on `home-core` surfaced real integration defects that were isolated, resolved, and verified during post-release deployment validation:
+
+1. **Issue #153 / PR #154 — Container Policy Dependency Packaging**:
+   - **Defect**: Agent runtime containers omitted `packages/policy/src` and `/app/policy`, causing runtime crash:
+     ```
+     ModuleNotFoundError: No module named 'agent_policy'
+     ```
+   - **Resolution**: Packaged policy dependency in Worker and Research Agent Docker images (`Dockerfile`), configured `PYTHONPATH`, and added container-boundary CI validation in `.github/workflows/ci.yml`.
+
+2. **Issue #155 / PR #156 — False-Negative Cloudflare Model Health Classification**:
+   - **Defect**: For configured model `@cf/meta/llama-3.1-8b-instruct`, Cloudflare catalog search returned only `@cf/meta/llama-3.1-8b-instruct-fp8` (with UUID id), while schema lookup for the base alias returned HTTP 404 / code 6002 (`Model schema not found`). Schema lookup for the FP8 variant succeeded, and direct inference against the configured base alias succeeded (HTTP 200). The probe previously classified the model as `UNAVAILABLE` due to the lack of exact catalog metadata.
+   - **Resolution**: Retained strict exact model matching (never treating related variants like `-fp8` as equivalent to the configured model). Exact catalog or schema confirmation reports `HEALTHY`. Authenticated and reachable but metadata-unverified executable aliases report `DEGRADED` (`is_available=True`), truthfully reflecting unverified metadata while preserving runtime execution eligibility.
+
+3. **Issue #157 / PR #158 — Configurable Health Probe Timeout**:
+   - **Defect**: Cloudflare's two-stage zero-generation probe (catalog search + schema lookup) took 0.620s–0.827s in live measurements. Normal network variance occasionally exceeded the hardcoded 1.0-second coordinator timeout:
+     ```
+     Health probe timed out for provider cloudflare (timeout=1.00s)
+     ```
+     This cancelled the probe before it could return the intended `DEGRADED`-but-eligible snapshot, resulting in zero eligible providers.
+   - **Resolution**: Introduced unified `HEALTH_PROBE_TIMEOUT_SECONDS` configuration with a realistic 3.0s default across Worker and Research Agent, strict finite positive validation, explicit coordinator wiring, and preserved concurrent multi-provider probing.
+
+### Deployment Testing Lessons
+- **Validation Layers**: `pytest` and `Ruff` remained necessary validation layers for contract compliance, pure policy invariants, and deterministic simulation.
+- **Runtime Boundary Gaps**: The previously green host-based tests and lint suites did not initially exercise every runtime and environment boundary encountered on `home-core`.
+- **Three Discovered Gap Classes**: Deployment validation exposed three distinct classes of gaps:
+  1. *Container Packaging*: Host tests ran against the local development environment without validating container-image filesystem structures (`PYTHONPATH` and copied package roots).
+  2. *Real External-Provider Metadata Behavior*: Test doubles could not anticipate Cloudflare's runtime model aliasing where direct generation succeeds but catalog and schema endpoints return variant names or 404 responses.
+  3. *Network-Sensitive Timeout Assumptions*: Local and mock execution did not reflect the real-world network latency and multi-endpoint overhead of remote provider metadata probing under network variance.
+- **Continuous Improvement**: Container-boundary CI coverage was added for the packaging defect, and these empirical findings should inform the subsequent test-strategy review without disparaging `pytest`, `Ruff`, mocks, or automated testing generally.
