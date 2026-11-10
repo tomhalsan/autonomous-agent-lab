@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from agent_contracts import (
+    DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS,
     AgentEvent,
     AllInferenceProvidersFailedError,
     FallbackEligibleInferenceError,
@@ -19,6 +20,7 @@ from agent_contracts import (
     InferenceProviderHealth,
     NonFallbackInferenceError,
     ProviderFailureSummary,
+    parse_health_probe_timeout,
 )
 from agent_policy import (
     DeterministicProviderSelector,
@@ -36,8 +38,6 @@ from research_agent.application.ports import (
 from research_agent.domain.models import SynthesisResult
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS: float = 1.0
 
 
 def _sanitize_failure_reason(reason: str | None, default: str) -> str:
@@ -308,14 +308,9 @@ class ResearchFallbackCoordinator:
     ) -> None:
         if not isinstance(agent_id, str) or not agent_id.strip():
             raise ValueError("agent_id must be a non-empty string")
-        if (
-            type(probe_timeout_seconds) is bool
-            or not isinstance(probe_timeout_seconds, (int, float))
-            or probe_timeout_seconds <= 0
-        ):
-            raise ValueError(
-                f"probe_timeout_seconds must be a positive number, got {probe_timeout_seconds!r}"
-            )
+        self.probe_timeout_seconds = parse_health_probe_timeout(
+            probe_timeout_seconds, default=DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS
+        )
         if not callable(clock):
             raise TypeError(
                 f"clock must be a Callable[[], int], got {type(clock).__name__}"
@@ -325,7 +320,6 @@ class ResearchFallbackCoordinator:
         self.bus = bus
         self.preferences = parse_provider_priority(None, default=preferences)
         self.selector = selector or DeterministicProviderSelector()
-        self.probe_timeout_seconds = float(probe_timeout_seconds)
         self._clock = clock
 
         normalized_providers: dict[str, RuntimeInferenceProvider] = {}

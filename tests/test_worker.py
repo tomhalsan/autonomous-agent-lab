@@ -744,6 +744,61 @@ async def test_run_worker_multi_provider_startup(
 
 
 @pytest.mark.anyio
+async def test_run_worker_health_probe_timeout_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1. Default when unset is 3.0
+    monkeypatch.delenv("HEALTH_PROBE_TIMEOUT_SECONDS", raising=False)
+    with patch("worker.main.RedisBus") as mock_bus_cls, patch(
+        "worker.main.WorkerFallbackCoordinator"
+    ) as mock_coord_cls, patch("worker.main.TaskProcessor"):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        from worker.main import run_worker
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_worker()
+
+        assert mock_coord_cls.call_args[1]["probe_timeout_seconds"] == 3.0
+
+    # 2. Configured valid env var
+    monkeypatch.setenv("HEALTH_PROBE_TIMEOUT_SECONDS", "4.5")
+    with patch("worker.main.RedisBus") as mock_bus_cls, patch(
+        "worker.main.WorkerFallbackCoordinator"
+    ) as mock_coord_cls, patch("worker.main.TaskProcessor"):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_worker()
+
+        assert mock_coord_cls.call_args[1]["probe_timeout_seconds"] == 4.5
+
+    # 3. Direct argument override
+    with patch("worker.main.RedisBus") as mock_bus_cls, patch(
+        "worker.main.WorkerFallbackCoordinator"
+    ) as mock_coord_cls, patch("worker.main.TaskProcessor"):
+        mock_bus = AsyncMock()
+        mock_bus_cls.return_value = mock_bus
+        mock_bus.next_task.side_effect = asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_worker(health_probe_timeout=2.25)
+
+        assert mock_coord_cls.call_args[1]["probe_timeout_seconds"] == 2.25
+
+    # 4. Invalid env var fails startup cleanly
+    monkeypatch.setenv("HEALTH_PROBE_TIMEOUT_SECONDS", "invalid")
+    with patch("worker.main.RedisBus") as mock_bus_cls, patch("worker.main.TaskProcessor"):
+        with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+            await run_worker()
+        mock_bus_cls.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_run_worker_missing_secondary_credentials_fails_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

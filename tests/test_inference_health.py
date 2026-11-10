@@ -4,8 +4,10 @@ from typing import Any, Self
 import httpx
 import pytest
 from agent_contracts import (
+    DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS,
     InferenceHealthStatus,
     InferenceProviderHealth,
+    parse_health_probe_timeout,
 )
 from agent_infrastructure import (
     CloudflareHealthProbe,
@@ -83,6 +85,75 @@ def test_inference_health_status_properties() -> None:
     assert InferenceHealthStatus.RATE_LIMITED.is_constrained is True
     assert InferenceHealthStatus.QUOTA_EXHAUSTED.is_constrained is True
     assert InferenceHealthStatus.UNAVAILABLE.is_constrained is False
+
+
+def test_parse_health_probe_timeout_defaults_and_explicit() -> None:
+    assert DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS == 3.0
+    assert parse_health_probe_timeout(None) == 3.0
+    assert parse_health_probe_timeout("") == 3.0
+    assert parse_health_probe_timeout("   ") == 3.0
+    assert parse_health_probe_timeout(None, default=5.0) == 5.0
+    assert parse_health_probe_timeout("", default=5.0) == 5.0
+
+    assert parse_health_probe_timeout(3.0) == 3.0
+    assert parse_health_probe_timeout(5) == 5.0
+    assert parse_health_probe_timeout("2.5") == 2.5
+    assert parse_health_probe_timeout(" 10 ") == 10.0
+    assert parse_health_probe_timeout(0.1) == 0.1
+
+
+def test_parse_health_probe_timeout_invalid_values() -> None:
+    # Zero
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout(0)
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("0")
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout(0.0)
+
+    # Negative
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout(-1)
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("-1.5")
+
+    # Booleans
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout(True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout(False)  # type: ignore[arg-type]
+
+    # Malformed non-numeric
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("abc")
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("10s")
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout([])  # type: ignore[arg-type]
+
+    # NaN
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout(float("nan"))
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("nan")
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("NaN")
+
+    # Positive Infinity
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout(float("inf"))
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("inf")
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("+infinity")
+
+    # Negative Infinity
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout(float("-inf"))
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("-inf")
+    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+        parse_health_probe_timeout("-infinity")
 
 
 def test_inference_provider_health_defaults_and_immutability() -> None:

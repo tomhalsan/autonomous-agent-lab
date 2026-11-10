@@ -7,6 +7,7 @@ from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
     HeartbeatRunner,
+    parse_health_probe_timeout,
     parse_heartbeat_interval,
 )
 from agent_policy import parse_provider_priority
@@ -26,7 +27,10 @@ logging.basicConfig(
 logger = logging.getLogger("research_agent")
 
 
-async def run_research_agent(heartbeat_interval: float | None = None) -> None:
+async def run_research_agent(
+    heartbeat_interval: float | None = None,
+    health_probe_timeout: float | None = None,
+) -> None:
     agent_id = os.getenv("AGENT_ID", "research-agent-1")
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     task_queue = os.getenv("TASK_QUEUE", "agent.tasks.research")
@@ -36,6 +40,11 @@ async def run_research_agent(heartbeat_interval: float | None = None) -> None:
         heartbeat_interval
         if heartbeat_interval is not None
         else parse_heartbeat_interval(os.getenv("HEARTBEAT_INTERVAL_SECONDS"))
+    )
+    probe_timeout = (
+        health_probe_timeout
+        if health_probe_timeout is not None
+        else parse_health_probe_timeout(os.getenv("HEALTH_PROBE_TIMEOUT_SECONDS"))
     )
 
     executor = create_research_executor(executor_name)
@@ -50,6 +59,7 @@ async def run_research_agent(heartbeat_interval: float | None = None) -> None:
         bus=bus,
         preferences=preferences,
         providers=providers,
+        probe_timeout_seconds=probe_timeout,
     )
     processor = ResearchProcessor(
         agent_id,
@@ -79,12 +89,13 @@ async def run_research_agent(heartbeat_interval: float | None = None) -> None:
     )
 
     logger.info(
-        "Initializing research agent %s on queue %s with executor %s and inference provider %s (heartbeat: %.1fs)...",
+        "Initializing research agent %s on queue %s with executor %s and inference provider %s (heartbeat: %.1fs, probe_timeout: %.1fs)...",
         agent_id,
         task_queue,
         executor_name,
         inference_provider_name,
         interval,
+        probe_timeout,
     )
 
     try:

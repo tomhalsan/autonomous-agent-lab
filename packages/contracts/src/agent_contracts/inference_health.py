@@ -1,9 +1,44 @@
 import json
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 from .availability import now_iso, parse_timestamp
+
+DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS: float = 3.0
+
+
+def parse_health_probe_timeout(
+    value: str | float | None,
+    default: float = DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS,
+) -> float:
+    """Validate and parse an inference health probe timeout in seconds.
+
+    Must be a positive, finite number.
+    Rejects malformed, zero, negative, NaN, infinity, and boolean values cleanly.
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return default
+    if type(value) is bool:
+        raise ValueError(
+            f"probe_timeout_seconds must be a positive number, got {value!r}"
+        )
+    try:
+        val = float(value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"probe_timeout_seconds must be a positive number, got {value!r}"
+        ) from exc
+    if not math.isfinite(val) or val <= 0:
+        raise ValueError(
+            f"probe_timeout_seconds must be a positive number, got {val!r}"
+        )
+    return val
 
 
 class InferenceHealthStatus(str, Enum):

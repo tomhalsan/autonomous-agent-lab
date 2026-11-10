@@ -18,7 +18,12 @@ from .errors import (
     ProviderFailureSummary,
 )
 from .heartbeat import HeartbeatRunner, parse_heartbeat_interval
-from .inference_health import InferenceHealthStatus, InferenceProviderHealth
+from .inference_health import (
+    DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS,
+    InferenceHealthStatus,
+    InferenceProviderHealth,
+    parse_health_probe_timeout,
+)
 from .messages import (
     AgentEvent,
     FallbackTransition,
@@ -38,6 +43,7 @@ from .tools import (
 from .version import __version__
 
 __all__ = [
+    "DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS",
     "AgentAvailability",
     "AgentAvailabilityState",
     "AgentCandidate",
@@ -70,6 +76,7 @@ __all__ = [
     "__version__",
     "evaluate_agent_record",
     "evaluate_availability",
+    "parse_health_probe_timeout",
     "parse_heartbeat_interval",
     "parse_timestamp",
 ]
