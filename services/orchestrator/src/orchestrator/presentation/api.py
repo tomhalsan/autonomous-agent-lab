@@ -23,6 +23,7 @@ from orchestrator.application.queries import (
     GetAgentStates,
     GetRecentEvents,
     GetRoutingDecision,
+    GetTaskInferenceTelemetry,
     GetTaskResult,
 )
 from orchestrator.application.use_cases import SubmitTask
@@ -99,6 +100,24 @@ async def task_routing(task_id: str, request: Request) -> dict[str, Any]:
     return decision
 
 
+async def task_telemetry(task_id: str, request: Request) -> dict[str, Any]:
+    get_task_inference_telemetry: GetTaskInferenceTelemetry | None = (
+        request.app.state.get_task_inference_telemetry
+    )
+    if get_task_inference_telemetry is None:
+        raise HTTPException(status_code=503, detail="Task telemetry reader not configured")
+    try:
+        telemetry = await get_task_inference_telemetry.execute(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if telemetry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Inference telemetry for task '{task_id}' not found",
+        )
+    return telemetry
+
+
 async def candidates(capability: str, request: Request) -> list[dict[str, Any]]:
     find_candidates: FindCandidatesByCapability = request.app.state.find_candidates
     try:
@@ -167,6 +186,9 @@ def create_app(
     get_recent_events = GetRecentEvents(reader) if reader else None
     get_task_result = GetTaskResult(results)
     get_routing_decision = GetRoutingDecision(reader) if reader else None
+    get_task_inference_telemetry = (
+        GetTaskInferenceTelemetry(reader) if reader else None
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -183,6 +205,7 @@ def create_app(
     app.state.get_recent_events = get_recent_events
     app.state.get_task_result = get_task_result
     app.state.get_routing_decision = get_routing_decision
+    app.state.get_task_inference_telemetry = get_task_inference_telemetry
     app.state.find_candidates = find_candidates_query
 
     static_dir = Path(__file__).parent / "static"
@@ -206,6 +229,7 @@ def create_app(
     app.add_api_route("/api/events", events, methods=["GET"])
     app.add_api_route("/api/tasks/{task_id}/result", task_result, methods=["GET"])
     app.add_api_route("/api/tasks/{task_id}/routing", task_routing, methods=["GET"])
+    app.add_api_route("/api/tasks/{task_id}/telemetry", task_telemetry, methods=["GET"])
     app.add_api_route("/api/candidates", candidates, methods=["GET"])
 
     return app

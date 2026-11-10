@@ -13,6 +13,7 @@ from orchestrator.presentation.api import (
     events,
     health,
     task_result,
+    task_telemetry,
 )
 from pydantic import ValidationError
 from starlette.requests import Request
@@ -580,4 +581,354 @@ async def test_dashboard_html_clear_button_does_not_clear_task_state_or_observab
     assert "stopResultPolling" not in clear_btn_block
     assert "agentsContainer" not in clear_btn_block
     assert "eventsContainer" not in clear_btn_block
+
+
+# ==============================================================================
+# Issue #18 Increment 1: Task-Result Inference Provider Presentation Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_dashboard_html_contains_inference_metadata_structure() -> None:
+    html = await dashboard()
+
+    # Core metadata container in Current Task / Results card
+    assert 'id="task-inference-meta"' in html
+    assert 'class="inference-meta-bar"' in html
+    assert 'style="display: none;"' in html
+    assert 'aria-live="polite"' in html
+
+    # Styling and subcomponent classes
+    assert "inference-meta-header" in html
+    assert "inference-meta-group" in html
+    assert "inference-meta-item" in html
+    assert "meta-label" in html
+    assert "meta-val" in html
+
+    # Script DOM binding
+    assert "taskInferenceMetaEl = document.getElementById('task-inference-meta')" in html
+
+    # Function declarations
+    assert "clearInferenceMeta" in html
+    assert "renderInferenceMeta" in html
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_telemetry_endpoint_called_by_result_polling() -> None:
+    html = await dashboard()
+
+    poll_fn = html.split("async function pollTaskResult(")[1].split("// --- Task Submission ---")[0]
+
+    # Directly queries task-scoped telemetry endpoint
+    assert "fetch(`/api/tasks/${encodeURIComponent(taskId)}/telemetry`)" in poll_fn
+    # Guards execution against stale async responses
+    assert "if (telemRes.ok && activeTaskId === taskId)" in poll_fn
+    assert "renderInferenceMeta(telem)" in poll_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_result_polling_does_not_call_events_stream() -> None:
+    html = await dashboard()
+
+    poll_fn = html.split("async function pollTaskResult(")[1].split("// --- Task Submission ---")[0]
+
+    # Task polling must not query /api/events or stream events
+    assert "/api/events" not in poll_fn
+    assert "syncEventsForTask" not in html
+    assert "findSuccessfulTelemetry" not in html
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_activity_timeline_retains_events_stream() -> None:
+    html = await dashboard()
+
+    refresh_fn = html.split("async function refreshSystem() {")[1].split("function timeAgo(")[0]
+
+    # Activity Timeline retains polling /api/events?limit=25
+    assert "fetch('/api/events?limit=25')" in refresh_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_provider_from_telemetry_not_configuration() -> None:
+    html = await dashboard()
+
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+
+    # Provider comes directly from telem.provider_name
+    assert "telem.provider_name" in render_fn
+    assert '<span class="meta-label">Provider:</span>' in render_fn
+    assert '<strong class="meta-val">${esc(providerName)}</strong>' in render_fn
+
+    # Must not reference configured preferences or agent card providers
+    assert "a.providers" not in render_fn
+    assert "preferences" not in render_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_model_displayed_when_available() -> None:
+    html = await dashboard()
+
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+
+    # Displays model when available
+    assert "typeof telem.model_name === 'string' && telem.model_name.trim()" in render_fn
+    assert '<span class="meta-label">Model:</span>' in render_fn
+    assert '<span class="meta-val">${esc(telem.model_name.trim())}</span>' in render_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_missing_model_omitted_not_default() -> None:
+    html = await dashboard()
+
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+
+    # When model is missing, it must not fabricate "default"
+    assert '"default"' not in render_fn
+    assert "'default'" not in render_fn
+    assert "|| 'default'" not in render_fn
+    assert '|| "default"' not in render_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_latency_displayed_when_available() -> None:
+    html = await dashboard()
+
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+
+    # Validates finite non-negative latency
+    assert "typeof telem.latency_ms === 'number' && Number.isFinite(telem.latency_ms) && telem.latency_ms >= 0" in render_fn
+    assert '<span class="meta-label">Latency:</span>' in render_fn
+    assert '<span class="meta-val">${esc(formattedLatency)} ms</span>' in render_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_attempt_index_displays_one_based() -> None:
+    html = await dashboard()
+
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+
+    # Validates integer attempt index and maps zero-based attempt to human-friendly 1-based attempt
+    assert "typeof telem.attempt_index === 'number' && Number.isInteger(telem.attempt_index) && telem.attempt_index >= 0" in render_fn
+    assert '<span class="meta-label">Attempt:</span>' in render_fn
+    assert "${telem.attempt_index + 1}" in render_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_telemetry_from_another_task_isolated() -> None:
+    html = await dashboard()
+
+    poll_fn = html.split("async function pollTaskResult(")[1].split("// --- Task Submission ---")[0]
+
+    # Result polling ensures activeTaskId matches before applying telemetry
+    assert "if (telemRes.ok && activeTaskId === taskId)" in poll_fn
+    assert "renderInferenceMeta(telem)" in poll_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_client_handles_malformed_telemetry_payload_safely() -> None:
+    html = await dashboard()
+
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+    poll_fn = html.split("async function pollTaskResult(")[1].split("// --- Task Submission ---")[0]
+
+    # Validates structure before rendering
+    assert "if (!telem || typeof telem !== 'object' || Array.isArray(telem)) {" in render_fn
+    assert "clearInferenceMeta();" in render_fn
+
+    # Polling validates envelope object shape
+    assert "envelope && typeof envelope === 'object' && !Array.isArray(envelope)" in poll_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_missing_telemetry_preserves_result_rendering() -> None:
+    html = await dashboard()
+
+    poll_fn = html.split("async function pollTaskResult(")[1].split("// --- Task Submission ---")[0]
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+
+    # Output formatting occurs before and independently of telemetry rendering
+    output_idx = poll_fn.index("safeFormatResult(data.output)")
+    fetch_idx = poll_fn.index("fetch(`/api/tasks/${encodeURIComponent(taskId)}/telemetry`)")
+    assert output_idx < fetch_idx
+
+    # If telemetry is null/missing, renderInferenceMeta safely clears/hides the container
+    assert "if (!telem || typeof telem !== 'object' || Array.isArray(telem)) {" in render_fn
+    assert "clearInferenceMeta();" in render_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_reset_behavior_clears_stale_metadata() -> None:
+    html = await dashboard()
+
+    # Verify clearInferenceMeta() resets display and content
+    clear_fn = html.split("function clearInferenceMeta(")[1].split("function renderInferenceMeta(")[0]
+    assert "taskInferenceMetaEl.style.display = 'none'" in clear_fn
+    assert "taskInferenceMetaEl.innerHTML = ''" in clear_fn
+
+    # Form submission clears metadata
+    submit_block = html.split("taskForm.onsubmit = async (ev) => {")[1].split("const response = await fetch('/api/tasks'")[0]
+    assert "clearInferenceMeta();" in submit_block
+
+    # Routing unavailable clears metadata
+    unavail_block = html.split("function renderRoutingUnavailable(")[1].split("pipelineStepperEl.innerHTML")[0]
+    assert "clearInferenceMeta();" in unavail_block
+
+    # Failed task observation clears metadata
+    failed_block = html.split("if (status === 'failed') {")[1].split("routingStatusEl.innerHTML")[0]
+    assert "clearInferenceMeta();" in failed_block
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_dynamic_content_safely_escaped() -> None:
+    html = await dashboard()
+
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+    pipeline_fn = html.split("function renderRoutingPipeline(")[1].split("routingRationaleEl.className")[0]
+
+    # Dynamic fields are passed through esc()
+    assert "${esc(providerName)}" in render_fn
+    assert "${esc(telem.model_name.trim())}" in render_fn
+    assert "${esc(formattedLatency)}" in render_fn
+    assert "${esc(providerName)}" in pipeline_fn
+
+
+@pytest.mark.anyio
+async def test_inference_metadata_narrow_screen_safeguards() -> None:
+    html = await dashboard()
+
+    meta_bar_css = html.split(".inference-meta-bar {")[1].split("}")[0]
+    meta_group_css = html.split(".inference-meta-group {")[1].split("}")[0]
+    meta_val_css = html.split(".inference-meta-item .meta-val {")[1].split("}")[0]
+
+    # Flex wrapping to accommodate narrow screens
+    assert "flex-wrap: wrap;" in meta_bar_css
+    assert "flex-wrap: wrap;" in meta_group_css
+
+    # Word break to prevent long model names from overflowing
+    assert "word-break: break-all;" in meta_val_css
+    assert "overflow-wrap: anywhere;" in meta_val_css
+
+
+@pytest.mark.anyio
+async def test_api_tasks_telemetry_success() -> None:
+    telem = {
+        "provider_name": "cloudflare",
+        "attempt_index": 0,
+        "latency_ms": 115.2,
+        "status": "succeeded",
+        "model_name": "@cf/meta/llama-3.1-8b-instruct",
+        "finish_reason": "stop",
+    }
+    fake_reader = FakeStateReader(
+        events_data=[
+            {
+                "task_id": "task-telemetry-endpoint-1",
+                "inference_telemetry": telem,
+            }
+        ]
+    )
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+    res = await task_telemetry("task-telemetry-endpoint-1", request=req)
+
+    assert res["task_id"] == "task-telemetry-endpoint-1"
+    assert res["inference_telemetry"]["provider_name"] == "cloudflare"
+    assert res["inference_telemetry"]["model_name"] == "@cf/meta/llama-3.1-8b-instruct"
+    assert res["inference_telemetry"]["latency_ms"] == 115.2
+    assert res["inference_telemetry"]["attempt_index"] == 0
+    assert res["inference_telemetry"]["status"] == "succeeded"
+
+
+@pytest.mark.anyio
+async def test_api_tasks_telemetry_not_found() -> None:
+    fake_reader = FakeStateReader(events_data=[])
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+    with pytest.raises(HTTPException) as exc_info:
+        await task_telemetry("task-not-existing", request=req)
+    assert exc_info.value.status_code == 404
+    assert "not found" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_api_tasks_telemetry_empty_task_id_rejected() -> None:
+    fake_reader = FakeStateReader(events_data=[])
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+    with pytest.raises(HTTPException) as exc_info:
+        await task_telemetry("", request=req)
+    assert exc_info.value.status_code == 400
+    assert "task_id must not be empty" in exc_info.value.detail
+
+    with pytest.raises(HTTPException) as exc_info2:
+        await task_telemetry("   ", request=req)
+    assert exc_info2.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_api_tasks_telemetry_unconfigured_reader_returns_503() -> None:
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=None,
+        task_queue=FakeTaskQueue(),
+        result_reader=FakeResultReader(),
+    )
+    # Ensure get_task_inference_telemetry is None
+    app.state.get_task_inference_telemetry = None
+    req = Request({"type": "http", "app": app})
+    with pytest.raises(HTTPException) as exc_info:
+        await task_telemetry("task-any", request=req)
+    assert exc_info.value.status_code == 503
+    assert "not configured" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_api_events_serves_task_correlated_inference_telemetry() -> None:
+    from agent_contracts import AgentEvent, InferenceExecutionTelemetry
+
+    telem = InferenceExecutionTelemetry(
+        provider_name="cloudflare",
+        attempt_index=0,
+        latency_ms=115.2,
+        status="succeeded",
+        model_name="@cf/meta/llama-3.1-8b-instruct",
+        finish_reason="stop",
+    )
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state="working",
+        detail="Inference attempt 0 succeeded (cloudflare)",
+        task_id="task-increment-1-test",
+        inference_telemetry=telem,
+    )
+    fake_reader = FakeStateReader(events_data=[event.to_dict()])
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+    res = await events(request=req, limit=5)
+
+    assert len(res) == 1
+    ev = res[0]
+    assert ev["task_id"] == "task-increment-1-test"
+    telem_dict = (
+        json.loads(ev["inference_telemetry"])
+        if isinstance(ev["inference_telemetry"], str)
+        else ev["inference_telemetry"]
+    )
+    assert telem_dict["provider_name"] == "cloudflare"
+    assert telem_dict["model_name"] == "@cf/meta/llama-3.1-8b-instruct"
+    assert telem_dict["latency_ms"] == 115.2
+    assert telem_dict["attempt_index"] == 0
+    assert telem_dict["status"] == "succeeded"
 

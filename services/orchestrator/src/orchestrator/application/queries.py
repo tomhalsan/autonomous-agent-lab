@@ -51,6 +51,18 @@ class GetRoutingDecision:
         return await self._reader.routing_decision(str(task_id).strip())
 
 
+class GetTaskInferenceTelemetry:
+    """Query the newest successful inference execution telemetry envelope for a task ID."""
+
+    def __init__(self, reader: StateReader) -> None:
+        self._reader = reader
+
+    async def execute(self, task_id: str) -> dict[str, Any] | None:
+        if not task_id or not str(task_id).strip():
+            raise ValueError("task_id must not be empty")
+        return await self._reader.task_inference_telemetry(str(task_id).strip())
+
+
 class FindCandidatesByCapability:
     """Query registered agents providing a required capability and eligible for task dispatch."""
 

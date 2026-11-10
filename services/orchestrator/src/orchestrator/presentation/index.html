@@ -621,6 +621,59 @@
       background: var(--state-error-bg);
     }
 
+    /* Inference Execution Metadata (Issue #18 Increment 1) */
+    .inference-meta-bar {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 0.75rem;
+    }
+
+    .inference-meta-header {
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--accent-cyan);
+      font-weight: 600;
+    }
+
+    .inference-meta-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .inference-meta-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .inference-meta-item .meta-label {
+      color: var(--text-faint);
+      font-size: 0.6875rem;
+    }
+
+    .inference-meta-item .meta-val {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-main);
+      word-break: break-all;
+      overflow-wrap: anywhere;
+    }
+
     .result-container {
       background: var(--bg-input);
       border: 1px solid var(--border-subtle);
@@ -1066,6 +1119,9 @@
                 <div class="routing-diag-content" id="routing-diag-content"></div>
               </details>
             </div>
+
+            <!-- Inference Execution Metadata (Issue #18 Increment 1) -->
+            <div id="task-inference-meta" class="inference-meta-bar" style="display: none;" aria-live="polite"></div>
           </div>
 
           <div class="result-container" id="result-box">
@@ -1241,6 +1297,7 @@
     const routingRationaleEl = document.getElementById('routing-rationale');
     const routingDiagnosticsEl = document.getElementById('routing-diagnostics');
     const routingDiagContentEl = document.getElementById('routing-diag-content');
+    const taskInferenceMetaEl = document.getElementById('task-inference-meta');
 
     const agentsContainer = document.getElementById('agents');
     const eventsContainer = document.getElementById('events');
@@ -1324,7 +1381,7 @@
       return null;
     }
 
-    function renderRoutingPipeline(decision, isCompleted) {
+    function renderRoutingPipeline(decision, isCompleted, providerName = null) {
       if (!decision) return;
       routingPipelineEl.style.display = 'flex';
 
@@ -1363,7 +1420,7 @@
         </div>
         <span class="step-arrow">➔</span>
         <div class="pipeline-step ${isCompleted ? 'step-success' : 'step-active'}">
-          ${isCompleted ? '<span class="step-icon">✓</span><span class="step-label">Result Synthesized</span>' : '<span class="pulse-dot"></span><span class="step-label">Processing</span>'}
+          ${isCompleted ? `<span class="step-icon">✓</span><span class="step-label">Result Synthesized</span>${providerName ? ` <span class="step-val">${esc(providerName)}</span>` : ''}` : '<span class="pulse-dot"></span><span class="step-label">Processing</span>'}
         </div>
       `;
 
@@ -1425,6 +1482,7 @@
     }
 
     function renderRoutingUnavailable(capability, message, taskId) {
+      clearInferenceMeta();
       routingPipelineEl.style.display = 'flex';
       const capName = (capability || 'Required').toUpperCase();
 
@@ -1506,7 +1564,80 @@
       }
     }
 
-    function updateRoutingObservation(status, extraNote) {
+    // --- Inference Execution Telemetry Presentation (Issue #18 Increment 1) ---
+    function clearInferenceMeta() {
+      if (taskInferenceMetaEl) {
+        taskInferenceMetaEl.style.display = 'none';
+        taskInferenceMetaEl.innerHTML = '';
+      }
+    }
+
+    function renderInferenceMeta(telem) {
+      if (!taskInferenceMetaEl) return;
+      if (!telem || typeof telem !== 'object' || Array.isArray(telem)) {
+        clearInferenceMeta();
+        return;
+      }
+
+      const providerName = typeof telem.provider_name === 'string' ? telem.provider_name.trim() : '';
+      if (!providerName) {
+        clearInferenceMeta();
+        return;
+      }
+
+      const items = [];
+
+      // 1. Provider (always present for valid successful telemetry)
+      items.push(`
+        <span class="inference-meta-item">
+          <span class="meta-label">Provider:</span>
+          <strong class="meta-val">${esc(providerName)}</strong>
+        </span>
+      `);
+
+      // 2. Model (omitted if missing or empty; never fabricated)
+      if (typeof telem.model_name === 'string' && telem.model_name.trim()) {
+        items.push(`
+          <span class="inference-meta-item">
+            <span class="meta-label">Model:</span>
+            <span class="meta-val">${esc(telem.model_name.trim())}</span>
+          </span>
+        `);
+      }
+
+      // 3. Latency (omitted if missing, negative, or not finite)
+      if (typeof telem.latency_ms === 'number' && Number.isFinite(telem.latency_ms) && telem.latency_ms >= 0) {
+        const formattedLatency = telem.latency_ms % 1 === 0
+          ? String(telem.latency_ms)
+          : telem.latency_ms.toFixed(1);
+        items.push(`
+          <span class="inference-meta-item">
+            <span class="meta-label">Latency:</span>
+            <span class="meta-val">${esc(formattedLatency)} ms</span>
+          </span>
+        `);
+      }
+
+      // 4. Attempt (human-friendly 1-based, internal 0-based preserved)
+      if (typeof telem.attempt_index === 'number' && Number.isInteger(telem.attempt_index) && telem.attempt_index >= 0) {
+        items.push(`
+          <span class="inference-meta-item">
+            <span class="meta-label">Attempt:</span>
+            <span class="meta-val">${telem.attempt_index + 1}</span>
+          </span>
+        `);
+      }
+
+      taskInferenceMetaEl.innerHTML = `
+        <span class="inference-meta-header">Inference:</span>
+        <div class="inference-meta-group">
+          ${items.join('')}
+        </div>
+      `;
+      taskInferenceMetaEl.style.display = 'flex';
+    }
+
+    function updateRoutingObservation(status, extraNote, providerName = null) {
       if (!activeTaskId) return;
 
       if (status === 'completed') {
@@ -1518,16 +1649,20 @@
           : (matchingEv ? friendlyAgentName(matchingEv.agent_id) : 'Agent');
         routingStatusEl.innerHTML = `<span style="color: var(--state-idle);">✓ ${esc(agentName)} completed this task</span>`;
         if (currentRoutingDecision) {
-          renderRoutingPipeline(currentRoutingDecision, true);
+          renderRoutingPipeline(currentRoutingDecision, true, providerName);
         }
         return;
       }
 
       if (status === 'failed') {
+        clearInferenceMeta();
         progressBarEl.style.display = 'none';
         routingStatusEl.innerHTML = `<span style="color: var(--state-error);">✕ Task execution error: ${esc(extraNote || 'Check event log')}</span>`;
         return;
       }
+
+      // Default pending / in-progress states
+      clearInferenceMeta();
 
       // If we already have a recorded routing decision, use its selected agent
       if (currentRoutingDecision && currentRoutingDecision.selected_agent_id) {
@@ -1591,12 +1726,39 @@
             lastRawResultOutput = data.output || '';
             resultContentEl.innerHTML = safeFormatResult(data.output);
             copyResultBtn.disabled = !lastRawResultOutput;
-            updateRoutingObservation('completed');
             stopResultPolling();
+
+            // Request task-scoped successful inference telemetry
+            try {
+              const telemRes = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/telemetry`);
+              if (telemRes.ok && activeTaskId === taskId) {
+                const envelope = await telemRes.json();
+                const telem = envelope && typeof envelope === 'object' && !Array.isArray(envelope)
+                  ? envelope.inference_telemetry
+                  : null;
+                if (telem && typeof telem === 'object' && !Array.isArray(telem)) {
+                  renderInferenceMeta(telem);
+                  updateRoutingObservation('completed', null, telem.provider_name);
+                } else {
+                  clearInferenceMeta();
+                  updateRoutingObservation('completed');
+                }
+              } else if (activeTaskId === taskId) {
+                clearInferenceMeta();
+                updateRoutingObservation('completed');
+              }
+            } catch {
+              if (activeTaskId === taskId) {
+                clearInferenceMeta();
+                updateRoutingObservation('completed');
+              }
+            }
             return;
           } else if (data.status === 'pending') {
+            clearInferenceMeta();
             updateRoutingObservation('pending');
           } else if (data.status === 'error' || data.status === 'failed') {
+            clearInferenceMeta();
             updateRoutingObservation('failed', data.detail || 'Execution failure');
             stopResultPolling();
             return;
@@ -1632,6 +1794,7 @@
       submitError.style.display = 'none';
       setFormSubmitting(true);
       stopResultPolling();
+      clearInferenceMeta();
 
       try {
         const response = await fetch('/api/tasks', {
@@ -1685,6 +1848,7 @@
         currentRoutingDecision = null;
 
         // Update UI for active task
+        clearInferenceMeta();
         activeTaskIdEl.textContent = activeTaskId;
         copyTaskIdBtn.style.display = 'inline-flex';
         copyResultBtn.disabled = true;
