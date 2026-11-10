@@ -15,6 +15,7 @@ import pytest
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
+    InferenceExecutionTelemetry,
 )
 from orchestrator.infrastructure.redis_adapter import RedisGateway
 from orchestrator.presentation.api import create_app
@@ -558,3 +559,57 @@ async def test_e2e_observability_endpoints_and_secret_redaction() -> None:
         assert e_res.status_code == 200
         events = e_res.json()
         assert any(e.get("agent_id") == "worker-obs-1" for e in events)
+
+
+@pytest.mark.anyio
+async def test_get_api_events_exposes_inference_telemetry() -> None:
+    """Verifies that events with inference_telemetry flow through RedisBus to GET /api/events."""
+    app, store = make_test_environment()
+    agent_bus = ResearchRedisBus("redis://fake:6379/0", queue_name="agent.tasks.research")
+    agent_bus.client = store
+
+    telemetry = InferenceExecutionTelemetry(
+        provider_name="cloudflare",
+        attempt_index=0,
+        latency_ms=88.4,
+        status="succeeded",
+        input_tokens=100,
+        output_tokens=50,
+        total_tokens=150,
+        finish_reason="stop",
+        model_name="@cf/meta/llama-3.1-8b-instruct",
+    )
+    event = AgentEvent.create(
+        agent_id="research-agent-e2e",
+        state="working",
+        detail="Inference attempt 0 succeeded (cloudflare)",
+        task_id="task-telemetry-query-1",
+        inference_telemetry=telemetry,
+    )
+    await agent_bus.publish(event)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        res = await client.get("/api/events")
+        assert res.status_code == 200
+        events = res.json()
+        matching_events = [e for e in events if e.get("task_id") == "task-telemetry-query-1"]
+        assert len(matching_events) == 1
+        ev_data = matching_events[0]
+        assert ev_data["agent_id"] == "research-agent-e2e"
+        assert ev_data["state"] == "working"
+        assert "inference_telemetry" in ev_data
+        telem_data = (
+            json.loads(ev_data["inference_telemetry"])
+            if isinstance(ev_data["inference_telemetry"], str)
+            else ev_data["inference_telemetry"]
+        )
+        assert telem_data["provider_name"] == "cloudflare"
+        assert telem_data["attempt_index"] == 0
+        assert telem_data["latency_ms"] == 88.4
+        assert telem_data["status"] == "succeeded"
+        assert telem_data["input_tokens"] == 100
+        assert telem_data["output_tokens"] == 50
+        assert telem_data["total_tokens"] == 150
+        assert telem_data["model_name"] == "@cf/meta/llama-3.1-8b-instruct"
