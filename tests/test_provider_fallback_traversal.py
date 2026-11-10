@@ -938,6 +938,25 @@ def test_worker_coordinator_validation() -> None:
     bus = MockMessageBus()
     provider = MockRuntimeWorkerProvider("p1")
 
+    # Default timeout is 3.0
+    c_default = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1"],
+        providers={"p1": provider},
+    )
+    assert c_default.probe_timeout_seconds == 3.0
+
+    # Explicit valid timeout
+    c_explicit = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["p1"],
+        providers={"p1": provider},
+        probe_timeout_seconds=4.5,
+    )
+    assert c_explicit.probe_timeout_seconds == 4.5
+
     with pytest.raises(ValueError, match="agent_id must be a non-empty string"):
         WorkerFallbackCoordinator(
             agent_id="  ",
@@ -946,23 +965,15 @@ def test_worker_coordinator_validation() -> None:
             providers={"p1": provider},
         )
 
-    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
-        WorkerFallbackCoordinator(
-            agent_id="worker-1",
-            bus=bus,
-            preferences=["p1"],
-            providers={"p1": provider},
-            probe_timeout_seconds=-0.5,
-        )
-
-    with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
-        WorkerFallbackCoordinator(
-            agent_id="worker-1",
-            bus=bus,
-            preferences=["p1"],
-            providers={"p1": provider},
-            probe_timeout_seconds=True,  # type: ignore[arg-type]
-        )
+    for invalid_timeout in (-0.5, 0, 0.0, True, False, float("nan"), float("inf"), float("-inf"), "bad"):
+        with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+            WorkerFallbackCoordinator(
+                agent_id="worker-1",
+                bus=bus,
+                preferences=["p1"],
+                providers={"p1": provider},
+                probe_timeout_seconds=invalid_timeout,  # type: ignore[arg-type]
+            )
 
     with pytest.raises(ValueError, match="Configured provider 'p2' is missing"):
         WorkerFallbackCoordinator(
@@ -2469,3 +2480,94 @@ async def test_issue_19_fallback_telemetry_coexistence_and_ordering() -> None:
     assert ev_telem1.inference_telemetry.status == "succeeded"
     assert ev_telem1.inference_telemetry.provider_name == "p2"
     assert ev_telem1.inference_telemetry.attempt_index == 1
+
+
+def test_research_coordinator_timeout_configuration_and_validation() -> None:
+    bus = MockMessageBus()
+    provider = MockRuntimeResearchProvider("p1")
+
+    # Default timeout is 3.0
+    c_default = ResearchFallbackCoordinator(
+        agent_id="research-1",
+        bus=bus,
+        preferences=["p1"],
+        providers={"p1": provider},
+    )
+    assert c_default.probe_timeout_seconds == 3.0
+
+    # Explicit valid timeout
+    c_explicit = ResearchFallbackCoordinator(
+        agent_id="research-1",
+        bus=bus,
+        preferences=["p1"],
+        providers={"p1": provider},
+        probe_timeout_seconds=5.25,
+    )
+    assert c_explicit.probe_timeout_seconds == 5.25
+
+    with pytest.raises(ValueError, match="agent_id must be a non-empty string"):
+        ResearchFallbackCoordinator(
+            agent_id="  ",
+            bus=bus,
+            preferences=["p1"],
+            providers={"p1": provider},
+        )
+
+    for invalid_timeout in (-1.0, 0, 0.0, True, False, float("nan"), float("inf"), float("-inf"), "malformed"):
+        with pytest.raises(ValueError, match="probe_timeout_seconds must be a positive number"):
+            ResearchFallbackCoordinator(
+                agent_id="research-1",
+                bus=bus,
+                preferences=["p1"],
+                providers={"p1": provider},
+                probe_timeout_seconds=invalid_timeout,  # type: ignore[arg-type]
+            )
+
+    with pytest.raises(ValueError, match="Configured provider 'p2' is missing"):
+        ResearchFallbackCoordinator(
+            agent_id="research-1",
+            bus=bus,
+            preferences=["p1", "p2"],
+            providers={"p1": provider},
+        )
+
+
+@pytest.mark.anyio
+async def test_research_coordinator_probe_timeout_concurrent_failure_isolation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bus = MockMessageBus()
+    synthesis = SynthesisResult(
+        question="Research question",
+        content="fast synthesis",
+        evidence="Evidence",
+        provider="p1",
+        model="m1",
+    )
+    p1 = MockRuntimeResearchProvider(
+        "p1",
+        health_status=InferenceHealthStatus.HEALTHY,
+        health_delay=0.01,
+        synthesize_behavior=synthesis,
+    )
+    p2 = MockRuntimeResearchProvider(
+        "p2",
+        health_status=InferenceHealthStatus.HEALTHY,
+        health_delay=0.5,
+    )
+
+    coordinator = ResearchFallbackCoordinator(
+        agent_id="research-1",
+        bus=bus,
+        preferences=["p1", "p2"],
+        providers={"p1": p1, "p2": p2},
+        probe_timeout_seconds=0.05,
+    )
+
+    with caplog.at_level("WARNING"):
+        result = await coordinator.synthesize("Research question", "Evidence", task_id="task-timeout-test")
+
+    assert result == synthesis
+    assert p1.synthesize_called is True
+    assert p2.synthesize_called is False
+    assert "Health probe timed out for provider p2 (timeout=0.05s)" in caplog.text
