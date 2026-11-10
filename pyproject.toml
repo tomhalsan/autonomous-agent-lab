@@ -1,6 +1,6 @@
 [project]
 name = "autonomous-agent-lab"
-version = "0.3.0"
+version = "0.4.0"
 requires-python = ">=3.12,<3.13"
 license = "AGPL-3.0-only"
 
