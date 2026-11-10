@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -36,7 +37,9 @@
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
     body {
       margin: 0;
@@ -427,8 +430,17 @@
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 0.35; transform: scale(0.9); }
-      50% { opacity: 1; transform: scale(1.2); }
+
+      0%,
+      100% {
+        opacity: 0.35;
+        transform: scale(0.9);
+      }
+
+      50% {
+        opacity: 1;
+        transform: scale(1.2);
+      }
     }
 
     .progress-bar-container {
@@ -449,8 +461,13 @@
     }
 
     @keyframes progress-indeterminate {
-      0% { transform: translateX(-100%); }
-      100% { transform: translateX(100%); }
+      0% {
+        transform: translateX(-100%);
+      }
+
+      100% {
+        transform: translateX(100%);
+      }
     }
 
     /* Dynamic Routing Pipeline */
@@ -701,16 +718,40 @@
       font-size: 0.875rem;
     }
 
-    .res-h2 { font-size: 1.15rem; font-weight: 700; margin: 18px 0 8px 0; color: #fff; border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px; }
-    .res-h3 { font-size: 1.02rem; font-weight: 600; margin: 14px 0 6px 0; color: var(--accent-cyan); }
-    .res-h4 { font-size: 0.92rem; font-weight: 600; margin: 12px 0 4px 0; color: var(--accent-indigo); }
-    .res-p { margin: 0 0 10px 0; }
+    .res-h2 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin: 18px 0 8px 0;
+      color: #fff;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 6px;
+    }
+
+    .res-h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      margin: 14px 0 6px 0;
+      color: var(--accent-cyan);
+    }
+
+    .res-h4 {
+      font-size: 0.92rem;
+      font-weight: 600;
+      margin: 12px 0 4px 0;
+      color: var(--accent-indigo);
+    }
+
+    .res-p {
+      margin: 0 0 10px 0;
+    }
+
     .numbered-item {
       display: flex;
       align-items: baseline;
       gap: 8px;
       margin-bottom: 8px;
     }
+
     .num-badge {
       font-family: var(--font-mono);
       font-size: 0.75rem;
@@ -721,12 +762,19 @@
       border-radius: 4px;
       flex-shrink: 0;
     }
+
     .bullet-list {
       margin: 0 0 10px 0;
       padding-left: 20px;
     }
-    .bullet-list li { margin-bottom: 4px; }
-    .spacer { height: 8px; }
+
+    .bullet-list li {
+      margin-bottom: 4px;
+    }
+
+    .spacer {
+      height: 8px;
+    }
 
     a.ext-link {
       color: var(--accent-cyan);
@@ -734,6 +782,7 @@
       text-underline-offset: 3px;
       word-break: break-all;
     }
+
     a.ext-link:hover {
       color: #7dd3fc;
     }
@@ -875,6 +924,74 @@
       border: 1px solid var(--border-subtle);
       border-radius: 5px;
       padding: 2px 7px;
+    }
+
+    /* Agent Card Inference Provider Priority (Issue #18 Increment 3) */
+    .agent-inference-priority {
+      margin-top: 6px;
+      margin-bottom: 8px;
+      padding: 6px 8px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      font-size: 0.75rem;
+    }
+
+    .inference-priority-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 4px;
+      font-size: 0.6875rem;
+    }
+
+    .inference-priority-label {
+      font-weight: 600;
+      color: var(--accent-cyan);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .inference-priority-note {
+      color: var(--text-faint);
+      font-style: italic;
+    }
+
+    .inference-priority-chain {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+    }
+
+    .priority-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--bg-panel-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      padding: 1px 6px;
+      overflow-wrap: anywhere;
+    }
+
+    .priority-rank {
+      color: var(--text-faint);
+      font-weight: 600;
+    }
+
+    .priority-name {
+      color: var(--text-main);
+      overflow-wrap: anywhere;
+    }
+
+    .priority-arrow {
+      color: var(--text-faint);
+      user-select: none;
+      font-size: 0.75rem;
     }
 
     .agent-detail-text {
@@ -1038,7 +1155,10 @@
 
     /* Accessibility: Reduced Motion */
     @media (prefers-reduced-motion: reduce) {
-      *, ::before, ::after {
+
+      *,
+      ::before,
+      ::after {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
@@ -1051,6 +1171,7 @@
       .console-grid {
         grid-template-columns: 1fr;
       }
+
       .main-wrap {
         padding: 16px;
       }
@@ -1062,14 +1183,17 @@
         align-items: flex-start;
         gap: 12px;
       }
+
       .brand-group {
         gap: 12px;
       }
+
       .brand-logo {
         width: 38px;
         height: 38px;
         border-radius: 8px;
       }
+
       .brand-title {
         flex-wrap: wrap;
         font-size: 1.125rem;
@@ -1101,6 +1225,7 @@
     }
   </style>
 </head>
+
 <body>
 
   <header class="app-header">
@@ -1132,7 +1257,8 @@
         <section class="card" aria-labelledby="submission-heading">
           <div class="card-header">
             <h2 id="submission-heading" class="card-title">Submit Task</h2>
-            <p class="card-desc">Prompts are automatically routed to the specialized Research Agent or General Worker based on capability requirements.</p>
+            <p class="card-desc">Prompts are automatically routed to the specialized Research Agent or General Worker
+              based on capability requirements.</p>
           </div>
 
           <form id="task">
@@ -1141,22 +1267,20 @@
                 <label for="prompt">Task Prompt</label>
                 <span id="prompt-count" class="counter">0 / 2000</span>
               </div>
-              <textarea
-                id="prompt"
-                name="prompt"
-                rows="3"
+              <textarea id="prompt" name="prompt" rows="3"
                 placeholder="Enter a task (e.g., 'Research consensus algorithms in distributed systems' or 'Inspect worker health')..."
-                required
-                minlength="1"
-                maxlength="2000"
-              ></textarea>
+                required minlength="1" maxlength="2000"></textarea>
             </div>
 
             <div class="suggestions-row">
               <span class="sugg-label">Try:</span>
-              <button type="button" class="chip-btn" data-prompt="Research consensus algorithms in distributed systems">Research consensus algorithms</button>
-              <button type="button" class="chip-btn" data-prompt="Compare local and cloud LLMs for agent inference">Compare local vs cloud LLMs</button>
-              <button type="button" class="chip-btn" data-prompt="Inspect system status and report worker health">Inspect worker health</button>
+              <button type="button" class="chip-btn"
+                data-prompt="Research consensus algorithms in distributed systems">Research consensus
+                algorithms</button>
+              <button type="button" class="chip-btn"
+                data-prompt="Compare local and cloud LLMs for agent inference">Compare local vs cloud LLMs</button>
+              <button type="button" class="chip-btn"
+                data-prompt="Inspect system status and report worker health">Inspect worker health</button>
             </div>
 
             <div class="btn-row">
@@ -1182,13 +1306,15 @@
               <div class="task-id-group">
                 <span class="meta-label" style="color: var(--text-faint);">Task ID:</span>
                 <span id="active-task-id" class="task-id-badge">None</span>
-                <button type="button" id="copy-task-id-btn" class="btn-icon" title="Copy Task ID" style="display: none;" aria-label="Copy Task ID">📋</button>
+                <button type="button" id="copy-task-id-btn" class="btn-icon" title="Copy Task ID" style="display: none;"
+                  aria-label="Copy Task ID">📋</button>
               </div>
               <div id="task-routing-status" class="routing-banner" aria-live="polite">
                 <span>Ready for task submission</span>
               </div>
             </div>
-            <div id="task-progress-bar" class="progress-bar-container" style="display: none;" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+            <div id="task-progress-bar" class="progress-bar-container" style="display: none;" role="progressbar"
+              aria-valuemin="0" aria-valuemax="100">
               <div class="progress-bar-fill"></div>
             </div>
 
@@ -1197,7 +1323,8 @@
               <div class="pipeline-stepper" id="pipeline-stepper"></div>
               <div class="routing-rationale" id="routing-rationale"></div>
               <details class="routing-diagnostics" id="routing-diagnostics">
-                <summary class="routing-diag-summary" id="routing-diag-summary">Inspect candidate evaluation &amp; diagnostics</summary>
+                <summary class="routing-diag-summary" id="routing-diag-summary">Inspect candidate evaluation &amp;
+                  diagnostics</summary>
                 <div class="routing-diag-content" id="routing-diag-content"></div>
               </details>
             </div>
@@ -1895,7 +2022,7 @@
             } else if (errJson && errJson.detail) {
               errDetail = String(errJson.detail);
             }
-          } catch {}
+          } catch { }
 
           if (errJson && errJson.detail && errJson.detail.error === 'capability_unavailable') {
             const cap = errJson.detail.capability || 'required capability';
@@ -1987,6 +2114,19 @@
       }
     }
 
+    function parseInferenceProviders(raw) {
+      if (!raw || typeof raw !== 'string') return [];
+      const parts = raw.split(',');
+      const providers = [];
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed) {
+          providers.push(trimmed);
+        }
+      }
+      return providers;
+    }
+
     function renderAgents(agentsList) {
       if (!agentsList || agentsList.length === 0) {
         agentsContainer.innerHTML = '<div class="empty-state">No agents currently registered.</div>';
@@ -2006,16 +2146,52 @@
           return `<span class="cap-badge ${capClass}">${esc(c)}</span>`;
         }).join('');
 
-        // Providers (safely extracted, omitting any credentials)
+        // Retrieval Provider (safely separated from inference priority)
         const provs = a.providers && typeof a.providers === 'object' ? a.providers : {};
-        const provTags = [];
-        if (provs.research_executor || a.research_executor) {
-          provTags.push(`Retrieval: ${esc(provs.research_executor || a.research_executor)}`);
+        const retrievalProvider = provs.research_executor || a.research_executor;
+        const retrievalHtml = retrievalProvider
+          ? `<span class="provider-tag">Retrieval: ${esc(retrievalProvider)}</span>`
+          : '';
+
+        // Inference Provider Priority Chain (Issue #18 Increment 3)
+        const hasStructuredInference = Boolean(
+          a.providers &&
+          typeof a.providers === 'object' &&
+          !Array.isArray(a.providers) &&
+          'inference_provider' in a.providers
+        );
+        const rawInference = hasStructuredInference
+          ? a.providers.inference_provider
+          : a.inference_provider;
+        const inferenceProviders = parseInferenceProviders(rawInference);
+
+        let inferencePriorityHtml = '';
+        if (inferenceProviders.length > 0) {
+          const chainItems = [];
+          for (let i = 0; i < inferenceProviders.length; i++) {
+            const providerName = inferenceProviders[i];
+            const rank = i + 1;
+            chainItems.push(`
+              <span class="priority-item">
+                <span class="priority-rank">${rank}.</span>
+                <span class="priority-name">${esc(providerName)}</span>
+              </span>
+            `);
+          }
+          const chainHtml = chainItems.join('<span class="priority-arrow">→</span>');
+
+          inferencePriorityHtml = `
+            <div class="agent-inference-priority">
+              <div class="inference-priority-header">
+                <span class="inference-priority-label">Inference priority</span>
+                <span class="inference-priority-note">(health evaluated per task)</span>
+              </div>
+              <div class="inference-priority-chain">
+                ${chainHtml}
+              </div>
+            </div>
+          `;
         }
-        if (provs.inference_provider || a.inference_provider) {
-          provTags.push(`Inference: ${esc(provs.inference_provider || a.inference_provider)}`);
-        }
-        const provsHtml = provTags.map(p => `<span class="provider-tag">${p}</span>`).join('');
 
         // Task metadata
         const taskMetaHtml = a.task_id ? `<div class="agent-task-meta">Task: <code>${esc(a.task_id)}</code></div>` : '';
@@ -2031,8 +2207,9 @@
             </div>
             <div class="agent-meta-tags">
               ${capsHtml}
-              ${provsHtml}
+              ${retrievalHtml}
             </div>
+            ${inferencePriorityHtml}
             <div class="agent-detail-text">${esc(a.detail || 'Waiting for work')}</div>
             ${taskMetaHtml}
           </div>
@@ -2171,4 +2348,5 @@
     refreshInterval = setInterval(refreshSystem, 2500);
   </script>
 </body>
+
 </html>

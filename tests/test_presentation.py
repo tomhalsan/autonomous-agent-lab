@@ -1236,3 +1236,309 @@ async def test_api_events_serves_fallback_transition() -> None:
     assert trans_dict["reason"] == "rate_limited"
     assert trans_dict["attempt_index"] == 0
 
+
+# ==============================================================================
+# Issue #18 Increment 3: Agent Card Configured Inference Provider Priority Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_agent_card_contains_inference_priority_presentation_hooks() -> None:
+    html = await dashboard()
+
+    # CSS hooks
+    assert ".agent-inference-priority" in html
+    assert ".inference-priority-header" in html
+    assert ".inference-priority-label" in html
+    assert ".inference-priority-note" in html
+    assert ".inference-priority-chain" in html
+    assert ".priority-item" in html
+    assert ".priority-rank" in html
+    assert ".priority-name" in html
+    assert ".priority-arrow" in html
+
+    # JS helper
+    assert "parseInferenceProviders" in html
+
+
+@pytest.mark.anyio
+async def test_agent_card_single_configured_provider_renders_correctly() -> None:
+    html = await dashboard()
+
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # Builds chain HTML without requiring multiple items
+    assert "inferenceProviders.length > 0" in render_agents_fn
+    assert "chainItems.join('<span class=\"priority-arrow\">→</span>')" in render_agents_fn
+    # Provider name rendered with esc
+    assert "${esc(providerName)}" in render_agents_fn
+
+
+@pytest.mark.anyio
+async def test_agent_card_multiple_configured_providers_preserve_registration_order() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseInferenceProviders(")[1].split("function renderAgents(")[0]
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # Iterates sequentially over split parts
+    assert "for (const part of parts)" in parse_fn
+    assert "providers.push(trimmed);" in parse_fn
+
+    # Preserves index order for ranks
+    assert "for (let i = 0; i < inferenceProviders.length; i++)" in render_agents_fn
+    assert "const rank = i + 1;" in render_agents_fn
+
+
+@pytest.mark.anyio
+async def test_agent_card_human_friendly_numbering_begins_at_one() -> None:
+    html = await dashboard()
+
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # 1-based ranking
+    assert "const rank = i + 1;" in render_agents_fn
+    assert '<span class="priority-rank">${rank}.</span>' in render_agents_fn
+
+
+@pytest.mark.anyio
+async def test_agent_card_provider_list_not_alphabetically_sorted() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseInferenceProviders(")[1].split("function renderAgents(")[0]
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # Neither helper nor render sorts the provider array
+    assert ".sort(" not in parse_fn
+    assert ".sort(" not in render_agents_fn.split("const rawInference")[1].split("agent-detail-text")[0]
+
+
+@pytest.mark.anyio
+async def test_agent_card_empty_segments_do_not_create_blank_badges() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseInferenceProviders(")[1].split("function renderAgents(")[0]
+
+    # Empty segments are filtered out after trimming
+    assert "const trimmed = part.trim();" in parse_fn
+    assert "if (trimmed) {" in parse_fn
+    assert "providers.push(trimmed);" in parse_fn
+
+
+@pytest.mark.anyio
+async def test_agent_card_missing_inference_provider_does_not_fabricate_provider() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseInferenceProviders(")[1].split("function renderAgents(")[0]
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # When raw is missing or falsy, returns empty array
+    assert "if (!raw || typeof raw !== 'string') return [];" in parse_fn
+
+    # When array is empty, inferencePriorityHtml remains empty string
+    assert "let inferencePriorityHtml = '';" in render_agents_fn
+    assert "if (inferenceProviders.length > 0) {" in render_agents_fn
+    assert '"default"' not in parse_fn
+    assert "'default'" not in parse_fn
+
+
+@pytest.mark.anyio
+async def test_agent_card_no_static_healthy_or_active_badge_derived() -> None:
+    html = await dashboard()
+
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+    priority_section = render_agents_fn.split("agent-inference-priority")[1].split("agent-detail-text")[0]
+
+    # Does not display deceptive status badges
+    assert "HEALTHY" not in priority_section
+    assert "ACTIVE" not in priority_section
+    assert "AVAILABLE" not in priority_section
+    assert "UP" not in priority_section
+    assert "current provider" not in priority_section
+    assert "selected provider" not in priority_section
+
+
+@pytest.mark.anyio
+async def test_agent_card_visible_text_clarifies_health_evaluated_per_task() -> None:
+    html = await dashboard()
+
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # Truthful explanatory label
+    assert '<span class="inference-priority-label">Inference priority</span>' in render_agents_fn
+    assert '<span class="inference-priority-note">(health evaluated per task)</span>' in render_agents_fn
+
+
+@pytest.mark.anyio
+async def test_agent_card_provider_names_escaped() -> None:
+    html = await dashboard()
+
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # Provider name is escaped with esc()
+    assert '<span class="priority-name">${esc(providerName)}</span>' in render_agents_fn
+
+
+@pytest.mark.anyio
+async def test_agent_card_retrieval_provider_remains_separate_concept() -> None:
+    html = await dashboard()
+
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # Retrieval tag remains distinct
+    assert '<span class="provider-tag">Retrieval: ${esc(retrievalProvider)}</span>' in render_agents_fn
+    # Not conflated with inference priority
+    retrieval_block = render_agents_fn.split("const retrievalHtml")[1].split("const rawInference")[0]
+    assert "Inference priority" not in retrieval_block
+
+
+@pytest.mark.anyio
+async def test_agent_card_arbitrarily_many_providers_supported_without_slice_or_count_limit() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseInferenceProviders(")[1].split("function renderAgents(")[0]
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # No slice(0, N) or hardcoded count limit
+    assert "slice(" not in parse_fn
+    assert "slice(" not in render_agents_fn.split("const rawInference")[1].split("agent-detail-text")[0]
+
+
+@pytest.mark.anyio
+async def test_agent_card_long_provider_names_wrap_without_truncation() -> None:
+    html = await dashboard()
+
+    priority_css = html.split(".agent-inference-priority {")[1].split(".timeline-list")[0]
+
+    # Flex wrap and overflow wrap for responsive wrapping without truncation
+    assert "flex-wrap: wrap;" in priority_css
+    assert "overflow-wrap: anywhere;" in priority_css
+    assert "text-overflow: ellipsis" not in priority_css
+
+
+@pytest.mark.anyio
+async def test_agent_card_increment_1_and_2_hooks_preserved() -> None:
+    html = await dashboard()
+
+    # Increment 1: Task-result metadata hooks
+    assert 'id="task-inference-meta"' in html
+    assert 'class="inference-meta-bar"' in html
+    assert "renderInferenceMeta" in html
+    assert "fetch(`/api/tasks/${encodeURIComponent(taskId)}/telemetry`)" in html
+
+    # Increment 2: Fallback timeline hooks
+    assert ".state-pill.fallback" in html
+    assert ".timeline-entry.fallback" in html
+    assert ".timeline-fallback-callout" in html
+    assert "parseFallbackTransition" in html
+
+
+@pytest.mark.anyio
+async def test_agent_card_no_new_api_endpoint_or_polling_path() -> None:
+    html = await dashboard()
+
+    # Only existing polling mechanisms
+    assert "setInterval(refreshSystem, 2500);" in html
+    assert "fetch('/api/agents')" in html
+    assert "fetch('/api/events?limit=25')" in html
+
+
+@pytest.mark.anyio
+async def test_agent_card_inference_provider_source_presence_semantics() -> None:
+    html = await dashboard()
+
+    render_agents_fn = html.split("function renderAgents(")[1].split("function parseFallbackTransition(")[0]
+
+    # Validates property-presence check on a.providers
+    assert "'inference_provider' in a.providers" in render_agents_fn
+    assert "hasStructuredInference" in render_agents_fn
+    assert "? a.providers.inference_provider" in render_agents_fn
+    assert ": a.inference_provider;" in render_agents_fn
+
+    # Verifies naive truthiness fallback is not used
+    assert "provs.inference_provider || a.inference_provider" not in render_agents_fn
+
+
+def test_agent_card_inference_provider_source_authority_resolution() -> None:
+    from typing import Any
+
+    # Deterministic simulation matching the exact property-presence authority semantics in renderAgents
+    def resolve_raw_inference(agent: dict[str, Any]) -> Any:
+        providers = agent.get("providers")
+        has_structured_inference = (
+            isinstance(providers, dict)
+            and "inference_provider" in providers
+        )
+        return (
+            providers["inference_provider"]
+            if has_structured_inference
+            else agent.get("inference_provider")
+        )
+
+    def parse_inference_providers(raw: Any) -> list[str]:
+        if not raw or not isinstance(raw, str):
+            return []
+        parts = raw.split(",")
+        return [trimmed for part in parts if (trimmed := part.strip())]
+
+    # 1. Structured non-empty inference_provider wins over legacy
+    agent_with_both = {
+        "providers": {"inference_provider": "cloudflare,gemini"},
+        "inference_provider": "stub",
+    }
+    raw = resolve_raw_inference(agent_with_both)
+    assert raw == "cloudflare,gemini"
+    assert parse_inference_providers(raw) == ["cloudflare", "gemini"]
+
+    # 2. Explicitly empty structured inference_provider does NOT fall back to legacy
+    agent_empty_structured = {
+        "providers": {"inference_provider": ""},
+        "inference_provider": "stub",
+    }
+    raw_empty = resolve_raw_inference(agent_empty_structured)
+    assert raw_empty == ""
+    assert parse_inference_providers(raw_empty) == []
+
+    # 3. Whitespace-only structured inference_provider does NOT fall back to legacy
+    agent_whitespace_structured = {
+        "providers": {"inference_provider": "   "},
+        "inference_provider": "stub",
+    }
+    raw_ws = resolve_raw_inference(agent_whitespace_structured)
+    assert raw_ws == "   "
+    assert parse_inference_providers(raw_ws) == []
+
+    # 4. Null structured inference_provider does NOT fall back to legacy
+    agent_null_structured = {
+        "providers": {"inference_provider": None},
+        "inference_provider": "stub",
+    }
+    raw_null = resolve_raw_inference(agent_null_structured)
+    assert raw_null is None
+    assert parse_inference_providers(raw_null) == []
+
+    # 5. Malformed structured inference_provider does NOT fall back to legacy
+    agent_malformed_structured = {
+        "providers": {"inference_provider": 12345},
+        "inference_provider": "stub",
+    }
+    raw_malformed = resolve_raw_inference(agent_malformed_structured)
+    assert raw_malformed == 12345
+    assert parse_inference_providers(raw_malformed) == []
+
+    # 6. Legacy inference_provider is used only when structured inference_provider is absent
+    agent_absent_in_providers = {
+        "providers": {"research_executor": "tavily"},
+        "inference_provider": "stub",
+    }
+    raw_legacy = resolve_raw_inference(agent_absent_in_providers)
+    assert raw_legacy == "stub"
+    assert parse_inference_providers(raw_legacy) == ["stub"]
+
+    agent_no_providers_obj = {
+        "inference_provider": "stub",
+    }
+    raw_legacy_no_provs = resolve_raw_inference(agent_no_providers_obj)
+    assert raw_legacy_no_provs == "stub"
+    assert parse_inference_providers(raw_legacy_no_provs) == ["stub"]
+
