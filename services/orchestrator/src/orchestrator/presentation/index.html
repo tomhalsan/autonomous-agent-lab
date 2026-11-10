@@ -29,6 +29,9 @@
       --state-working-bg: rgba(251, 191, 36, 0.12);
       --state-error: #f87171;
       --state-error-bg: rgba(248, 113, 113, 0.14);
+      --state-fallback: #f59e0b;
+      --state-fallback-bg: rgba(245, 158, 11, 0.08);
+      --state-fallback-border: rgba(245, 158, 11, 0.35);
       --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
@@ -825,6 +828,12 @@
       border: 1px solid rgba(248, 113, 113, 0.3);
     }
 
+    .state-pill.fallback {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--state-fallback);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+
     .state-pill.unknown {
       background: rgba(148, 163, 184, 0.1);
       color: var(--text-muted);
@@ -903,6 +912,79 @@
 
     .timeline-entry:hover {
       background: var(--bg-panel-elevated);
+    }
+
+    /* Fallback Timeline Entry Highlight (Issue #18 Increment 2) */
+    .timeline-entry.fallback {
+      border-left: 3px solid var(--state-fallback);
+      background: var(--state-fallback-bg);
+    }
+
+    .timeline-entry.fallback:hover {
+      background: rgba(245, 158, 11, 0.12);
+    }
+
+    .timeline-fallback-callout {
+      margin: 6px 0;
+      padding: 6px 10px;
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid var(--state-fallback-border);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 0.75rem;
+    }
+
+    .timeline-fallback-transition {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      font-weight: 600;
+      color: var(--text-main);
+      overflow-wrap: anywhere;
+    }
+
+    .timeline-fallback-transition .fallback-arrow {
+      color: var(--state-fallback);
+      user-select: none;
+    }
+
+    .timeline-fallback-transition .fallback-failed-provider {
+      color: var(--text-muted);
+      overflow-wrap: anywhere;
+    }
+
+    .timeline-fallback-transition .fallback-target-provider {
+      color: var(--state-fallback);
+      overflow-wrap: anywhere;
+    }
+
+    .timeline-fallback-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--text-faint);
+      font-size: 0.6875rem;
+    }
+
+    .timeline-fallback-meta .meta-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    .timeline-fallback-meta .meta-label {
+      color: var(--text-faint);
+    }
+
+    .timeline-fallback-meta .meta-val {
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      overflow-wrap: anywhere;
     }
 
     .timeline-header {
@@ -1958,6 +2040,45 @@
       }).join('');
     }
 
+    function parseFallbackTransition(raw) {
+      if (!raw) return null;
+      let payload = raw;
+      if (typeof payload === 'string') {
+        const trimmed = payload.trim();
+        if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+          return null;
+        }
+        try {
+          payload = JSON.parse(trimmed);
+        } catch {
+          return null;
+        }
+      }
+      if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+        return null;
+      }
+      const failed = typeof payload.failed_provider === 'string' ? payload.failed_provider.trim() : '';
+      const target = typeof payload.target_provider === 'string' ? payload.target_provider.trim() : '';
+      if (!failed || !target) {
+        return null;
+      }
+      const result = {
+        failed_provider: failed,
+        target_provider: target,
+      };
+      if (typeof payload.reason === 'string' && payload.reason.trim()) {
+        result.reason = payload.reason.trim();
+      }
+      if (
+        typeof payload.attempt_index === 'number' &&
+        Number.isInteger(payload.attempt_index) &&
+        payload.attempt_index >= 0
+      ) {
+        result.attempt_index = payload.attempt_index;
+      }
+      return result;
+    }
+
     function renderEvents(eventsList) {
       if (!eventsList || eventsList.length === 0) {
         eventsContainer.innerHTML = '<div class="empty-state">No events recorded yet.</div>';
@@ -1965,20 +2086,68 @@
       }
 
       eventsContainer.innerHTML = eventsList.map(e => {
-        const state = (e.state || 'idle').toLowerCase();
-        const stateClass = (state === 'working' || state === 'idle' || state === 'error') ? state : 'unknown';
+        const rawState = (e.state || 'idle').toLowerCase();
+        const transition = parseFallbackTransition(e.fallback_transition);
+        const isFallback = rawState === 'fallback' || transition !== null;
+
+        let stateClass = 'unknown';
+        let displayState = rawState;
+        if (isFallback) {
+          stateClass = 'fallback';
+          displayState = 'fallback';
+        } else if (rawState === 'working' || rawState === 'idle' || rawState === 'error') {
+          stateClass = rawState;
+        }
+
         const timeFormatted = formatTime(e.occurred_at);
         const taskTag = e.task_id ? `<span class="timeline-task" title="${esc(e.task_id)}">Task: ${esc(e.task_id.slice(0, 8))}...</span>` : '';
 
+        let fallbackCalloutHtml = '';
+        if (transition) {
+          const metaItems = [];
+          if (transition.reason) {
+            metaItems.push(`
+              <span class="meta-item">
+                <span class="meta-label">Reason:</span>
+                <span class="meta-val">${esc(transition.reason)}</span>
+              </span>
+            `);
+          }
+          if (typeof transition.attempt_index === 'number') {
+            metaItems.push(`
+              <span class="meta-item">
+                <span class="meta-label">Attempt:</span>
+                <span class="meta-val">${transition.attempt_index + 1}</span>
+              </span>
+            `);
+          }
+
+          const metaHtml = metaItems.length > 0
+            ? `<div class="timeline-fallback-meta">${metaItems.join('')}</div>`
+            : '';
+
+          fallbackCalloutHtml = `
+            <div class="timeline-fallback-callout">
+              <div class="timeline-fallback-transition">
+                <span class="fallback-failed-provider">${esc(transition.failed_provider)}</span>
+                <span class="fallback-arrow">→</span>
+                <span class="fallback-target-provider">${esc(transition.target_provider)}</span>
+              </div>
+              ${metaHtml}
+            </div>
+          `;
+        }
+
         return `
-          <div class="timeline-entry">
+          <div class="timeline-entry ${isFallback ? 'fallback' : ''}">
             <div class="timeline-header">
               <span class="timeline-agent">
                 <span>${esc(friendlyAgentName(e.agent_id))}</span>
-                <span class="state-pill ${stateClass}" style="font-size: 0.625rem; padding: 1px 6px;">${esc(state)}</span>
+                <span class="state-pill ${stateClass}" style="font-size: 0.625rem; padding: 1px 6px;">${esc(displayState)}</span>
               </span>
               <span class="timeline-time">${esc(timeFormatted)}</span>
             </div>
+            ${fallbackCalloutHtml}
             <div class="timeline-detail">${esc(e.detail || '')}</div>
             ${taskTag}
           </div>

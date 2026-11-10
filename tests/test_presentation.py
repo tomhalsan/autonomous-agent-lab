@@ -932,3 +932,307 @@ async def test_api_events_serves_task_correlated_inference_telemetry() -> None:
     assert telem_dict["attempt_index"] == 0
     assert telem_dict["status"] == "succeeded"
 
+
+# ==============================================================================
+# Issue #18 Increment 2: Activity Timeline Fallback Transition Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_css_style_hooks_exist() -> None:
+    html = await dashboard()
+
+    # CSS variables in :root
+    assert "--state-fallback:" in html
+    assert "--state-fallback-bg:" in html
+    assert "--state-fallback-border:" in html
+
+    # State pill fallback class
+    assert ".state-pill.fallback" in html
+
+    # Timeline entry fallback highlight
+    assert ".timeline-entry.fallback" in html
+    assert "border-left: 3px solid var(--state-fallback);" in html
+    assert "background: var(--state-fallback-bg);" in html
+
+    # Structured fallback callout and subcomponent classes
+    assert ".timeline-fallback-callout" in html
+    assert ".timeline-fallback-transition" in html
+    assert ".timeline-fallback-meta" in html
+    assert ".fallback-failed-provider" in html
+    assert ".fallback-arrow" in html
+    assert ".fallback-target-provider" in html
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_state_maps_to_fallback_styling() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Identifies fallback state or presence of transition
+    assert "const isFallback = rawState === 'fallback' || transition !== null;" in render_events_fn
+    assert "stateClass = 'fallback';" in render_events_fn
+    assert "displayState = 'fallback';" in render_events_fn
+
+    # Applies .fallback class to the timeline entry
+    assert '<div class="timeline-entry ${isFallback ? \'fallback\' : \'\'}">' in render_events_fn
+    # Renders state-pill with stateClass
+    assert '<span class="state-pill ${stateClass}"' in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_valid_object_payload_accepted() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseFallbackTransition(")[1].split("function renderEvents(")[0]
+
+    # Accepts plain object without requiring string parsing
+    assert "if (typeof payload !== 'object' || payload === null || Array.isArray(payload))" in parse_fn
+    assert "typeof payload.failed_provider === 'string'" in parse_fn
+    assert "typeof payload.target_provider === 'string'" in parse_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_valid_json_string_payload_parsed() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseFallbackTransition(")[1].split("function renderEvents(")[0]
+
+    # Parses JSON string originating from Redis stream
+    assert "if (typeof payload === 'string')" in parse_fn
+    assert "JSON.parse(trimmed)" in parse_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_malformed_json_does_not_break_rendering() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseFallbackTransition(")[1].split("function renderEvents(")[0]
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Catches parse error and returns null
+    assert "catch {" in parse_fn
+    assert "return null;" in parse_fn
+
+    # Renders safely even when transition is null
+    assert "let fallbackCalloutHtml = '';" in render_events_fn
+    assert "if (transition) {" in render_events_fn
+    assert '<div class="timeline-detail">${esc(e.detail || \'\')}</div>' in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_primitive_and_array_payloads_ignored() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseFallbackTransition(")[1].split("function renderEvents(")[0]
+
+    # Rejects null, arrays, and non-objects
+    assert "Array.isArray(payload)" in parse_fn
+    assert "payload === null" in parse_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_failed_and_target_provider_direction() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Verifies order: failed provider -> arrow -> target provider
+    failed_idx = render_events_fn.index("fallback-failed-provider")
+    arrow_idx = render_events_fn.index("fallback-arrow")
+    target_idx = render_events_fn.index("fallback-target-provider")
+    assert failed_idx < arrow_idx < target_idx
+
+    assert "${esc(transition.failed_provider)}" in render_events_fn
+    assert "${esc(transition.target_provider)}" in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_reason_displayed_when_valid() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Displays reason in meta section
+    assert "if (transition.reason) {" in render_events_fn
+    assert '<span class="meta-label">Reason:</span>' in render_events_fn
+    assert '<span class="meta-val">${esc(transition.reason)}</span>' in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_missing_reason_omitted_not_fabricated() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseFallbackTransition(")[1].split("function renderEvents(")[0]
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Does not fabricate fallback reasons
+    assert '"unknown"' not in parse_fn
+    assert '"default"' not in parse_fn
+    assert "|| 'unknown'" not in render_events_fn
+    assert '|| "unknown"' not in render_events_fn
+    assert "|| 'default'" not in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_attempt_index_zero_displays_as_attempt_one() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Maps attempt_index to human-friendly 1-based attempt (0 -> 1)
+    assert '<span class="meta-label">Attempt:</span>' in render_events_fn
+    assert "${transition.attempt_index + 1}" in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_attempt_index_one_displays_as_attempt_two() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Preserves addition (+ 1) without modifying original object
+    assert "transition.attempt_index + 1" in render_events_fn
+    # Does not mutate transition.attempt_index
+    assert "transition.attempt_index++" not in render_events_fn
+    assert "transition.attempt_index +=" not in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_missing_or_invalid_attempt_index_omitted() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseFallbackTransition(")[1].split("function renderEvents(")[0]
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Requires finite non-negative integer
+    assert "typeof payload.attempt_index === 'number'" in parse_fn
+    assert "Number.isInteger(payload.attempt_index)" in parse_fn
+    assert "payload.attempt_index >= 0" in parse_fn
+
+    # Only rendered if attempt_index is a number
+    assert "if (typeof transition.attempt_index === 'number') {" in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_state_without_structured_payload_retains_visual_treatment_and_detail() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # When transition is null, isFallback is true if rawState === 'fallback'
+    assert "const isFallback = rawState === 'fallback' || transition !== null;" in render_events_fn
+    assert '<div class="timeline-entry ${isFallback ? \'fallback\' : \'\'}">' in render_events_fn
+    assert '<div class="timeline-detail">${esc(e.detail || \'\')}</div>' in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_dynamic_values_safely_escaped() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Dynamic fields are passed through esc()
+    assert "${esc(transition.failed_provider)}" in render_events_fn
+    assert "${esc(transition.target_provider)}" in render_events_fn
+    assert "${esc(transition.reason)}" in render_events_fn
+    assert "${esc(e.detail || '')}" in render_events_fn
+    assert "${esc(displayState)}" in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_not_styled_as_error() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Sets stateClass to fallback, never error
+    assert "stateClass = 'fallback';" in render_events_fn
+    assert "stateClass = 'error'" not in render_events_fn.split("if (isFallback) {")[1].split("} else if")[0]
+
+
+@pytest.mark.anyio
+async def test_timeline_ordinary_events_retain_existing_behavior() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Non-fallback events map to working, idle, or error
+    assert "else if (rawState === 'working' || rawState === 'idle' || rawState === 'error') {" in render_events_fn
+    assert "stateClass = rawState;" in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_preserves_increment_1_task_result_metadata() -> None:
+    html = await dashboard()
+
+    # Increment 1 result metadata elements remain intact
+    assert 'id="task-inference-meta"' in html
+    assert 'class="inference-meta-bar"' in html
+    assert "renderInferenceMeta" in html
+    assert "clearInferenceMeta" in html
+    assert "fetch(`/api/tasks/${encodeURIComponent(taskId)}/telemetry`)" in html
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_no_additional_polling_operation() -> None:
+    html = await dashboard()
+
+    # Only single refreshSystem polling loop exists for the timeline
+    assert "setInterval(refreshSystem, 2500);" in html
+    assert "setInterval(" not in html.split("setInterval(refreshSystem, 2500);")[1]
+
+
+@pytest.mark.anyio
+async def test_timeline_fallback_no_hardcoded_correctness_boundary() -> None:
+    html = await dashboard()
+
+    parse_fn = html.split("function parseFallbackTransition(")[1].split("function renderEvents(")[0]
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # No hardcoded slice/truncation limits on provider names, reason, or attempts
+    assert "slice(" not in parse_fn
+    assert "substring(" not in parse_fn
+    assert "slice(" not in render_events_fn.split("timeline-fallback-callout")[1].split("${taskTag}")[0]
+
+
+@pytest.mark.anyio
+async def test_api_events_serves_fallback_transition() -> None:
+    from agent_contracts import AgentEvent, FallbackTransition
+
+    transition = FallbackTransition(
+        failed_provider="cloudflare",
+        target_provider="gemini",
+        reason="rate_limited",
+        attempt_index=0,
+    )
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state="fallback",
+        detail="Inference fallback: cloudflare -> gemini (rate_limited)",
+        task_id="task-fallback-e2e-1",
+        fallback_transition=transition,
+    )
+    fake_reader = FakeStateReader(events_data=[event.to_dict()])
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+    res = await events(request=req, limit=5)
+
+    assert len(res) == 1
+    ev = res[0]
+    assert ev["task_id"] == "task-fallback-e2e-1"
+    assert ev["state"] == "fallback"
+    trans_dict = (
+        json.loads(ev["fallback_transition"])
+        if isinstance(ev["fallback_transition"], str)
+        else ev["fallback_transition"]
+    )
+    assert trans_dict["failed_provider"] == "cloudflare"
+    assert trans_dict["target_provider"] == "gemini"
+    assert trans_dict["reason"] == "rate_limited"
+    assert trans_dict["attempt_index"] == 0
+
