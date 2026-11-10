@@ -1728,7 +1728,7 @@ async def test_fallback_telemetry_unexpected_exception_re_raised() -> None:
 
     p1 = RecordingMockWorkerProvider(
         "p1",
-        RuntimeError("Database crashed: https://internal.secret.db/tokens?key=abc"),
+        RuntimeError("Database crashed: SENSITIVE_INTERNAL_ENDPOINT_VALUE/tokens?key=abc"),
     )
     p2 = RecordingMockWorkerProvider("p2", "should not run")
 
@@ -1744,7 +1744,7 @@ async def test_fallback_telemetry_unexpected_exception_re_raised() -> None:
     with pytest.raises(RuntimeError) as exc_info:
         await adapter.generate("Unexpected failure prompt")
 
-    assert "https://internal.secret.db" in str(exc_info.value)
+    assert "SENSITIVE_INTERNAL_ENDPOINT_VALUE" in str(exc_info.value)
     assert p1.invoked is True
     assert p2.invoked is False
     assert len(transitions) == 0
@@ -1757,7 +1757,7 @@ async def test_fallback_telemetry_unexpected_exception_re_raised() -> None:
     assert t0.failure_reason == "unexpected_error"
     assert t0.status_code is None
     # Verify raw exception text is NOT present in telemetry
-    assert "internal.secret.db" not in t0.to_json()
+    assert "SENSITIVE_INTERNAL_ENDPOINT_VALUE" not in t0.to_json()
     assert "tokens?key=abc" not in t0.to_json()
 
 
@@ -2178,7 +2178,7 @@ async def test_research_fallback_telemetry_unexpected_failure_re_raised() -> Non
     p1 = MockRuntimeResearchProvider(
         "p1",
         health_status=InferenceHealthStatus.HEALTHY,
-        synthesize_behavior=RuntimeError("Internal GPU failure: https://internal.cluster/api?secret=tok"),
+        synthesize_behavior=RuntimeError("Internal GPU failure: SENSITIVE_RESEARCH_ENDPOINT_VALUE/api?secret=tok"),
     )
     p2 = MockRuntimeResearchProvider(
         "p2",
@@ -2198,7 +2198,7 @@ async def test_research_fallback_telemetry_unexpected_failure_re_raised() -> Non
     with pytest.raises(RuntimeError) as exc_info:
         await adapter.synthesize("Question", "Evidence")
 
-    assert "https://internal.cluster" in str(exc_info.value)
+    assert "SENSITIVE_RESEARCH_ENDPOINT_VALUE" in str(exc_info.value)
     assert p1.synthesize_called is True
     assert p2.synthesize_called is False
     assert len(transitions) == 0
@@ -2211,7 +2211,7 @@ async def test_research_fallback_telemetry_unexpected_failure_re_raised() -> Non
     assert t0.failure_reason == "unexpected_error"
     assert t0.status_code is None
     # Verify raw exception text is absent from telemetry
-    assert "internal.cluster" not in t0.to_json()
+    assert "SENSITIVE_RESEARCH_ENDPOINT_VALUE" not in t0.to_json()
     assert "secret=tok" not in t0.to_json()
 
 
