@@ -35,8 +35,13 @@ jobs:
       - name: Run test suite
         run: pytest -q
 
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
       - name: Validate container image packaging
         run: |
+          docker build -f services/orchestrator/Dockerfile -t test-orchestrator .
+          docker run --rm test-orchestrator python -c "import orchestrator.presentation.api"
           docker build -f services/worker/Dockerfile -t test-worker .
           docker run --rm test-worker python -c "import agent_policy, worker.main"
           docker build -f services/research_agent/Dockerfile -t test-research-agent .
