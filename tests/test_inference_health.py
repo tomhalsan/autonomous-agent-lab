@@ -1,5 +1,5 @@
 from dataclasses import FrozenInstanceError
-from typing import Any
+from typing import Any, Self
 
 import httpx
 import pytest
@@ -374,7 +374,410 @@ async def test_cloudflare_health_check_successful_catalog_access() -> None:
 
 
 @pytest.mark.anyio
-async def test_cloudflare_health_check_configured_model_absent() -> None:
+async def test_cloudflare_health_check_exact_catalog_match_with_uuid_id() -> None:
+    calls = []
+
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        calls.append({"method": method, "url": url, "headers": headers, "params": params})
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "result": [
+                    {
+                        "id": "9b9c87c6-d4b7-494c-b177-87feab5904db",
+                        "name": "@cf/meta/llama-3.1-8b-instruct",
+                    }
+                ],
+            },
+        )
+
+    client = DummyAsyncClient(mock_handler)
+    probe = CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        client=client,
+    )
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.HEALTHY
+    assert "catalog probe verified model '@cf/meta/llama-3.1-8b-instruct' is accessible" in health.reason
+    assert len(calls) == 1
+    assert calls[0]["url"] == "https://api.cloudflare.com/client/v4/accounts/acc123/ai/models/search"
+
+
+@pytest.mark.anyio
+async def test_cloudflare_health_check_exact_schema_metadata_confirmation_healthy() -> None:
+    calls = []
+
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        calls.append({"method": method, "url": url, "headers": headers, "params": params})
+        if "/ai/models/search" in url:
+            return httpx.Response(
+                200,
+                json={"success": True, "result": [{"id": "@cf/meta/other-model"}]},
+            )
+        if "/ai/models/schema" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "errors": [],
+                    "messages": [],
+                    "result": {
+                        "input": {
+                            "type": "object",
+                            "properties": {"prompt": {"type": "string"}},
+                            "required": ["prompt"],
+                        },
+                        "output": {
+                            "type": "object",
+                            "properties": {"response": {"type": "string"}},
+                        },
+                    },
+                },
+            )
+        raise ValueError(f"Unexpected url: {url}")
+
+    client = DummyAsyncClient(mock_handler)
+    probe = CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        client=client,
+    )
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.HEALTHY
+    assert health.model == "@cf/meta/llama-3.1-8b-instruct"
+    assert "schema probe verified model '@cf/meta/llama-3.1-8b-instruct' is accessible" in health.reason
+    assert "catalog probe verified" not in health.reason
+    assert len(calls) == 2
+
+
+@pytest.mark.anyio
+async def test_cloudflare_health_check_observed_home_core_variant_false_negative_avoided() -> None:
+    calls = []
+
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        calls.append({"method": method, "url": url, "headers": headers, "params": params})
+        if "/ai/models/search" in url:
+            # Observed home-core response: search returned only the -fp8 variant with UUID id
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "result": [
+                        {
+                            "id": "9b9c87c6-d4b7-494c-b177-87feab5904db",
+                            "name": "@cf/meta/llama-3.1-8b-instruct-fp8",
+                        }
+                    ],
+                },
+            )
+        if "/ai/models/schema" in url:
+            # Observed home-core response: schema lookup for base alias returns 404 code 6002
+            return httpx.Response(
+                404,
+                json={
+                    "success": False,
+                    "errors": [{"code": 6002, "message": "Model schema not found"}],
+                    "result": None,
+                },
+            )
+        raise ValueError(f"Unexpected url: {url}")
+
+    client = DummyAsyncClient(mock_handler)
+    probe = CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        client=client,
+    )
+
+    health = await probe.check_health()
+    # Verified semantics: DEGRADED, neither false-positive HEALTHY nor false-negative UNAVAILABLE
+    assert health.status == InferenceHealthStatus.DEGRADED
+    assert health.status != InferenceHealthStatus.HEALTHY
+    assert health.status != InferenceHealthStatus.UNAVAILABLE
+    assert health.status.is_available is True
+    assert health.model == "@cf/meta/llama-3.1-8b-instruct"
+
+    # Reason asserts narrow, truthful semantics
+    assert "API reachability and authentication established" in health.reason
+    assert "could not be verified" in health.reason
+    assert "runtime inference may still succeed" in health.reason
+    assert "Model schema not found" in health.reason
+    # -fp8 variant was NOT accepted as an exact catalog or schema match
+    assert "catalog probe verified" not in health.reason
+    assert "schema probe verified" not in health.reason
+
+    assert len(calls) == 2
+    assert client.calls == calls
+    assert calls[0]["url"] == "https://api.cloudflare.com/client/v4/accounts/acc123/ai/models/search"
+    assert calls[0]["params"] == {"search": "@cf/meta/llama-3.1-8b-instruct"}
+    assert calls[1]["url"] == "https://api.cloudflare.com/client/v4/accounts/acc123/ai/models/schema"
+    assert calls[1]["params"] == {"model": "@cf/meta/llama-3.1-8b-instruct"}
+
+
+@pytest.mark.anyio
+async def test_cloudflare_health_check_client_lifecycle_and_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1. Injected client handles both requests in exact order and is not closed
+    class TrackingInjectedClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.closed = False
+
+        async def get(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            params: dict[str, str] | None = None,
+        ) -> httpx.Response:
+            self.calls.append(url)
+            if "/ai/models/search" in url:
+                return httpx.Response(200, json={"success": True, "result": []})
+            if "/ai/models/schema" in url:
+                return httpx.Response(
+                    404,
+                    json={
+                        "success": False,
+                        "errors": [{"code": 6002, "message": "Model schema not found"}],
+                    },
+                )
+            raise ValueError(f"Unexpected url {url}")
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    injected = TrackingInjectedClient()
+    probe_injected = CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="token-xyz",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        client=injected,
+    )
+    res_injected = await probe_injected.check_health()
+    assert res_injected.status == InferenceHealthStatus.DEGRADED
+    assert len(injected.calls) == 2
+    assert "/ai/models/search" in injected.calls[0]
+    assert "/ai/models/schema" in injected.calls[1]
+    assert injected.closed is False
+
+    # 2. When no client is injected, probe creates exactly ONE AsyncClient and closes it
+    created_clients: list[Any] = []
+
+    class MockAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.calls: list[str] = []
+            self.entered = False
+            self.exited = False
+            created_clients.append(self)
+
+        async def __aenter__(self) -> Self:
+            self.entered = True
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: object,
+            exc_val: object,
+            exc_tb: object,
+        ) -> None:
+            self.exited = True
+
+        async def get(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            params: dict[str, str] | None = None,
+        ) -> httpx.Response:
+            self.calls.append(url)
+            if "/ai/models/search" in url:
+                return httpx.Response(200, json={"success": True, "result": []})
+            if "/ai/models/schema" in url:
+                return httpx.Response(
+                    404,
+                    json={
+                        "success": False,
+                        "errors": [{"code": 6002, "message": "Model schema not found"}],
+                    },
+                )
+            raise ValueError(f"Unexpected url {url}")
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+
+    probe_owned = CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="token-xyz",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        client=None,
+    )
+    res_owned = await probe_owned.check_health()
+    assert res_owned.status == InferenceHealthStatus.DEGRADED
+    assert len(created_clients) == 1
+    client_instance = created_clients[0]
+    assert client_instance.entered is True
+    assert client_instance.exited is True
+    assert len(client_instance.calls) == 2
+    assert "/ai/models/search" in client_instance.calls[0]
+    assert "/ai/models/schema" in client_instance.calls[1]
+
+
+@pytest.mark.anyio
+async def test_cloudflare_health_check_unverifiable_alias_after_successful_auth_is_degraded() -> None:
+    def mock_handler(method, url, headers, params=None, json_data=None):
+        if "/ai/models/search" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "result": [
+                        {
+                            "id": "9b9c87c6-d4b7-494c-b177-87feab5904db",
+                            "name": "@cf/meta/llama-3.1-8b-instruct-fp8",
+                        }
+                    ],
+                },
+            )
+        if "/ai/models/schema" in url:
+            return httpx.Response(
+                400,
+                json={
+                    "success": False,
+                    "errors": [{"code": 5007, "message": "No such model"}],
+                    "result": None,
+                },
+            )
+        raise ValueError(f"Unexpected url: {url}")
+
+    client = DummyAsyncClient(mock_handler)
+    probe = CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        client=client,
+    )
+
+    health = await probe.check_health()
+    assert health.status == InferenceHealthStatus.DEGRADED
+    assert health.status.is_available is True
+    assert "API reachability and authentication established" in health.reason
+    assert "could not be verified" in health.reason
+    assert "runtime inference may still succeed" in health.reason
+    assert "No such model" in health.reason
+
+
+@pytest.mark.anyio
+async def test_cloudflare_health_check_schema_probe_rate_limit_and_quota() -> None:
+    # 1. Rate limited on schema probe
+    def rate_limit_handler(method, url, headers, params=None, json_data=None):
+        if "/ai/models/search" in url:
+            return httpx.Response(200, json={"success": True, "result": []})
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "30"},
+            json={"success": False, "errors": [{"message": "Rate limit exceeded"}]},
+        )
+
+    probe_rl = CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        client=DummyAsyncClient(rate_limit_handler),
+    )
+    h_rl = await probe_rl.check_health()
+    assert h_rl.status == InferenceHealthStatus.RATE_LIMITED
+    assert h_rl.retry_after_seconds == 30.0
+
+    # 2. Quota exhausted on schema probe
+    def quota_handler(method, url, headers, params=None, json_data=None):
+        if "/ai/models/search" in url:
+            return httpx.Response(200, json={"success": True, "result": []})
+        return httpx.Response(
+            429,
+            json={
+                "success": False,
+                "errors": [{"code": 4006, "message": "AiError: neuron allocation exceeded"}],
+            },
+        )
+
+    probe_quota = CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        model="@cf/meta/llama-3.1-8b-instruct",
+        client=DummyAsyncClient(quota_handler),
+    )
+    h_quota = await probe_quota.check_health()
+    assert h_quota.status == InferenceHealthStatus.QUOTA_EXHAUSTED
+    assert "neuron allocation exceeded" in h_quota.reason
+
+
+@pytest.mark.anyio
+async def test_cloudflare_health_check_schema_probe_auth_and_transport_failures() -> None:
+    # 1. 401 on schema probe
+    def auth_handler(method, url, headers, params=None, json_data=None):
+        if "/ai/models/search" in url:
+            return httpx.Response(200, json={"success": True, "result": []})
+        return httpx.Response(401, json={"success": False, "errors": [{"message": "Invalid token"}]})
+
+    h_auth = await CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        client=DummyAsyncClient(auth_handler),
+    ).check_health()
+    assert h_auth.status == InferenceHealthStatus.UNAVAILABLE
+    assert "authentication failed (HTTP 401)" in h_auth.reason
+
+    # 2. 403 on schema probe
+    def authz_handler(method, url, headers, params=None, json_data=None):
+        if "/ai/models/search" in url:
+            return httpx.Response(200, json={"success": True, "result": []})
+        return httpx.Response(403, json={"success": False, "errors": [{"message": "Forbidden"}]})
+
+    h_authz = await CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        client=DummyAsyncClient(authz_handler),
+    ).check_health()
+    assert h_authz.status == InferenceHealthStatus.UNAVAILABLE
+    assert "authorization failed (HTTP 403)" in h_authz.reason
+
+    # 3. Timeout on schema probe
+    class SchemaTimeoutClient:
+        async def get(self, url, headers=None, params=None):
+            if "/ai/models/search" in url:
+                return httpx.Response(200, json={"success": True, "result": []})
+            raise httpx.ReadTimeout("Schema probe read timeout")
+
+    h_timeout = await CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        client=SchemaTimeoutClient(),
+    ).check_health()
+    assert h_timeout.status == InferenceHealthStatus.UNAVAILABLE
+    assert "timed out" in h_timeout.reason
+
+    # 4. RequestError with token redaction on schema probe
+    class SchemaErrorClient:
+        async def get(self, url, headers=None, params=None):
+            if "/ai/models/search" in url:
+                return httpx.Response(200, json={"success": True, "result": []})
+            raise httpx.ConnectError("Failed schema with token secret-token-xyz")
+
+    h_err = await CloudflareHealthProbe(
+        account_id="acc123",
+        api_token="secret-token-xyz",
+        client=SchemaErrorClient(),
+    ).check_health()
+    assert h_err.status == InferenceHealthStatus.UNAVAILABLE
+    assert "secret-token-xyz" not in h_err.reason
+    assert "[REDACTED]" in h_err.reason
+
+
+@pytest.mark.anyio
+async def test_cloudflare_health_check_unverifiable_model_absent_from_catalog_is_degraded() -> None:
     def mock_handler(method, url, headers, params=None, json_data=None):
         return httpx.Response(
             200,
@@ -390,9 +793,11 @@ async def test_cloudflare_health_check_configured_model_absent() -> None:
     )
 
     health = await probe.check_health()
-    assert health.status == InferenceHealthStatus.UNAVAILABLE
-    assert "absent from Cloudflare Workers AI catalog response" in health.reason
-    assert health.status.is_available is False
+    assert health.status == InferenceHealthStatus.DEGRADED
+    assert health.status.is_available is True
+    assert "API reachability and authentication established" in health.reason
+    assert "could not be verified" in health.reason
+    assert "runtime inference may still succeed" in health.reason
 
 
 @pytest.mark.anyio
