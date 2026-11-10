@@ -41,6 +41,12 @@ def test_orchestrator_dockerfile_preserves_boundaries() -> None:
     dockerfile = (REPO_ROOT / "services" / "orchestrator" / "Dockerfile").read_text()
     lines = dockerfile.splitlines()
 
+    copy_lines = [line.strip() for line in lines if line.strip().startswith("COPY packages/")]
+    assert copy_lines == ["COPY packages/contracts/src /app/contracts"]
+
     assert not any("packages/policy" in line for line in lines)
+    assert not any("packages/infrastructure" in line for line in lines)
     env_line = next(line for line in lines if "PYTHONPATH=" in line)
+    assert "PYTHONPATH=/app/src:/app/contracts" in env_line
     assert "/app/policy" not in env_line
+    assert "/app/infrastructure" not in env_line
