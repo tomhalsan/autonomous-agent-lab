@@ -256,3 +256,76 @@ class Tool(Protocol):
     def definition(self) -> ToolDefinition: ...
 
     async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult: ...
+
+
+@dataclass(frozen=True)
+class ToolRegistration:
+    """Immutable registration of a tool within a capability category."""
+
+    tool: Tool
+    category: str
+    _required_inputs: frozenset[str] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool, Tool):
+            raise TypeError("tool must implement Tool protocol")
+        if not isinstance(self.category, str) or not self.category.strip():
+            raise ValueError("category must be a non-empty string")
+
+        params = self.tool.definition.parameters
+        if "required" in params:
+            raw_required = params["required"]
+            if not isinstance(raw_required, (list, tuple, set, frozenset)):
+                raise ValueError(
+                    "parameters['required'] must be a collection of unique, non-empty strings"
+                )
+            seen: set[str] = set()
+            for item in raw_required:
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError(
+                        "parameters['required'] must contain non-empty strings"
+                    )
+                if item in seen:
+                    raise ValueError(
+                        "parameters['required'] must contain unique strings"
+                    )
+                seen.add(item)
+            object.__setattr__(self, "_required_inputs", frozenset(seen))
+        else:
+            object.__setattr__(self, "_required_inputs", frozenset())
+
+    @property
+    def name(self) -> str:
+        return self.tool.definition.name
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self.tool.definition
+
+    @property
+    def required_inputs(self) -> frozenset[str]:
+        return self._required_inputs
+
+
+@runtime_checkable
+class ToolRegistryReader(Protocol):
+    """Read-only query interface for inspecting registered tools."""
+
+    def get(self, name: str) -> ToolRegistration | None: ...
+
+    def find_by_category(self, category: str) -> list[ToolRegistration]: ...
+
+    def find_by_required_inputs(
+        self, required_inputs: set[str] | list[str] | tuple[str, ...] | frozenset[str]
+    ) -> list[ToolRegistration]: ...
+
+    def list_all(self) -> list[ToolRegistration]: ...
+
+
+@runtime_checkable
+class ToolRegistry(ToolRegistryReader, Protocol):
+    """Runtime registry interface for managing tool lifecycle."""
+
+    def register(self, tool: Tool, category: str) -> ToolRegistration: ...
+
+    def unregister(self, name: str) -> ToolRegistration | None: ...
