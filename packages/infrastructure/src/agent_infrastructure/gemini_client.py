@@ -9,7 +9,7 @@ from agent_contracts import FallbackEligibleInferenceError, NonFallbackInference
 logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 
 def normalize_gemini_model(model: str) -> str:

@@ -1217,7 +1217,7 @@ async def test_gemini_health_check_invalid_or_missing_supported_generation_metho
     probe_missing = GeminiHealthProbe(
         api_key="secret-key",
         client=DummyAsyncClient(
-            lambda *a, **kw: httpx.Response(200, json={"name": "models/gemini-2.5-flash"})
+            lambda *a, **kw: httpx.Response(200, json={"name": "models/gemini-3.5-flash-lite"})
         ),
     )
     h_missing = await probe_missing.check_health()
@@ -1230,7 +1230,7 @@ async def test_gemini_health_check_invalid_or_missing_supported_generation_metho
         client=DummyAsyncClient(
             lambda *a, **kw: httpx.Response(
                 200,
-                json={"name": "models/gemini-2.5-flash", "supportedGenerationMethods": None},
+                json={"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": None},
             )
         ),
     )
@@ -1245,7 +1245,7 @@ async def test_gemini_health_check_invalid_or_missing_supported_generation_metho
             lambda *a, **kw: httpx.Response(
                 200,
                 json={
-                    "name": "models/gemini-2.5-flash",
+                    "name": "models/gemini-3.5-flash-lite",
                     "supportedGenerationMethods": "generateContent",
                 },
             )
@@ -1262,7 +1262,7 @@ async def test_gemini_health_check_invalid_or_missing_supported_generation_metho
             lambda *a, **kw: httpx.Response(
                 200,
                 json={
-                    "name": "models/gemini-2.5-flash",
+                    "name": "models/gemini-3.5-flash-lite",
                     "supportedGenerationMethods": {"generateContent": True},
                 },
             )
@@ -1281,7 +1281,7 @@ async def test_gemini_health_check_valid_supported_generation_methods() -> None:
             lambda *a, **kw: httpx.Response(
                 200,
                 json={
-                    "name": "models/gemini-2.5-flash",
+                    "name": "models/gemini-3.5-flash-lite",
                     "supportedGenerationMethods": ["generateContent", "countTokens"],
                 },
             )
@@ -1289,7 +1289,7 @@ async def test_gemini_health_check_valid_supported_generation_methods() -> None:
     )
     h = await probe.check_health()
     assert h.status == InferenceHealthStatus.HEALTHY
-    assert "verified model 'gemini-2.5-flash' is accessible" in h.reason
+    assert "verified model 'gemini-3.5-flash-lite' is accessible" in h.reason
 
 
 @pytest.mark.anyio
@@ -1413,7 +1413,7 @@ async def test_service_adapters_gemini_health_delegation() -> None:
         return httpx.Response(
             200,
             json={
-                "name": "models/gemini-2.5-flash",
+                "name": "models/gemini-3.5-flash-lite",
                 "supportedGenerationMethods": ["generateContent"],
             },
         )
@@ -1731,10 +1731,17 @@ async def test_gemini_health_check_mismatched_suffix_like_model_names() -> None:
 
 
 def test_gemini_model_helpers_and_empty_validation() -> None:
+    # Historical / fixture model
     assert normalize_gemini_model("gemini-2.5-flash") == "gemini-2.5-flash"
     assert normalize_gemini_model("models/gemini-2.5-flash") == "gemini-2.5-flash"
     assert canonical_gemini_model("gemini-2.5-flash") == "models/gemini-2.5-flash"
     assert canonical_gemini_model("models/gemini-2.5-flash") == "models/gemini-2.5-flash"
+
+    # Default model
+    assert normalize_gemini_model("gemini-3.5-flash-lite") == "gemini-3.5-flash-lite"
+    assert normalize_gemini_model("models/gemini-3.5-flash-lite") == "gemini-3.5-flash-lite"
+    assert canonical_gemini_model("gemini-3.5-flash-lite") == "models/gemini-3.5-flash-lite"
+    assert canonical_gemini_model("models/gemini-3.5-flash-lite") == "models/gemini-3.5-flash-lite"
 
     with pytest.raises(ValueError, match="model must be a non-empty string"):
         normalize_gemini_model("")
@@ -1750,3 +1757,26 @@ def test_gemini_model_helpers_and_empty_validation() -> None:
 
     with pytest.raises(ValueError, match="model must be a non-empty string after normalization"):
         GeminiClient(api_key="test-key", model="models/")
+
+
+def test_gemini_client_default_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    client = GeminiClient(api_key="test-key")
+    assert client.model == "gemini-3.5-flash-lite"
+    assert client.normalized_model == "gemini-3.5-flash-lite"
+    assert client.canonical_model == "models/gemini-3.5-flash-lite"
+
+
+def test_gemini_client_model_override_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1. GEMINI_MODEL env override wins over default
+    monkeypatch.setenv("GEMINI_MODEL", "custom-env-model")
+    client_env = GeminiClient(api_key="test-key")
+    assert client_env.model == "custom-env-model"
+    assert client_env.normalized_model == "custom-env-model"
+    assert client_env.canonical_model == "models/custom-env-model"
+
+    # 2. Explicit constructor model wins over GEMINI_MODEL env and default
+    client_explicit = GeminiClient(api_key="test-key", model="constructor-model")
+    assert client_explicit.model == "constructor-model"
+    assert client_explicit.normalized_model == "constructor-model"
+    assert client_explicit.canonical_model == "models/constructor-model"
