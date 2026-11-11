@@ -54,10 +54,12 @@ To access the console:
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pytest -q -m "not redis"
 python -m ruff check .
-docker compose config
+docker compose config --quiet
 ```
+
+For full details on our seven validation layers, container packaging tests, isolated Redis integration suite, and release-validation guidance, see the [Testing Strategy](docs/testing-strategy.md).
 
 ## Next increments
 
@@ -78,7 +80,7 @@ This project is an experimental learning laboratory, not an enterprise product, 
 ## Security & CI
 
 Public repository integrity and security rely on standard GitHub-native mechanisms:
-- **Continuous Integration:** GitHub Actions runs automated tests and Ruff lint checks without external provider credentials.
+- **Continuous Integration:** GitHub Actions runs automated unit tests, isolated Redis integration tests against an ephemeral service container, container packaging validation, and Ruff lint checks without external provider credentials. See the [Testing Strategy](docs/testing-strategy.md).
 - **Dependabot:** Regularly monitors Python dependencies, GitHub Actions, and Docker base images for known vulnerabilities.
 - **Security Policies:** See [SECURITY.md](SECURITY.md) for vulnerability reporting guidelines and credential hygiene policies.
 

@@ -78,6 +78,7 @@ When new files are part of an implementation, ensure their whitespace/EOF format
 
 - Add focused tests for new behavior and regressions.
 - Prefer deterministic tests.
+- Validate architectural and runtime claims at the cheapest boundary capable of disproving them, and never present simulated or modeled evidence as observed runtime evidence.
 - Preserve existing tests unless a requirement intentionally changes their expected behavior.
 - Do not require external providers, network access, or machine-specific services in normal unit tests or CI unless explicitly required.
 - Keep live integration and experimental provider tests opt-in when practical.
