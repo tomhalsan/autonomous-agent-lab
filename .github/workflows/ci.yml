@@ -14,6 +14,17 @@ jobs:
     name: Test and Lint
     runs-on: ubuntu-latest
 
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -33,6 +44,8 @@ jobs:
         run: ruff check .
 
       - name: Run test suite
+        env:
+          REDIS_URL: redis://localhost:6379/15
         run: pytest -q
 
       - name: Validate Docker Compose configuration

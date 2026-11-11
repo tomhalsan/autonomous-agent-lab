@@ -7,6 +7,9 @@ license = "AGPL-3.0-only"
 [tool.pytest.ini_options]
 pythonpath = ["services/orchestrator/src", "services/worker/src", "services/research_agent/src", "packages/contracts/src", "packages/infrastructure/src", "packages/policy/src"]
 testpaths = ["tests"]
+markers = [
+    "redis: integration tests requiring an explicit live Redis instance via REDIS_URL",
+]
 
 [tool.ruff]
 line-length = 100
