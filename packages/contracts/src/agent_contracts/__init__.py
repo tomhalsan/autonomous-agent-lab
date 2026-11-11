@@ -34,14 +34,18 @@ from .results import InferenceResponse, TaskResult
 from .routing import RoutingDecision, RoutingProvenance
 from .tools import (
     Tool,
+    ToolCapabilityMetadata,
     ToolDefinition,
     ToolError,
     ToolErrorCode,
+    ToolIdempotency,
     ToolInvocationRequest,
     ToolInvocationResult,
+    ToolOperationType,
     ToolRegistration,
     ToolRegistry,
     ToolRegistryReader,
+    ToolRiskLevel,
 )
 from .version import __version__
 
@@ -71,14 +75,18 @@ __all__ = [
     "TaskRequested",
     "TaskResult",
     "Tool",
+    "ToolCapabilityMetadata",
     "ToolDefinition",
     "ToolError",
     "ToolErrorCode",
+    "ToolIdempotency",
     "ToolInvocationRequest",
     "ToolInvocationResult",
+    "ToolOperationType",
     "ToolRegistration",
     "ToolRegistry",
     "ToolRegistryReader",
+    "ToolRiskLevel",
     "__version__",
     "evaluate_agent_record",
     "evaluate_availability",

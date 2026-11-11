@@ -14,6 +14,161 @@ class ToolErrorCode(str, Enum):
     TIMEOUT = "timeout"
 
 
+class ToolOperationType(str, Enum):
+    """Execution side-effect nature of a tool operation."""
+
+    READ_ONLY = "read_only"
+    STATE_MUTATING = "state_mutating"
+
+
+class ToolRiskLevel(str, Enum):
+    """Descriptive risk classification for tool execution."""
+
+    LOW = "low"
+    ELEVATED = "elevated"
+    HIGH = "high"
+
+
+class ToolIdempotency(str, Enum):
+    """Idempotency guarantees under repeated invocations with identical arguments."""
+
+    IDEMPOTENT = "idempotent"
+    NON_IDEMPOTENT = "non_idempotent"
+    CONDITIONAL = "conditional"
+    UNKNOWN = "unknown"
+
+
+def _parse_enum(value: Any, enum_cls: type[Any], field_name: str) -> Any:
+    """Parse an enum member or case-insensitive string, rejecting invalid types and values."""
+    if isinstance(value, enum_cls):
+        return value
+    if isinstance(value, Enum) or not isinstance(value, str):
+        raise TypeError(
+            f"{field_name} must be a {enum_cls.__name__} or string, got {type(value).__name__}"
+        )
+    normalized = value.strip().lower()
+    try:
+        return enum_cls(normalized)
+    except ValueError as exc:
+        valid = [m.value for m in enum_cls]
+        raise ValueError(
+            f"Unknown {field_name} {value!r}. Expected one of {valid}"
+        ) from exc
+
+
+@dataclass(frozen=True)
+class ToolCapabilityMetadata:
+    """Descriptive capability metadata declaring a tool's operational characteristics."""
+
+    category: str
+    operation_type: ToolOperationType
+    risk_level: ToolRiskLevel
+    idempotency: ToolIdempotency
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.category, str):
+            raise TypeError(f"category must be a string, got {type(self.category).__name__}")
+        normalized_category = self.category.strip()
+        if not normalized_category:
+            raise ValueError("category must be a non-empty string")
+        object.__setattr__(self, "category", normalized_category)
+
+        parsed_op = _parse_enum(self.operation_type, ToolOperationType, "operation_type")
+        object.__setattr__(self, "operation_type", parsed_op)
+
+        parsed_risk = _parse_enum(self.risk_level, ToolRiskLevel, "risk_level")
+        object.__setattr__(self, "risk_level", parsed_risk)
+
+        parsed_idem = _parse_enum(self.idempotency, ToolIdempotency, "idempotency")
+        object.__setattr__(self, "idempotency", parsed_idem)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "category": self.category,
+            "operation_type": self.operation_type.value,
+            "risk_level": self.risk_level.value,
+            "idempotency": self.idempotency.value,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolCapabilityMetadata":
+        if not isinstance(data, dict):
+            raise TypeError("data must be a dict")
+        return cls(
+            category=data["category"],
+            operation_type=data["operation_type"],
+            risk_level=data["risk_level"],
+            idempotency=data["idempotency"],
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> "ToolCapabilityMetadata":
+        return cls.from_dict(json.loads(value))
+
+
+def _validate_tool_schema(schema: dict[str, Any], schema_name: str) -> None:
+    """Validate a schema dictionary against the Tiny Agent Lab tool-schema profile."""
+    if not isinstance(schema, dict):
+        if schema_name == "output_schema":
+            raise TypeError("output_schema must be a dict if provided")
+        raise TypeError(f"{schema_name} must be a dict")
+
+    if not schema:
+        return
+
+    if "type" in schema:
+        raw_type = schema["type"]
+        if not isinstance(raw_type, str):
+            raise ValueError(f"{schema_name}['type'] must be a string")
+        if schema_name == "parameters":
+            if raw_type != "object":
+                raise ValueError(f"{schema_name}['type'] must be 'object' for tool invocation")
+        else:
+            valid_types = {"object", "array", "string", "number", "integer", "boolean", "null"}
+            if raw_type not in valid_types:
+                raise ValueError(
+                    f"{schema_name}['type'] must be one of {sorted(valid_types)}"
+                )
+
+    if "properties" in schema:
+        props = schema["properties"]
+        if not isinstance(props, dict):
+            raise ValueError(f"{schema_name}['properties'] must be a dict")
+        for prop_name, prop_def in props.items():
+            if not isinstance(prop_name, str) or not prop_name.strip():
+                raise ValueError(f"{schema_name}['properties'] keys must be non-empty strings")
+            if not isinstance(prop_def, dict):
+                raise TypeError(
+                    f"{schema_name}['properties'][{prop_name!r}] must be a dict"
+                )
+
+    if "required" in schema:
+        raw_required = schema["required"]
+        if not isinstance(raw_required, list):
+            raise TypeError(
+                f"{schema_name}['required'] must be a list of unique, non-empty strings"
+            )
+        seen: set[str] = set()
+        for item in raw_required:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    f"{schema_name}['required'] must contain non-empty strings"
+                )
+            if item in seen:
+                raise ValueError(
+                    f"{schema_name}['required'] must contain unique strings"
+                )
+            seen.add(item)
+
+    if "additionalProperties" in schema:
+        add_props = schema["additionalProperties"]
+        if not isinstance(add_props, (bool, dict)):
+            raise ValueError(f"{schema_name}['additionalProperties'] must be a bool or dict")
+
+
 @dataclass(frozen=True)
 class ToolError:
     """Standardized failure description for tool operations."""
@@ -68,16 +223,18 @@ class ToolDefinition:
     description: str
     parameters: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
+    metadata: ToolCapabilityMetadata | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("Tool name must not be empty")
         if not self.description.strip():
             raise ValueError("Tool description must not be empty")
-        if not isinstance(self.parameters, dict):
-            raise TypeError("parameters must be a dict")
-        if self.output_schema is not None and not isinstance(self.output_schema, dict):
-            raise TypeError("output_schema must be a dict if provided")
+        _validate_tool_schema(self.parameters, "parameters")
+        if self.output_schema is not None:
+            _validate_tool_schema(self.output_schema, "output_schema")
+        if self.metadata is not None and not isinstance(self.metadata, ToolCapabilityMetadata):
+            raise TypeError("metadata must be a ToolCapabilityMetadata instance if provided")
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -87,6 +244,8 @@ class ToolDefinition:
         }
         if self.output_schema is not None:
             data["output_schema"] = dict(self.output_schema)
+        if self.metadata is not None:
+            data["metadata"] = self.metadata.to_dict()
         return data
 
     def to_json(self) -> str:
@@ -94,6 +253,12 @@ class ToolDefinition:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ToolDefinition":
+        raw_metadata = data.get("metadata")
+        metadata = (
+            ToolCapabilityMetadata.from_dict(raw_metadata)
+            if raw_metadata is not None
+            else None
+        )
         return cls(
             name=str(data["name"]),
             description=str(data["description"]),
@@ -103,6 +268,7 @@ class ToolDefinition:
                 if data.get("output_schema") is not None
                 else None
             ),
+            metadata=metadata,
         )
 
     @classmethod
@@ -263,34 +429,33 @@ class ToolRegistration:
     """Immutable registration of a tool within a capability category."""
 
     tool: Tool
-    category: str
+    category: str | None = None
     _required_inputs: frozenset[str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.tool, Tool):
             raise TypeError("tool must implement Tool protocol")
-        if not isinstance(self.category, str) or not self.category.strip():
-            raise ValueError("category must be a non-empty string")
+
+        meta = self.tool.definition.metadata
+        if meta is not None:
+            if self.category is not None:
+                if not isinstance(self.category, str) or not self.category.strip():
+                    raise ValueError("category must be a non-empty string")
+                if self.category.strip().lower() != meta.category.strip().lower():
+                    raise ValueError(
+                        f"Registration category '{self.category}' conflicts with tool capability category '{meta.category}'"
+                    )
+            object.__setattr__(self, "category", meta.category)
+        else:
+            if self.category is None:
+                raise ValueError("category must be provided when tool metadata is unclassified")
+            if not isinstance(self.category, str) or not self.category.strip():
+                raise ValueError("category must be a non-empty string")
+            object.__setattr__(self, "category", self.category.strip())
 
         params = self.tool.definition.parameters
         if "required" in params:
-            raw_required = params["required"]
-            if not isinstance(raw_required, (list, tuple, set, frozenset)):
-                raise ValueError(
-                    "parameters['required'] must be a collection of unique, non-empty strings"
-                )
-            seen: set[str] = set()
-            for item in raw_required:
-                if not isinstance(item, str) or not item.strip():
-                    raise ValueError(
-                        "parameters['required'] must contain non-empty strings"
-                    )
-                if item in seen:
-                    raise ValueError(
-                        "parameters['required'] must contain unique strings"
-                    )
-                seen.add(item)
-            object.__setattr__(self, "_required_inputs", frozenset(seen))
+            object.__setattr__(self, "_required_inputs", frozenset(params["required"]))
         else:
             object.__setattr__(self, "_required_inputs", frozenset())
 
@@ -326,6 +491,6 @@ class ToolRegistryReader(Protocol):
 class ToolRegistry(ToolRegistryReader, Protocol):
     """Runtime registry interface for managing tool lifecycle."""
 
-    def register(self, tool: Tool, category: str) -> ToolRegistration: ...
+    def register(self, tool: Tool, category: str | None = None) -> ToolRegistration: ...
 
     def unregister(self, name: str) -> ToolRegistration | None: ...

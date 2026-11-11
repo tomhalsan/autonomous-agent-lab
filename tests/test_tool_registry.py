@@ -4,12 +4,16 @@ from typing import Any
 import pytest
 from agent_contracts import (
     Tool,
+    ToolCapabilityMetadata,
     ToolDefinition,
+    ToolIdempotency,
     ToolInvocationRequest,
     ToolInvocationResult,
+    ToolOperationType,
     ToolRegistration,
     ToolRegistry,
     ToolRegistryReader,
+    ToolRiskLevel,
 )
 from agent_infrastructure import InMemoryToolRegistry
 
@@ -22,11 +26,13 @@ class DummyTool:
         name: str,
         description: str = "Test tool description",
         parameters: dict[str, Any] | None = None,
+        metadata: ToolCapabilityMetadata | None = None,
     ) -> None:
         self._definition = ToolDefinition(
             name=name,
             description=description,
             parameters=parameters if parameters is not None else {},
+            metadata=metadata,
         )
 
     @property
@@ -93,44 +99,21 @@ def test_tool_registration_required_inputs_extraction() -> None:
     assert reg_valid_req.required_inputs == frozenset({"a", "b"})
 
 
-def test_tool_registration_rejects_malformed_required_inputs() -> None:
-    tool = DummyTool(name="test_tool")
+def test_tool_registration_derives_required_inputs_from_definition() -> None:
+    # 1. Missing "required" produces empty frozenset
+    tool_none = DummyTool(name="no_req", parameters={})
+    reg_none = ToolRegistration(tool=tool_none, category="general")
+    assert reg_none.required_inputs == frozenset()
 
-    # A string is not a valid collection of required inputs
-    tool._definition = ToolDefinition(
-        name="test_tool",
-        description="desc",
-        parameters={"required": "query"},
-    )
-    with pytest.raises(ValueError, match="parameters\\['required'\\] must be a collection"):
-        ToolRegistration(tool=tool, category="general")
+    # 2. Empty list produces empty frozenset
+    tool_empty = DummyTool(name="empty_req", parameters={"required": []})
+    reg_empty = ToolRegistration(tool=tool_empty, category="general")
+    assert reg_empty.required_inputs == frozenset()
 
-    # Non-string element in collection
-    tool._definition = ToolDefinition(
-        name="test_tool",
-        description="desc",
-        parameters={"required": ["query", 123]},  # type: ignore[list-item]
-    )
-    with pytest.raises(ValueError, match="must contain non-empty strings"):
-        ToolRegistration(tool=tool, category="general")
-
-    # Empty/whitespace string in collection
-    tool._definition = ToolDefinition(
-        name="test_tool",
-        description="desc",
-        parameters={"required": ["query", "   "]},
-    )
-    with pytest.raises(ValueError, match="must contain non-empty strings"):
-        ToolRegistration(tool=tool, category="general")
-
-    # Duplicate string elements
-    tool._definition = ToolDefinition(
-        name="test_tool",
-        description="desc",
-        parameters={"required": ["query", "query"]},
-    )
-    with pytest.raises(ValueError, match="must contain unique strings"):
-        ToolRegistration(tool=tool, category="general")
+    # 3. Valid required list produces populated frozenset
+    tool_valid = DummyTool(name="valid_req", parameters={"required": ["query", "limit"]})
+    reg_valid = ToolRegistration(tool=tool_valid, category="general")
+    assert reg_valid.required_inputs == frozenset({"query", "limit"})
 
 
 def test_registry_register_and_unregister_lifecycle() -> None:
@@ -295,3 +278,66 @@ def test_registry_returned_snapshots_are_isolated() -> None:
     req_snapshot = registry.find_by_required_inputs(["id"])
     req_snapshot.append("mutation")  # type: ignore[arg-type]
     assert registry.find_by_required_inputs(["id"]) == [reg]
+
+
+def test_registry_registration_with_metadata_category_resolution() -> None:
+    registry = InMemoryToolRegistry()
+    meta = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    tool = DummyTool(name="web_search", metadata=meta)
+
+    # Registering without explicit category automatically adopts metadata.category
+    reg = registry.register(tool)
+    assert reg.category == "search"
+    assert registry.get("web_search") == reg
+    assert registry.find_by_category("search") == [reg]
+
+
+def test_registry_registration_accepts_matching_explicit_category() -> None:
+    registry = InMemoryToolRegistry()
+    meta = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    tool = DummyTool(name="web_search", metadata=meta)
+
+    # Registering with matching explicit category (case-insensitive) succeeds
+    reg = registry.register(tool, category="SEARCH")
+    assert reg.category == "search"
+    assert registry.get("web_search") == reg
+
+
+def test_registry_registration_rejects_conflicting_explicit_category() -> None:
+    registry = InMemoryToolRegistry()
+    meta = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    tool = DummyTool(name="web_search", metadata=meta)
+
+    with pytest.raises(
+        ValueError, match="Registration category 'database' conflicts with tool capability category 'search'"
+    ):
+        registry.register(tool, category="database")
+
+
+def test_registry_registration_unclassified_requires_explicit_category() -> None:
+    registry = InMemoryToolRegistry()
+    unclassified_tool = DummyTool(name="calc")  # metadata=None
+
+    # Registering unclassified tool without category raises ValueError
+    with pytest.raises(ValueError, match="category must be provided when tool metadata is unclassified"):
+        registry.register(unclassified_tool)
+
+    # Registering with explicit category succeeds
+    reg = registry.register(unclassified_tool, category="math")
+    assert reg.category == "math"
+    assert registry.get("calc") == reg

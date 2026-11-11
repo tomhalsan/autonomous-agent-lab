@@ -10,13 +10,18 @@ class InMemoryToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolRegistration] = {}
 
-    def register(self, tool: Tool, category: str) -> ToolRegistration:
+    def register(self, tool: Tool, category: str | None = None) -> ToolRegistration:
         """Register a tool with an associated capability category.
+
+        If the tool declares ToolCapabilityMetadata, its declared category is
+        authoritative; an explicit category may be provided only if it matches.
+        For unclassified tools without metadata, category must be explicitly provided.
 
         Raises:
             TypeError: If tool does not implement Tool protocol.
-            ValueError: If tool name is already registered, if category is empty,
-                or if tool parameters['required'] is malformed.
+            ValueError: If tool name is already registered, category is empty or missing
+                for unclassified tools, category conflicts with tool metadata, or tool
+                parameters schema is malformed.
         """
         registration = ToolRegistration(tool=tool, category=category)
         if registration.name in self._tools:
