@@ -1,3 +1,5 @@
+from dataclasses import FrozenInstanceError
+
 import pytest
 from agent_contracts import (
     AgentCapabilityMetadata,
@@ -8,11 +10,15 @@ from agent_contracts import (
     TaskRequested,
     TaskResult,
     Tool,
+    ToolCapabilityMetadata,
     ToolDefinition,
     ToolError,
     ToolErrorCode,
+    ToolIdempotency,
     ToolInvocationRequest,
     ToolInvocationResult,
+    ToolOperationType,
+    ToolRiskLevel,
 )
 
 
@@ -463,6 +469,458 @@ def test_tool_contracts_have_no_external_dependencies() -> None:
     for term in disallowed_terms:
         assert term not in module_imports
         assert term not in tools_module.__dict__
+
+
+def test_tool_operation_type_enumeration() -> None:
+    assert ToolOperationType.READ_ONLY == "read_only"
+    assert ToolOperationType.STATE_MUTATING == "state_mutating"
+
+    # Direct enum member
+    meta_enum = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    assert meta_enum.operation_type == ToolOperationType.READ_ONLY
+
+    # Case-insensitive string
+    meta_str = ToolCapabilityMetadata(
+        category="search",
+        operation_type="READ_ONLY",
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    assert meta_str.operation_type == ToolOperationType.READ_ONLY
+
+    # Rejection of invalid types with TypeError
+    for bad_val in [123, True, False, object(), ToolRiskLevel.LOW]:
+        with pytest.raises(TypeError, match="operation_type must be a ToolOperationType or string"):
+            ToolCapabilityMetadata(
+                category="search",
+                operation_type=bad_val,  # type: ignore[arg-type]
+                risk_level=ToolRiskLevel.LOW,
+                idempotency=ToolIdempotency.IDEMPOTENT,
+            )
+
+    # Rejection of unknown string with ValueError
+    with pytest.raises(ValueError, match="Unknown operation_type 'invalid_op'"):
+        ToolCapabilityMetadata(
+            category="search",
+            operation_type="invalid_op",
+            risk_level=ToolRiskLevel.LOW,
+            idempotency=ToolIdempotency.IDEMPOTENT,
+        )
+
+
+def test_tool_risk_level_enumeration() -> None:
+    assert ToolRiskLevel.LOW == "low"
+    assert ToolRiskLevel.ELEVATED == "elevated"
+    assert ToolRiskLevel.HIGH == "high"
+
+    # Direct enum member and case-insensitive string
+    meta_enum = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.ELEVATED,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    assert meta_enum.risk_level == ToolRiskLevel.ELEVATED
+
+    meta_str = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level="elevated",
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    assert meta_str.risk_level == ToolRiskLevel.ELEVATED
+
+    # Rejection of invalid types with TypeError
+    for bad_val in [123, True, False, object(), ToolOperationType.READ_ONLY]:
+        with pytest.raises(TypeError, match="risk_level must be a ToolRiskLevel or string"):
+            ToolCapabilityMetadata(
+                category="search",
+                operation_type=ToolOperationType.READ_ONLY,
+                risk_level=bad_val,  # type: ignore[arg-type]
+                idempotency=ToolIdempotency.IDEMPOTENT,
+            )
+
+    # Rejection of unknown string with ValueError
+    with pytest.raises(ValueError, match="Unknown risk_level 'critical'"):
+        ToolCapabilityMetadata(
+            category="search",
+            operation_type=ToolOperationType.READ_ONLY,
+            risk_level="critical",
+            idempotency=ToolIdempotency.IDEMPOTENT,
+        )
+
+
+def test_tool_idempotency_enumeration() -> None:
+    assert ToolIdempotency.IDEMPOTENT == "idempotent"
+    assert ToolIdempotency.NON_IDEMPOTENT == "non_idempotent"
+    assert ToolIdempotency.CONDITIONAL == "conditional"
+    assert ToolIdempotency.UNKNOWN == "unknown"
+
+    # Distinguish CONDITIONAL from UNKNOWN
+    assert ToolIdempotency.CONDITIONAL != ToolIdempotency.UNKNOWN
+
+    # Direct enum and case-insensitive string
+    meta_enum = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.CONDITIONAL,
+    )
+    assert meta_enum.idempotency == ToolIdempotency.CONDITIONAL
+
+    meta_str = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency="Conditional",
+    )
+    assert meta_str.idempotency == ToolIdempotency.CONDITIONAL
+
+    # Rejection of invalid types with TypeError
+    for bad_val in [123, True, False, object(), ToolRiskLevel.LOW]:
+        with pytest.raises(TypeError, match="idempotency must be a ToolIdempotency or string"):
+            ToolCapabilityMetadata(
+                category="search",
+                operation_type=ToolOperationType.READ_ONLY,
+                risk_level=ToolRiskLevel.LOW,
+                idempotency=bad_val,  # type: ignore[arg-type]
+            )
+
+    # Rejection of unknown string with ValueError
+    with pytest.raises(ValueError, match="Unknown idempotency 'always'"):
+        ToolCapabilityMetadata(
+            category="search",
+            operation_type=ToolOperationType.READ_ONLY,
+            risk_level=ToolRiskLevel.LOW,
+            idempotency="always",
+        )
+
+
+def test_tool_capability_metadata_category_normalization() -> None:
+    # Leading/trailing whitespace stripped while preserving capitalization
+    meta = ToolCapabilityMetadata(
+        category=" Search Service ",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    assert meta.category == "Search Service"
+    assert meta.to_dict()["category"] == "Search Service"
+    assert '"category": "Search Service"' in meta.to_json()
+
+    # Rejects non-string category with TypeError
+    for bad_cat in [123, True, None, object()]:
+        with pytest.raises(TypeError, match="category must be a string"):
+            ToolCapabilityMetadata(
+                category=bad_cat,  # type: ignore[arg-type]
+                operation_type=ToolOperationType.READ_ONLY,
+                risk_level=ToolRiskLevel.LOW,
+                idempotency=ToolIdempotency.IDEMPOTENT,
+            )
+
+    # Rejects empty or whitespace-only category with ValueError
+    for empty_cat in ["", "   "]:
+        with pytest.raises(ValueError, match="category must be a non-empty string"):
+            ToolCapabilityMetadata(
+                category=empty_cat,
+                operation_type=ToolOperationType.READ_ONLY,
+                risk_level=ToolRiskLevel.LOW,
+                idempotency=ToolIdempotency.IDEMPOTENT,
+            )
+
+
+def test_tool_capability_metadata_from_dict_rules() -> None:
+    # Valid dict with strings
+    data = {
+        "category": " Search ",
+        "operation_type": "READ_ONLY",
+        "risk_level": "LOW",
+        "idempotency": "IDEMPOTENT",
+    }
+    meta = ToolCapabilityMetadata.from_dict(data)
+    assert meta.category == "Search"
+    assert meta.operation_type == ToolOperationType.READ_ONLY
+    assert meta.risk_level == ToolRiskLevel.LOW
+    assert meta.idempotency == ToolIdempotency.IDEMPOTENT
+
+    # from_dict rejects non-string category with TypeError
+    bad_data_cat = dict(data, category=123)
+    with pytest.raises(TypeError, match="category must be a string"):
+        ToolCapabilityMetadata.from_dict(bad_data_cat)
+
+    # from_dict rejects non-string / non-enum operation_type with TypeError
+    bad_data_op = dict(data, operation_type=999)
+    with pytest.raises(TypeError, match="operation_type must be a ToolOperationType or string"):
+        ToolCapabilityMetadata.from_dict(bad_data_op)
+
+    # from_dict rejects unknown enum string with ValueError
+    bad_data_unknown = dict(data, operation_type="not_an_op")
+    with pytest.raises(ValueError, match="Unknown operation_type 'not_an_op'"):
+        ToolCapabilityMetadata.from_dict(bad_data_unknown)
+
+
+def test_tool_capability_metadata_immutability_and_roundtrip() -> None:
+    original = ToolCapabilityMetadata(
+        category="retrieval",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        original.category = "other"  # type: ignore[misc]
+
+    # JSON roundtrip
+    serialized = original.to_json()
+    restored = ToolCapabilityMetadata.from_json(serialized)
+    assert restored == original
+    assert restored.category == "retrieval"
+    assert restored.operation_type == ToolOperationType.READ_ONLY
+    assert restored.risk_level == ToolRiskLevel.LOW
+    assert restored.idempotency == ToolIdempotency.IDEMPOTENT
+
+    # Dict roundtrip
+    dict_data = original.to_dict()
+    assert dict_data == {
+        "category": "retrieval",
+        "operation_type": "read_only",
+        "risk_level": "low",
+        "idempotency": "idempotent",
+    }
+    assert ToolCapabilityMetadata.from_dict(dict_data) == original
+
+
+def test_tool_capability_metadata_rejects_empty_category() -> None:
+    for bad_cat in ["", "   "]:
+        with pytest.raises(ValueError, match="category must be a non-empty string"):
+            ToolCapabilityMetadata(
+                category=bad_cat,
+                operation_type=ToolOperationType.READ_ONLY,
+                risk_level=ToolRiskLevel.LOW,
+                idempotency=ToolIdempotency.IDEMPOTENT,
+            )
+
+
+def test_orthogonal_operation_and_risk() -> None:
+    # Read-only operation with HIGH risk (e.g. confidential security scan)
+    high_risk_reader = ToolCapabilityMetadata(
+        category="security",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.HIGH,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    assert high_risk_reader.operation_type == ToolOperationType.READ_ONLY
+    assert high_risk_reader.risk_level == ToolRiskLevel.HIGH
+
+    # Mutating operation with LOW risk (e.g. temporary scratchpad write)
+    low_risk_mutator = ToolCapabilityMetadata(
+        category="scratchpad",
+        operation_type=ToolOperationType.STATE_MUTATING,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.NON_IDEMPOTENT,
+    )
+    assert low_risk_mutator.operation_type == ToolOperationType.STATE_MUTATING
+    assert low_risk_mutator.risk_level == ToolRiskLevel.LOW
+
+
+def test_tool_definition_schema_profile_validation() -> None:
+    # Valid parameter and output schemas
+    valid_def = ToolDefinition(
+        name="valid_tool",
+        description="A tool with valid schemas",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        output_schema={
+            "type": "object",
+            "properties": {"items": {"type": "array"}},
+        },
+    )
+    assert valid_def.name == "valid_tool"
+
+    # parameters['type'] must be 'object' for tool invocation if specified
+    with pytest.raises(ValueError, match="parameters\\['type'\\] must be 'object'"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"type": "string"},
+        )
+
+    # non-string 'type'
+    with pytest.raises(ValueError, match="parameters\\['type'\\] must be a string"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"type": 123},  # type: ignore[dict-item]
+        )
+
+    # invalid output_schema type
+    with pytest.raises(ValueError, match="output_schema\\['type'\\] must be one of"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={},
+            output_schema={"type": "invalid_type"},
+        )
+
+    # properties must be a dict
+    with pytest.raises(ValueError, match="parameters\\['properties'\\] must be a dict"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"properties": "not-a-dict"},  # type: ignore[dict-item]
+        )
+
+    # property value must be a dict
+    with pytest.raises(TypeError, match="parameters\\['properties'\\]\\['field'\\] must be a dict"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"properties": {"field": "not-a-dict"}},  # type: ignore[dict-item]
+        )
+
+    # property key must not be empty string
+    with pytest.raises(ValueError, match="parameters\\['properties'\\] keys must be non-empty strings"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"properties": {"": {"type": "string"}}},
+        )
+
+    # required must be a list of unique, non-empty strings
+    with pytest.raises(TypeError, match="parameters\\['required'\\] must be a list"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"required": "not-a-list"},  # type: ignore[dict-item]
+        )
+
+    # Rejects tuple, set, and frozenset
+    with pytest.raises(TypeError, match="parameters\\['required'\\] must be a list"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"required": ("query",)},  # type: ignore[dict-item]
+        )
+
+    with pytest.raises(TypeError, match="parameters\\['required'\\] must be a list"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"required": {"query"}},  # type: ignore[dict-item]
+        )
+
+    with pytest.raises(TypeError, match="parameters\\['required'\\] must be a list"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"required": frozenset({"query"})},  # type: ignore[dict-item]
+        )
+
+    with pytest.raises(ValueError, match="parameters\\['required'\\] must contain non-empty strings"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"required": ["query", 123]},  # type: ignore[list-item]
+        )
+
+    with pytest.raises(ValueError, match="parameters\\['required'\\] must contain non-empty strings"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"required": ["query", "   "]},
+        )
+
+    with pytest.raises(ValueError, match="parameters\\['required'\\] must contain unique strings"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"required": ["query", "query"]},
+        )
+
+    # additionalProperties must be bool or dict
+    with pytest.raises(ValueError, match="parameters\\['additionalProperties'\\] must be a bool or dict"):
+        ToolDefinition(
+            name="tool",
+            description="desc",
+            parameters={"additionalProperties": "not-bool-or-dict"},  # type: ignore[dict-item]
+        )
+
+
+def test_tool_capability_metadata_has_no_transport_or_credential_fields() -> None:
+    # Structural assertion: ToolCapabilityMetadata contains zero transport or credential fields
+    field_names = set(ToolCapabilityMetadata.__dataclass_fields__.keys())
+    assert field_names == {"category", "operation_type", "risk_level", "idempotency"}
+
+    disallowed_substrings = ["host", "url", "port", "token", "key", "secret", "password", "auth", "cred"]
+    for field_name in field_names:
+        for disallowed in disallowed_substrings:
+            assert disallowed not in field_name.lower(), f"Unexpected field {field_name!r}"
+
+
+def test_tool_definition_allows_legitimate_security_argument_names() -> None:
+    # No keyword denylisting on argument property names: tools can accept credentials or account_ids as arguments
+    legitimate_tool = ToolDefinition(
+        name="credential_validator",
+        description="Validates credential syntax without storing",
+        parameters={
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "api_key_format": {"type": "string"},
+                "token_expiry": {"type": "integer"},
+            },
+            "required": ["account_id"],
+        },
+    )
+    assert "account_id" in legitimate_tool.parameters["properties"]
+    assert "api_key_format" in legitimate_tool.parameters["properties"]
+
+
+def test_tool_definition_with_composed_metadata_roundtrip() -> None:
+    metadata = ToolCapabilityMetadata(
+        category="search",
+        operation_type=ToolOperationType.READ_ONLY,
+        risk_level=ToolRiskLevel.LOW,
+        idempotency=ToolIdempotency.IDEMPOTENT,
+    )
+    tool_def = ToolDefinition(
+        name="web_search",
+        description="Search web",
+        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
+        output_schema={"type": "object"},
+        metadata=metadata,
+    )
+
+    serialized = tool_def.to_json()
+    restored = ToolDefinition.from_json(serialized)
+    assert restored == tool_def
+    assert restored.metadata == metadata
+    assert restored.metadata.category == "search"
+    assert restored.metadata.operation_type == ToolOperationType.READ_ONLY
+    assert restored.metadata.risk_level == ToolRiskLevel.LOW
+    assert restored.metadata.idempotency == ToolIdempotency.IDEMPOTENT
+
+    # Backward compatibility: unclassified tool without metadata omits 'metadata' key
+    unclassified_def = ToolDefinition(
+        name="calc",
+        description="Calculator",
+    )
+    unclassified_dict = unclassified_def.to_dict()
+    assert "metadata" not in unclassified_dict
+    restored_unclassified = ToolDefinition.from_json(unclassified_def.to_json())
+    assert restored_unclassified.metadata is None
 
 
 # --- InferenceResponse Contract Tests ---
