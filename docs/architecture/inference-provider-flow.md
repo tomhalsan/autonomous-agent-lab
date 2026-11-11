@@ -243,11 +243,10 @@ Tiny Agent Lab enforces four core truthfulness rules:
 - **Result Presentation**: Grounded research findings with structured numbered findings and clickable source citations were persisted to `ResultStore` and presented in the Prototype Console.
 - **Lifecycle Cleanliness**: Research Agent returned cleanly to `idle` upon task completion.
 
-### Validation Boundary
-- **Cross-Provider Fallback Not Exercised**: Live cross-provider fallback traversal was **not** exercised during this deployment run on `home-core`.
-- **Single-Provider Configuration**: Cloudflare Workers AI was intentionally the only configured inference provider during this validation exercise.
-- **Demonstrated Scope**: This deployment validation proves the single-provider selection, execution, telemetry, General Worker, and Research Agent operational paths.
-- **Multi-Provider Fallback Coverage**: Multi-provider fallback behavior remains covered by deterministic automated simulation suites, but was not demonstrated by this live deployment exercise.
+### Validation Boundary (Initial Single-Provider Baseline)
+- **Initial Single-Provider Configuration**: Cloudflare Workers AI was intentionally the only configured inference provider during this initial baseline deployment exercise.
+- **Demonstrated Scope of Initial Baseline**: This initial baseline proved the single-provider selection, execution, telemetry, General Worker, and Research Agent operational paths.
+- **Subsequent Fallback Validation**: Live cross-provider fallback traversal—initially unexercised in this baseline run—was subsequently validated on `home-core` using a controlled multi-provider configuration (`gemini,cloudflare`), as documented in [Live Cross-Provider Fallback Validation](#live-cross-provider-fallback-validation-home-core-post-release).
 
 ### Deployment Defects Discovered and Resolved
 
@@ -280,3 +279,88 @@ Live deployment on `home-core` surfaced real integration defects that were isola
   2. *Real External-Provider Metadata Behavior*: Test doubles could not anticipate Cloudflare's runtime model aliasing where direct generation succeeds but catalog and schema endpoints return variant names or 404 responses.
   3. *Network-Sensitive Timeout Assumptions*: Local and mock execution did not reflect the real-world network latency and multi-endpoint overhead of remote provider metadata probing under network variance.
 - **Continuous Improvement**: Container-boundary CI coverage was added for the packaging defect, and these empirical findings should inform the subsequent test-strategy review without disparaging `pytest`, `Ruff`, mocks, or automated testing generally. For comprehensive definitions and release validation procedures across all seven testing layers, see the authoritative [Testing Strategy](../testing-strategy.md).
+
+---
+
+## Live Cross-Provider Fallback Validation (home-core Post-Release)
+
+Following the initial single-provider deployment validation, live cross-provider fallback traversal was operationally validated on the physical `home-core` server.
+
+### Validation Context & Configuration
+- **Host**: `home-core` (bare-metal physical host).
+- **Commit**: `8e9fe54` (`fix: allow fallback on Gemini payment required (#166)`).
+- **Deployment**: Docker Compose (`compose.yaml`).
+- **Configured Providers**:
+  - `INFERENCE_PROVIDER=gemini,cloudflare`
+  - `GEMINI_MODEL=gemini-3.8-flash`
+- **Controlled Failure Mechanism**: The Gemini API key belonged to an existing Google Cloud Tier 1 project with depleted prepaid balance (exhausted credits). This was an intentional, temporary validation configuration chosen specifically to produce a genuine remote `HTTP 402 Payment Required` inference-time failure while the zero-generation metadata probe succeeded.
+- **Model Note**: The validation deliberately used `gemini-3.8-flash` with the depleted Tier 1 project because that specific combination produced the genuine payment-required condition. Issue #165 separately updates the repository default model to `gemini-3.5-flash-lite`. Historical records truthfully document the exact model used during validation.
+
+### Live General Worker Execution Evidence
+
+- **Primary Task ID**: `238c6784-e43c-4194-b8cc-943028c7f56f`
+- **Provider Probing Phase**:
+  - Gemini metadata probe: `GET /v1beta/models/gemini-3.8-flash` returned `HTTP 200 OK` (status `HEALTHY`).
+  - Cloudflare metadata probe completed successfully and Cloudflare remained eligible (`DEGRADED` status preserving execution eligibility).
+- **Runtime Traversal & Execution**:
+  1. **Primary Selection**: Gemini was selected first according to the configured priority chain (`gemini,cloudflare`).
+  2. **Primary Execution Failure**: Real Gemini `generateContent` request returned `HTTP 402 Payment Required`.
+  3. **Failure Classification**: The Gemini transport client classified the failure as a fallback-eligible error:
+     - `provider_name`: `gemini`
+     - `status`: `fallback_eligible_failure`
+     - `failure_reason`: `payment_required`
+     - `status_code`: `402`
+     - `attempt_index`: `0`
+     - `measured latency`: `501.890075 ms`
+  4. **Fallback Transition**: A real `FallbackTransition` event was emitted to `agent.events`:
+     - `failed_provider`: `gemini`
+     - `selected_provider`: `cloudflare`
+     - `reason`: `payment_required`
+     - `attempt_index`: `0`
+  5. **Secondary Invocation**: Cloudflare Workers AI was invoked as the secondary candidate in the priority chain.
+  6. **Secondary Execution Success**: Real Cloudflare Workers AI inference returned `HTTP 200 OK`.
+  7. **Secondary Attempt Telemetry**: Successful execution telemetry was emitted to `agent.events`:
+     - `provider_name`: `cloudflare`
+     - `status`: `succeeded`
+     - `attempt_index`: `1`
+     - `latency`: `816.675519 ms`
+     - `input_tokens`: `68`
+     - `output_tokens`: `18`
+     - `total_tokens`: `86`
+     - `model_name`: `@cf/meta/llama-3.1-8b-instruct`
+  8. **Worker Lifecycle**: General Worker transitioned cleanly from `working` back to `idle` upon task completion.
+
+### Persistence & Operator Visibility Evidence
+
+- **Redis Task Result**: The task result was persisted to Redis `ResultStore` as completed and acknowledged.
+- **Redis Event Stream**: Event history independently preserved:
+  - Gemini failed-attempt telemetry (`status="fallback_eligible_failure"`, `failure_reason="payment_required"`, `status_code=402`)
+  - Gemini → Cloudflare fallback transition (`reason="payment_required"`)
+  - Cloudflare successful-attempt telemetry (`status="succeeded"`, attempt 1)
+  - Final Worker `idle` completion event
+- **Prototype Console Visibility**: The Prototype Console UI visibly displayed the fallback transition and secondary Cloudflare success.
+- **Repeatability**: A second controlled General task verified identical traversal:
+  - Gemini → Cloudflare transition
+  - `reason`: `payment_required`
+  - Cloudflare execution on attempt 2
+  - Successful task completion and acknowledgment
+- **Assertion Boundary**: No claims are made about exact model instruction-following behavior from the specific generated text. The purpose of these runs was operational validation of provider traversal, per-attempt telemetry, event stream persistence, and fallback coordination under live conditions.
+
+### Proven Scope and Validation Boundary
+
+- **What Is Proven**:
+  ```
+  Gemini metadata HEALTHY
+  -> real Gemini HTTP 402 during generation
+  -> payment_required failure telemetry
+  -> fallback-transition event
+  -> real Cloudflare invocation
+  -> Cloudflare HTTP 200
+  -> secondary-attempt success telemetry
+  -> completed persisted result
+  -> Worker returned to idle
+  ```
+  This proves real cross-provider traversal for a fallback-eligible provider execution failure under genuine multi-provider operation.
+- **Explicit Limitations**:
+  - Live fallback has now been operationally demonstrated on `home-core` for the `payment_required` failure class across a two-provider chain (`gemini → cloudflare`).
+  - This does **NOT** generalize into proof that every provider failure class (e.g., rate limits, upstream 5xx outages, transport timeouts) or every provider ordering (e.g., `cloudflare → gemini` or 3+ providers) has been live-tested on deployment hosts.
