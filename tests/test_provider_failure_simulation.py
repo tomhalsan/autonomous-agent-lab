@@ -346,7 +346,7 @@ class FaultInjectingClient:
             return httpx.Response(
                 status_code=200,
                 json={
-                    "name": "models/gemini-2.5-flash",
+                    "name": "models/gemini-3.5-flash-lite",
                     "supportedGenerationMethods": ["generateContent"],
                 },
                 request=req,

@@ -966,6 +966,19 @@ def test_create_inference_provider_gemini_missing_api_key(
         create_inference_provider()
 
 
+def test_create_inference_provider_gemini_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-env")
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+
+    provider = create_inference_provider()
+    assert isinstance(provider, GeminiInferenceProvider)
+    assert provider.model == "gemini-3.5-flash-lite"
+    assert provider.provider_name == "gemini"
+
+
 def test_create_inference_provider_gemini_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1039,14 +1052,14 @@ async def test_gemini_worker_provider_successful_generate() -> None:
     assert isinstance(result, InferenceResponse)
     assert result.text == "Generated Gemini response."
     assert result.provider_name == "gemini"
-    assert result.model_name == "gemini-2.5-flash"
+    assert result.model_name == "gemini-3.5-flash-lite"
     assert result.finish_reason == "stop"
     assert result.input_tokens == 10
     assert result.output_tokens == 5
     assert result.total_tokens is None
     mock_client.post.assert_called_once()
     url, kwargs = mock_client.post.call_args[0][0], mock_client.post.call_args[1]
-    assert "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" in url
+    assert "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent" in url
     assert kwargs["headers"]["x-goog-api-key"] == "test-gemini-key"
     assert kwargs["json"]["contents"][0]["parts"][0]["text"] == "Explain machine learning"
 
