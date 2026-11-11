@@ -2571,3 +2571,193 @@ async def test_research_coordinator_probe_timeout_concurrent_failure_isolation(
     assert p1.synthesize_called is True
     assert p2.synthesize_called is False
     assert "Health probe timed out for provider p2 (timeout=0.05s)" in caplog.text
+
+
+# ==============================================================================
+# Issue #164: Gemini HTTP 402 Payment-Required Fallback Traversal Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_worker_fallback_traversal_on_gemini_payment_required() -> None:
+    """Verifies Worker fallback traversal succeeds when primary Gemini fails with HTTP 402 Payment Required."""
+    bus = MockMessageBus()
+    p_gemini = MockRuntimeWorkerProvider(
+        "gemini",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=FallbackEligibleInferenceError(
+            "Gemini API error (status 402): Prepayment credits depleted",
+            provider_name="gemini",
+            reason="payment_required",
+            status_code=402,
+        ),
+    )
+    p_cf = MockRuntimeWorkerProvider(
+        "cloudflare",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior="Fallback response from Cloudflare",
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["gemini", "cloudflare"],
+        providers={"gemini": p_gemini, "cloudflare": p_cf},
+    )
+    task = TaskRequested.create("Worker task prompt")
+    result = await coordinator.generate(task)
+
+    assert result == "Fallback response from Cloudflare"
+    # Gemini attempted only once, not retried
+    assert p_gemini.generate_called is True
+    assert len(p_gemini.received_prompts) == 1
+    # Cloudflare attempted and succeeded
+    assert p_cf.generate_called is True
+    assert len(p_cf.received_prompts) == 1
+
+    # Verify event stream:
+    # 1. Telemetry for attempt 0 (Gemini 402 failure)
+    # 2. Fallback transition event from gemini -> cloudflare
+    # 3. Telemetry for attempt 1 (Cloudflare success)
+    assert len(bus.published) == 3
+
+    ev_telem_0 = bus.published[0]
+    assert ev_telem_0.state == "working"
+    assert ev_telem_0.inference_telemetry is not None
+    assert ev_telem_0.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telem_0.inference_telemetry.provider_name == "gemini"
+    assert ev_telem_0.inference_telemetry.failure_reason == "payment_required"
+    assert ev_telem_0.inference_telemetry.status_code == 402
+    assert ev_telem_0.inference_telemetry.attempt_index == 0
+
+    ev_transition = bus.published[1]
+    assert ev_transition.state == "fallback"
+    assert ev_transition.fallback_transition == FallbackTransition(
+        failed_provider="gemini",
+        target_provider="cloudflare",
+        reason="payment_required",
+        attempt_index=0,
+    )
+
+    ev_telem_1 = bus.published[2]
+    assert ev_telem_1.state == "working"
+    assert ev_telem_1.inference_telemetry is not None
+    assert ev_telem_1.inference_telemetry.status == "succeeded"
+    assert ev_telem_1.inference_telemetry.provider_name == "cloudflare"
+    assert ev_telem_1.inference_telemetry.attempt_index == 1
+
+
+@pytest.mark.anyio
+async def test_research_fallback_traversal_on_gemini_payment_required() -> None:
+    """Verifies Research Agent fallback traversal succeeds when primary Gemini fails with HTTP 402 Payment Required."""
+    bus = MockMessageBus()
+    p_gemini = MockRuntimeResearchProvider(
+        "gemini",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=FallbackEligibleInferenceError(
+            "Gemini API error (status 402): Prepayment credits depleted",
+            provider_name="gemini",
+            reason="payment_required",
+            status_code=402,
+        ),
+    )
+    synthesis_success = SynthesisResult(
+        question="Research question",
+        content="Synthesized response from Cloudflare",
+        evidence="Evidence text",
+        provider="cloudflare",
+        model="cf-model",
+    )
+    p_cf = MockRuntimeResearchProvider(
+        "cloudflare",
+        health_status=InferenceHealthStatus.HEALTHY,
+        synthesize_behavior=synthesis_success,
+    )
+
+    coordinator = ResearchFallbackCoordinator(
+        agent_id="research-1",
+        bus=bus,
+        preferences=["gemini", "cloudflare"],
+        providers={"gemini": p_gemini, "cloudflare": p_cf},
+    )
+    result = await coordinator.synthesize("Research question", "Evidence text", task_id="task-research-402")
+
+    assert result == synthesis_success
+    # Gemini attempted only once
+    assert p_gemini.synthesize_called is True
+    assert len(p_gemini.received_calls) == 1
+    # Cloudflare attempted and succeeded
+    assert p_cf.synthesize_called is True
+
+    # Verify event stream:
+    assert len(bus.published) == 3
+
+    ev_telem_0 = bus.published[0]
+    assert ev_telem_0.inference_telemetry is not None
+    assert ev_telem_0.inference_telemetry.status == "fallback_eligible_failure"
+    assert ev_telem_0.inference_telemetry.provider_name == "gemini"
+    assert ev_telem_0.inference_telemetry.failure_reason == "payment_required"
+    assert ev_telem_0.inference_telemetry.status_code == 402
+    assert ev_telem_0.inference_telemetry.attempt_index == 0
+
+    ev_transition = bus.published[1]
+    assert ev_transition.state == "fallback"
+    assert ev_transition.fallback_transition == FallbackTransition(
+        failed_provider="gemini",
+        target_provider="cloudflare",
+        reason="payment_required",
+        attempt_index=0,
+    )
+
+    ev_telem_1 = bus.published[2]
+    assert ev_telem_1.inference_telemetry is not None
+    assert ev_telem_1.inference_telemetry.status == "succeeded"
+    assert ev_telem_1.inference_telemetry.provider_name == "cloudflare"
+    assert ev_telem_1.inference_telemetry.attempt_index == 1
+
+
+@pytest.mark.anyio
+async def test_worker_fallback_gemini_payment_required_single_provider_exhaustion() -> None:
+    """Verifies that if Gemini is the only configured provider, HTTP 402 records the attempt and reports exhaustion without transitions."""
+    bus = MockMessageBus()
+    p_gemini = MockRuntimeWorkerProvider(
+        "gemini",
+        health_status=InferenceHealthStatus.HEALTHY,
+        generate_behavior=FallbackEligibleInferenceError(
+            "Gemini API error (status 402): Prepayment credits depleted",
+            provider_name="gemini",
+            reason="payment_required",
+            status_code=402,
+        ),
+    )
+
+    coordinator = WorkerFallbackCoordinator(
+        agent_id="worker-1",
+        bus=bus,
+        preferences=["gemini"],
+        providers={"gemini": p_gemini},
+    )
+    task = TaskRequested.create("Standalone task prompt")
+
+    with pytest.raises(AllInferenceProvidersFailedError) as exc_info:
+        await coordinator.generate(task)
+
+    assert len(exc_info.value.failures) == 1
+    failure = exc_info.value.failures[0]
+    assert failure.provider_name == "gemini"
+    assert failure.reason == "payment_required"
+    assert failure.status_code == 402
+
+    # Gemini attempted only once
+    assert p_gemini.generate_called is True
+    assert len(p_gemini.received_prompts) == 1
+
+    # Telemetry was emitted for the single attempt, but NO fallback transition was emitted
+    assert len(bus.published) == 1
+    event = bus.published[0]
+    assert event.inference_telemetry is not None
+    assert event.inference_telemetry.status == "fallback_eligible_failure"
+    assert event.inference_telemetry.provider_name == "gemini"
+    assert event.inference_telemetry.failure_reason == "payment_required"
+    assert event.inference_telemetry.status_code == 402
+    assert event.fallback_transition is None

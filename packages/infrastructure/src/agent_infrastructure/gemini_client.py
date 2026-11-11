@@ -160,6 +160,13 @@ class GeminiClient:
             clean_err = self.redact(str(err_msg))
             logger.error("Gemini API error (status %d): %s", response.status_code, clean_err)
             full_msg = f"Gemini API error (status {response.status_code}): {clean_err}"
+            if response.status_code == 402:
+                raise FallbackEligibleInferenceError(
+                    full_msg,
+                    provider_name="gemini",
+                    reason="payment_required",
+                    status_code=402,
+                )
             if response.status_code == 429 or (500 <= response.status_code <= 599):
                 raise FallbackEligibleInferenceError(
                     full_msg,
