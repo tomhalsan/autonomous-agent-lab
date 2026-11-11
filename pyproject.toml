@@ -14,3 +14,13 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.pyrefly]
+search-path = [
+    "services/orchestrator/src",
+    "services/worker/src",
+    "services/research_agent/src",
+    "packages/contracts/src",
+    "packages/infrastructure/src",
+    "packages/policy/src",
+]
