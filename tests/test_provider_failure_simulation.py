@@ -235,6 +235,18 @@ class FaultInjectingClient:
                 )
 
         elif self.provider == "gemini":
+            if self.fault_mode == "http_402":
+                return httpx.Response(
+                    status_code=402,
+                    json={
+                        "error": {
+                            "code": 402,
+                            "message": f"Prepayment credits depleted with {self.secret_token}",
+                            "status": "RESOURCE_EXHAUSTED",
+                        }
+                    },
+                    request=req,
+                )
             if self.fault_mode in ("http_400", "http_401", "http_403", "http_404"):
                 code = int(self.fault_mode.split("_")[1])
                 return httpx.Response(
@@ -502,6 +514,54 @@ async def test_research_adapter_protocol_fault_simulation(
     assert isinstance(exc_info.value, RuntimeError)
     assert not isinstance(exc_info.value, NonFallbackInferenceError)
     assert exc_info.value.provider_name == provider_type
+
+
+@pytest.mark.anyio
+async def test_gemini_http_402_payment_required_fallback_classification() -> None:
+    """Verifies Gemini HTTP 402 generation failure raises FallbackEligibleInferenceError with reason payment_required."""
+    secret_token = "secret-gemini-payment-token-402"
+    client = FaultInjectingClient(
+        provider="gemini",
+        fault_mode="http_402",
+        secret_token=secret_token,
+    )
+
+    # 1. Worker adapter
+    worker_provider = _create_worker_faulty_provider("gemini", client)
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await worker_provider.generate("Test prompt for worker")
+
+    err_text = str(exc_info.value)
+    assert secret_token not in err_text
+    assert "Prepayment credits depleted" in err_text
+    assert "402" in err_text
+    assert isinstance(exc_info.value, FallbackEligibleInferenceError)
+    assert isinstance(exc_info.value, InferenceError)
+    assert not isinstance(exc_info.value, NonFallbackInferenceError)
+    assert exc_info.value.provider_name == "gemini"
+    assert exc_info.value.reason == "payment_required"
+    assert exc_info.value.status_code == 402
+    assert client.call_count == 1
+
+    # 2. Research adapter
+    research_client = FaultInjectingClient(
+        provider="gemini",
+        fault_mode="http_402",
+        secret_token=secret_token,
+    )
+    research_provider = _create_research_faulty_provider("gemini", research_client)
+    with pytest.raises(FallbackEligibleInferenceError) as res_exc_info:
+        await research_provider.synthesize("Research question", "Evidence text")
+
+    res_err_text = str(res_exc_info.value)
+    assert secret_token not in res_err_text
+    assert "Prepayment credits depleted" in res_err_text
+    assert "402" in res_err_text
+    assert isinstance(res_exc_info.value, FallbackEligibleInferenceError)
+    assert res_exc_info.value.provider_name == "gemini"
+    assert res_exc_info.value.reason == "payment_required"
+    assert res_exc_info.value.status_code == 402
+    assert research_client.call_count == 1
 
 
 @pytest.mark.anyio

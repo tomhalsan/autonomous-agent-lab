@@ -5,8 +5,10 @@ import httpx
 import pytest
 from agent_contracts import (
     DEFAULT_HEALTH_PROBE_TIMEOUT_SECONDS,
+    FallbackEligibleInferenceError,
     InferenceHealthStatus,
     InferenceProviderHealth,
+    NonFallbackInferenceError,
     parse_health_probe_timeout,
 )
 from agent_infrastructure import (
@@ -1597,6 +1599,70 @@ async def test_gemini_client_usage_metadata_boolean_exclusion() -> None:
     }
     assert "isCached" not in (res.usage_metadata or {})
     assert "cacheActive" not in (res.usage_metadata or {})
+
+
+@pytest.mark.anyio
+async def test_gemini_client_generate_content_http_402_payment_required() -> None:
+    secret_key = "secret-payment-key-test-402"
+
+    def handler_402(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            402,
+            json={
+                "error": {
+                    "code": 402,
+                    "message": f"Resource has been exhausted (e.g. check quota). Prepayment credits are depleted. Key: {secret_key}",
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            },
+        )
+
+    client = GeminiClient(api_key=secret_key, client=DummyAsyncClient(handler_402))
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await client.generate_content({"contents": [{"parts": [{"text": "Hello"}]}]})
+
+    err_msg = str(exc_info.value)
+    assert exc_info.value.provider_name == "gemini"
+    assert exc_info.value.reason == "payment_required"
+    assert exc_info.value.status_code == 402
+    assert "Gemini API error (status 402)" in err_msg
+    assert "Prepayment credits are depleted" in err_msg
+    # Ensure credential redaction
+    assert secret_key not in err_msg
+    assert "[REDACTED]" in err_msg
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("status_code", "expected_exc_type", "expected_reason"),
+    [
+        (400, NonFallbackInferenceError, "client_error_400"),
+        (401, NonFallbackInferenceError, "client_error_401"),
+        (403, NonFallbackInferenceError, "client_error_403"),
+        (404, NonFallbackInferenceError, "client_error_404"),
+        (429, FallbackEligibleInferenceError, "rate_limited"),
+        (500, FallbackEligibleInferenceError, "server_error_500"),
+        (503, FallbackEligibleInferenceError, "server_error_503"),
+    ],
+)
+async def test_gemini_client_generate_content_status_code_classification(
+    status_code: int,
+    expected_exc_type: type[Exception],
+    expected_reason: str,
+) -> None:
+    def handler(method, url, headers, params=None, json_data=None):
+        return httpx.Response(
+            status_code,
+            json={"error": {"code": status_code, "message": f"API error with code {status_code}"}},
+        )
+
+    client = GeminiClient(api_key="test-key", client=DummyAsyncClient(handler))
+    with pytest.raises(expected_exc_type) as exc_info:
+        await client.generate_content({"contents": []})
+
+    assert exc_info.value.provider_name == "gemini"
+    assert exc_info.value.reason == expected_reason
+    assert exc_info.value.status_code == status_code
 
 
 @pytest.mark.anyio
