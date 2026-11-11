@@ -44,9 +44,12 @@ jobs:
         run: ruff check .
 
       - name: Run test suite
+        run: pytest -q -m "not redis"
+
+      - name: Run real Redis integration tests
         env:
           REDIS_URL: redis://localhost:6379/15
-        run: pytest -q
+        run: pytest -q -m redis
 
       - name: Validate Docker Compose configuration
         run: docker compose config --quiet
