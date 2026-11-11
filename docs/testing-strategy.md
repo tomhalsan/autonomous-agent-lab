@@ -170,7 +170,7 @@ Release validation on `home-core` provides empirical proof of platform stability
 - **Do NOT manufacture artificial passes**: Do not configure an invalid provider name (e.g. `invalid-provider`) to test fallback. Invalid provider names are rejected during initialization and do not simulate an operational provider failure.
 - **Genuine Requirements**: Valid live cross-provider fallback requires **two genuinely configured, valid providers** (e.g., Cloudflare and Gemini).
 - **Controlled Failure**: The primary provider must experience a genuine, fallback-eligible transient error (such as temporary rate limiting, simulated outage, or transient network rejection) while the secondary provider remains healthy and eligible.
-- **Truthful Reporting**: Until an opt-in, controlled failure mechanism is established, **record live fallback as unvalidated in the release log** rather than improvising fragile configurations or implying that simulation tests represent live deployment proof.
+- **Truthful Reporting**: Until an opt-in, controlled failure mechanism is established, **record live fallback as unvalidated in the release log** rather than improvising fragile configurations or implying that simulation tests represent live deployment proof. Live cross-provider fallback traversal was subsequently operationally validated on `home-core` (commit `8e9fe54`) using a controlled depleted-prepayment Gemini configuration falling back to Cloudflare Workers AI (`gemini,cloudflare`). See [Inference Provider Flow](architecture/inference-provider-flow.md#live-cross-provider-fallback-validation-home-core-post-release) for the full empirical event log and exact validation boundary.
 
 ---
 
