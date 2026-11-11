@@ -39,6 +39,9 @@ from .tools import (
     ToolErrorCode,
     ToolInvocationRequest,
     ToolInvocationResult,
+    ToolRegistration,
+    ToolRegistry,
+    ToolRegistryReader,
 )
 from .version import __version__
 
@@ -73,6 +76,9 @@ __all__ = [
     "ToolErrorCode",
     "ToolInvocationRequest",
     "ToolInvocationResult",
+    "ToolRegistration",
+    "ToolRegistry",
+    "ToolRegistryReader",
     "__version__",
     "evaluate_agent_record",
     "evaluate_availability",
