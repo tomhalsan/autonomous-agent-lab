@@ -5,16 +5,27 @@ from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from agent_contracts import (
+    ToolAuditDeliveryOutcome,
+    ToolAuthorizationContext,
+    ToolAuthorizationDecision,
+    ToolAuthorizationOutcome,
+    ToolAuthorizationReason,
+    ToolCapabilityMetadata,
     ToolErrorCode,
+    ToolExecutionState,
     ToolInvocationProposal,
     ToolInvocationRequest,
     ToolInvocationResult,
+    ToolOperationType,
+    ToolPermissionScope,
     ToolRegistration,
+    ToolSecurityAuditEvent,
     ToolSelectionDecision,
     ToolSelectionKind,
     ToolSelector,
 )
 
+from .tool_authorization import ExactToolAuthorizer, ToolAuthorizer, ToolSecurityAuditSink
 from .tool_discovery import ToolDiscoveryScope, ToolDiscoveryService
 from .tool_validation import (
     DeterministicToolArgumentCorrector,
@@ -29,6 +40,8 @@ class ToolCoordinationStatus(str, Enum):
 
     NO_TOOL_NEEDED = "no_tool_needed"
     READY_FOR_CONTINUATION = "ready_for_continuation"
+    AUTHORIZATION_DENIED = "authorization_denied"
+    AUDIT_DELIVERY_FAILURE = "audit_delivery_failure"
     PRE_EXECUTION_FAILURE = "pre_execution_failure"
     TOOL_INVOCATION_FAILURE = "tool_invocation_failure"
 
@@ -42,6 +55,9 @@ class ToolCoordinationResult:
     invocation_result: ToolInvocationResult | None = None
     error: str | None = None
     effective_invocation: ToolInvocationProposal | None = None
+    authorization_decision: ToolAuthorizationDecision | None = None
+    audit_delivery_outcome: ToolAuditDeliveryOutcome = ToolAuditDeliveryOutcome.NOT_ATTEMPTED
+    execution_state: ToolExecutionState = ToolExecutionState.NOT_ATTEMPTED
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, ToolCoordinationStatus):
@@ -58,6 +74,14 @@ class ToolCoordinationResult:
             raise TypeError("invocation_result must be a ToolInvocationResult")
         if self.error is not None and not isinstance(self.error, str):
             raise TypeError("error must be a string when provided")
+        if self.authorization_decision is not None and not isinstance(
+            self.authorization_decision, ToolAuthorizationDecision
+        ):
+            raise TypeError("authorization_decision must be a ToolAuthorizationDecision")
+        if not isinstance(self.audit_delivery_outcome, ToolAuditDeliveryOutcome):
+            raise TypeError("audit_delivery_outcome must be a ToolAuditDeliveryOutcome")
+        if not isinstance(self.execution_state, ToolExecutionState):
+            raise TypeError("execution_state must be a ToolExecutionState")
 
         if self.status is ToolCoordinationStatus.NO_TOOL_NEEDED:
             if (
@@ -66,6 +90,9 @@ class ToolCoordinationResult:
                 or self.invocation_result is not None
                 or self.error is not None
                 or self.effective_invocation is not None
+                or self.authorization_decision is not None
+                or self.audit_delivery_outcome is not ToolAuditDeliveryOutcome.NOT_ATTEMPTED
+                or self.execution_state is not ToolExecutionState.NOT_ATTEMPTED
             ):
                 raise ValueError("no-tool results require only a no-tool decision")
         elif self.status is ToolCoordinationStatus.READY_FOR_CONTINUATION:
@@ -79,6 +106,10 @@ class ToolCoordinationResult:
                 or self.invocation_result.tool_name != self.effective_invocation.tool_name
                 or not self.invocation_result.success
                 or self.error is not None
+                or self.authorization_decision is None
+                or self.authorization_decision.outcome is not ToolAuthorizationOutcome.ALLOWED
+                or self.audit_delivery_outcome is not ToolAuditDeliveryOutcome.DELIVERED
+                or self.execution_state is not ToolExecutionState.ATTEMPTED
             ):
                 raise ValueError("continuation results require a successful invocation")
         elif self.status is ToolCoordinationStatus.PRE_EXECUTION_FAILURE:
@@ -91,8 +122,39 @@ class ToolCoordinationResult:
                 )
                 or self.invocation_result is not None
                 or self.effective_invocation is not None
+                or self.authorization_decision is not None
+                or self.audit_delivery_outcome is not ToolAuditDeliveryOutcome.NOT_ATTEMPTED
+                or self.execution_state is not ToolExecutionState.NOT_ATTEMPTED
             ):
                 raise ValueError("pre-execution failures require an error and no invocation result")
+        elif self.status is ToolCoordinationStatus.AUTHORIZATION_DENIED:
+            if (
+                self.decision is None
+                or self.decision.kind is not ToolSelectionKind.PROPOSED_INVOCATION
+                or self.authorization_decision is None
+                or self.authorization_decision.outcome is not ToolAuthorizationOutcome.DENIED
+                or self.authorization_decision.reason_code is None
+                or self.error != self.authorization_decision.reason_code.value
+                or self.audit_delivery_outcome is ToolAuditDeliveryOutcome.NOT_ATTEMPTED
+                or self.execution_state is not ToolExecutionState.NOT_ATTEMPTED
+                or self.invocation_result is not None
+                or self.effective_invocation is not None
+            ):
+                raise ValueError("authorization denials must remain observable and unexecuted")
+        elif self.status is ToolCoordinationStatus.AUDIT_DELIVERY_FAILURE:
+            if (
+                self.decision is None
+                or self.decision.kind is not ToolSelectionKind.PROPOSED_INVOCATION
+                or self.authorization_decision is None
+                or self.authorization_decision.outcome is not ToolAuthorizationOutcome.ALLOWED
+                or self.audit_delivery_outcome is not ToolAuditDeliveryOutcome.FAILED
+                or self.execution_state is not ToolExecutionState.NOT_ATTEMPTED
+                or self.invocation_result is not None
+                or self.effective_invocation is not None
+                or not isinstance(self.error, str)
+                or not self.error.strip()
+            ):
+                raise ValueError("audit failures must preserve authorization and block execution")
         elif self.status is ToolCoordinationStatus.TOOL_INVOCATION_FAILURE and (
             self.decision is None
             or self.decision.kind is not ToolSelectionKind.PROPOSED_INVOCATION
@@ -104,6 +166,10 @@ class ToolCoordinationResult:
             or self.invocation_result.success
             or not isinstance(self.error, str)
             or not self.error.strip()
+            or self.authorization_decision is None
+            or self.authorization_decision.outcome is not ToolAuthorizationOutcome.ALLOWED
+            or self.audit_delivery_outcome is not ToolAuditDeliveryOutcome.DELIVERED
+            or self.execution_state is not ToolExecutionState.ATTEMPTED
         ):
             raise ValueError("invocation failures require a failed tool result")
 
@@ -118,11 +184,10 @@ class ToolExecutionBoundary(Protocol):
 
 
 class TrustedCompositionToolInvoker:
-    """Temporary prototype seam; invokes deliberately supplied tools without authorization.
+    """Invoke a deliberately supplied tool after coordinator policy has authorized it.
 
-    Discovery eligibility is not execution authorization. Selection does not
-    constitute authorization, and registration does not constitute authorization.
-    Issue #27 will replace this trusted-composition assumption with real enforcement.
+    This adapter performs no authorization or audit delivery itself. Call it only
+    through a coordinator that enforces those boundaries.
     """
 
     async def invoke(
@@ -142,6 +207,10 @@ class BoundedToolCoordinator:
         execution_boundary: ToolExecutionBoundary,
         validator: ToolArgumentValidator | None = None,
         corrector: ToolArgumentCorrector | None = None,
+        *,
+        authorization_context: ToolAuthorizationContext | None = None,
+        authorizer: ToolAuthorizer | None = None,
+        audit_sink: ToolSecurityAuditSink | None = None,
     ) -> None:
         self._discovery = discovery
         self._scope = scope
@@ -149,6 +218,9 @@ class BoundedToolCoordinator:
         self._execution_boundary = execution_boundary
         self._validator = validator or ToolArgumentValidator()
         self._corrector = corrector or DeterministicToolArgumentCorrector()
+        self._authorization_context = authorization_context
+        self._authorizer = authorizer if authorizer is not None else ExactToolAuthorizer()
+        self._audit_sink = audit_sink
 
     async def coordinate(self, goal: str) -> ToolCoordinationResult:
         try:
@@ -235,6 +307,28 @@ class BoundedToolCoordinator:
                 f"Could not construct a valid tool invocation request: {exc}", decision
             )
 
+        authorization_decision = self._authorize(registration, request)
+        audit_delivery_outcome = await self._deliver_authorization_event(
+            request.call_id, authorization_decision
+        )
+        if authorization_decision.outcome is ToolAuthorizationOutcome.DENIED:
+            assert authorization_decision.reason_code is not None
+            return ToolCoordinationResult(
+                status=ToolCoordinationStatus.AUTHORIZATION_DENIED,
+                decision=decision,
+                error=authorization_decision.reason_code.value,
+                authorization_decision=authorization_decision,
+                audit_delivery_outcome=audit_delivery_outcome,
+            )
+        if audit_delivery_outcome is ToolAuditDeliveryOutcome.FAILED:
+            return ToolCoordinationResult(
+                status=ToolCoordinationStatus.AUDIT_DELIVERY_FAILURE,
+                decision=decision,
+                error="Authorization audit delivery failed",
+                authorization_decision=authorization_decision,
+                audit_delivery_outcome=audit_delivery_outcome,
+            )
+
         try:
             invocation_result = await self._execution_boundary.invoke(registration, request)
         except Exception as exc:  # noqa: BLE001 - tool implementations may raise arbitrary execution errors
@@ -268,12 +362,137 @@ class BoundedToolCoordinator:
                     if invocation_result.error is not None
                     else "Tool invocation failed"
                 ),
+                authorization_decision=authorization_decision,
+                audit_delivery_outcome=audit_delivery_outcome,
+                execution_state=ToolExecutionState.ATTEMPTED,
             )
         return ToolCoordinationResult(
             status=ToolCoordinationStatus.READY_FOR_CONTINUATION,
             decision=decision,
             invocation_result=invocation_result,
             effective_invocation=proposal,
+            authorization_decision=authorization_decision,
+            audit_delivery_outcome=audit_delivery_outcome,
+            execution_state=ToolExecutionState.ATTEMPTED,
+        )
+
+    def _authorize(
+        self, registration: ToolRegistration, request: ToolInvocationRequest
+    ) -> ToolAuthorizationDecision:
+        tool_name = request.tool_name
+        context = self._authorization_context
+        agent_id = self._context_agent_id(context)
+        operation_type = self._operation_type(registration)
+
+        if self._authorizer is None:
+            return self._authorization_denial(
+                agent_id,
+                tool_name,
+                operation_type,
+                ToolAuthorizationReason.AUTHORIZATION_UNAVAILABLE,
+            )
+        try:
+            authorization = self._authorizer.authorize(context, registration)
+        except Exception:  # noqa: BLE001 - authorization failures must fail closed
+            authorization = None
+
+        if authorization is None or not isinstance(authorization, ToolAuthorizationDecision):
+            return self._authorization_denial(
+                agent_id,
+                tool_name,
+                operation_type,
+                ToolAuthorizationReason.AUTHORIZATION_UNAVAILABLE,
+            )
+        if (
+            authorization.agent_id != agent_id
+            or authorization.tool_name != tool_name
+            or authorization.operation_type is not operation_type
+        ):
+            return self._authorization_denial(
+                agent_id,
+                tool_name,
+                operation_type,
+                ToolAuthorizationReason.AUTHORIZATION_INPUT_INVALID,
+            )
+        if authorization.outcome is ToolAuthorizationOutcome.ALLOWED:
+            if not isinstance(context, ToolAuthorizationContext):
+                return self._authorization_denial(
+                    agent_id,
+                    tool_name,
+                    operation_type,
+                    ToolAuthorizationReason.AUTHORIZATION_INPUT_INVALID,
+                )
+            if (
+                not agent_id
+                or not isinstance(context.permission_scope, ToolPermissionScope)
+                or operation_type is None
+            ):
+                return self._authorization_denial(
+                    agent_id,
+                    tool_name,
+                    operation_type,
+                    ToolAuthorizationReason.AUTHORIZATION_INPUT_INVALID,
+                )
+        return authorization
+
+    @staticmethod
+    def _context_agent_id(context: ToolAuthorizationContext | None) -> str | None:
+        if not isinstance(context, ToolAuthorizationContext):
+            return None
+        agent_id = context.agent_id
+        return agent_id if isinstance(agent_id, str) and agent_id.strip() else None
+
+    async def _deliver_authorization_event(
+        self,
+        call_id: str,
+        authorization: ToolAuthorizationDecision,
+    ) -> ToolAuditDeliveryOutcome:
+        if self._audit_sink is None:
+            return ToolAuditDeliveryOutcome.FAILED
+        try:
+            result = await self._audit_sink.deliver(
+                ToolSecurityAuditEvent(
+                    call_id=call_id,
+                    decision=authorization,
+                    execution_state=(
+                        ToolExecutionState.NOT_ATTEMPTED
+                        if authorization.outcome is ToolAuthorizationOutcome.DENIED
+                        else None
+                    ),
+                )
+            )
+        except Exception:  # noqa: BLE001 - audit failure must block execution
+            return ToolAuditDeliveryOutcome.FAILED
+        return (
+            ToolAuditDeliveryOutcome.DELIVERED
+            if result is None
+            else ToolAuditDeliveryOutcome.FAILED
+        )
+
+    @staticmethod
+    def _operation_type(registration: ToolRegistration) -> ToolOperationType | None:
+        try:
+            metadata = registration.definition.metadata
+            operation_type = (
+                metadata.operation_type if isinstance(metadata, ToolCapabilityMetadata) else None
+            )
+        except Exception:  # noqa: BLE001 - unreadable classification must fail closed
+            return None
+        return operation_type if isinstance(operation_type, ToolOperationType) else None
+
+    @staticmethod
+    def _authorization_denial(
+        agent_id: str | None,
+        tool_name: str,
+        operation_type: ToolOperationType | None,
+        reason: ToolAuthorizationReason,
+    ) -> ToolAuthorizationDecision:
+        return ToolAuthorizationDecision(
+            outcome=ToolAuthorizationOutcome.DENIED,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            operation_type=operation_type,
+            reason_code=reason,
         )
 
     @staticmethod
