@@ -29,6 +29,7 @@ from .messages import (
     FallbackTransition,
     InferenceExecutionTelemetry,
     TaskRequested,
+    ToolExecutionTelemetry,
 )
 from .results import InferenceResponse, TaskResult
 from .routing import RoutingDecision, RoutingProvenance
@@ -104,6 +105,7 @@ __all__ = [
     "ToolError",
     "ToolErrorCode",
     "ToolExecutionState",
+    "ToolExecutionTelemetry",
     "ToolIdempotency",
     "ToolInvocationProposal",
     "ToolInvocationRequest",

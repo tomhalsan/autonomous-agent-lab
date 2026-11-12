@@ -78,7 +78,8 @@ class RedisBus:
         await retry_with_backoff(_write)
 
     async def publish(self, event: AgentEvent) -> None:
-        self.current_state = event.state
+        if event.state is not None:
+            self.current_state = event.state
         mapping = {
             key: ""
             if value is None
@@ -93,7 +94,8 @@ class RedisBus:
 
         async def _write():
             await self.client.sadd("agent.ids", event.agent_id)
-            await self.client.hset(f"agent.state:{event.agent_id}", mapping=mapping)
+            if event.state is not None:
+                await self.client.hset(f"agent.state:{event.agent_id}", mapping=mapping)
             await self.client.xadd("agent.events", mapping, maxlen=500, approximate=True)
 
         await retry_with_backoff(_write)

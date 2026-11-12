@@ -14,6 +14,7 @@ from agent_contracts import (
     ToolDefinition,
     ToolError,
     ToolErrorCode,
+    ToolExecutionTelemetry,
     ToolIdempotency,
     ToolInvocationRequest,
     ToolInvocationResult,
@@ -41,6 +42,36 @@ def test_agent_event_to_dict() -> None:
     assert data["agent_id"] == "worker-1"
     assert data["state"] == "idle"
     assert data["task_id"] is None
+
+
+def test_tool_execution_telemetry_event_round_trip_without_state() -> None:
+    telemetry = ToolExecutionTelemetry(
+        tool_name="web_search",
+        agent_id="worker-1",
+        call_id="call-123",
+        duration_ms=12.5,
+        argument_size_bytes=19,
+        result_size_bytes=32,
+        outcome="failed",
+        task_id="task-123",
+        started_at="2026-11-11T12:00:00+00:00",
+        error_code=ToolErrorCode.EXECUTION_FAILURE,
+    )
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state=None,
+        detail="Tool execution telemetry",
+        task_id="task-123",
+        tool_execution_telemetry=telemetry,
+    )
+
+    data = event.to_dict()
+    assert "state" not in data
+    assert data["tool_execution_telemetry"] == telemetry.to_dict()
+    assert AgentEvent.from_json(event.to_json()) == event
+
+    with pytest.raises(ValueError, match="events without state require tool execution telemetry"):
+        AgentEvent.create("worker-1", None, "State-less event")
 
 
 def test_agent_capability_metadata_round_trip() -> None:
