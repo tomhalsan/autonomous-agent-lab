@@ -83,6 +83,7 @@ When new files are part of an implementation, ensure their whitespace/EOF format
 
 ## 5. Testing and Verification
 
+- Run Python tests through the repository virtual environment explicitly with `.venv/bin/python -m pytest`; do not assume an agent-created shell has inherited an activated virtual environment.
 - Add focused tests for new behavior and regressions.
 - Prefer deterministic tests.
 - Validate architectural and runtime claims at the cheapest boundary capable of disproving them, and never present simulated or modeled evidence as observed runtime evidence.
