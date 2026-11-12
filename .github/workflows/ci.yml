@@ -44,7 +44,7 @@ jobs:
         run: ruff check .
 
       - name: Run test suite
-        run: pytest -q -m "not redis"
+        run: pytest -q -m "not redis and not external_provider"
 
       - name: Run real Redis integration tests
         env:
@@ -62,4 +62,3 @@ jobs:
           docker run --rm test-worker python -c "import agent_policy, worker.main"
           docker build -f services/research_agent/Dockerfile -t test-research-agent .
           docker run --rm test-research-agent python -c "import agent_policy, research_agent.main"
-

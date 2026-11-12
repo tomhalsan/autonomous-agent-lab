@@ -82,6 +82,6 @@ def test_mcp_dependency_isolation_in_service_requirements() -> None:
     orchestrator_reqs = (REPO_ROOT / "services" / "orchestrator" / "requirements.txt").read_text()
     worker_reqs = (REPO_ROOT / "services" / "worker" / "requirements.txt").read_text()
 
-    assert "mcp" not in research_reqs
+    assert "mcp>=2.3.0,<3.0.0" in research_reqs
     assert "mcp" not in orchestrator_reqs
     assert "mcp>=2.3.0,<3.0.0" in worker_reqs
