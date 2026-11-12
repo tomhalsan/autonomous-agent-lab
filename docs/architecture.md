@@ -238,7 +238,10 @@ To preserve architectural simplicity and prevent speculative complexity, the fol
 
 ## 13. Governance: Modifying Architectural Boundaries
 
-> **Mandatory Rule**: Significant architectural decisions (such as altering layer boundaries, introducing shared cross-service dependencies, bypassing ports/adapters, adding infrastructure services, or updating communication contracts) **require an explicit Architecture Decision Record (ADR) stored under `docs/adr/`** before implementation.
+Significant architectural decisions require an Architecture Decision Record (ADR)
+before implementation. Use the practical threshold and lightweight process in
+[docs/adr/README.md](adr/README.md); routine implementation within accepted
+boundaries does not require an ADR.
 
 ## 14. Runtime Tool Discovery Boundary
 

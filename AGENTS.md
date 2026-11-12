@@ -31,6 +31,13 @@ or commercial assumptions unless explicitly requested.
 - Do not introduce a new abstraction, framework, dependency, or design pattern unless the problem genuinely requires it.
 - Prefer the smallest coherent change that satisfies the requirement.
 - Preserve architectural authority boundaries already established by the project unless explicitly instructed to reconsider them.
+- Before implementation, assess whether the change crosses the ADR threshold in
+  [docs/adr/README.md](docs/adr/README.md). If an ADR is required but absent,
+  stop before implementation and identify/propose the decision; do not silently
+  make an architecture-changing choice in code. Follow Accepted ADRs and
+  preserve accepted decisions unless explicitly superseded. Do not rewrite
+  Accepted ADR history to match a newer implementation; propose a superseding
+  ADR when a consequential decision must change.
 
 ## 2. Repository-First Reasoning
 
