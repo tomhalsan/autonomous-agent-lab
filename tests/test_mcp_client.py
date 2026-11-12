@@ -9,7 +9,8 @@ from agent_contracts import (
     ToolInvocationRequest,
     ToolInvocationResult,
 )
-from agent_infrastructure import InMemoryToolRegistry, McpClient, McpServerConfig, McpTool
+from agent_infrastructure import InMemoryToolRegistry
+from agent_infrastructure.mcp import McpClient, McpServerConfig, McpTool
 from agent_infrastructure.mcp.client import (
     _map_call_tool_result,
     _map_mcp_tool_to_definition,

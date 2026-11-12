@@ -6,7 +6,6 @@ from .gemini_client import (
     normalize_gemini_model,
 )
 from .gemini_probe import GeminiHealthProbe
-from .mcp import McpClient, McpServerConfig, McpTool
 from .tool_registry import InMemoryToolRegistry
 
 __all__ = [
@@ -15,9 +14,6 @@ __all__ = [
     "GeminiHealthProbe",
     "GeminiResponse",
     "InMemoryToolRegistry",
-    "McpClient",
-    "McpServerConfig",
-    "McpTool",
     "canonical_gemini_model",
     "normalize_gemini_model",
 ]

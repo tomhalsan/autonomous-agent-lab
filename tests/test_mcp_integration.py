@@ -8,7 +8,8 @@ from agent_contracts import (
     ToolInvocationRequest,
     ToolInvocationResult,
 )
-from agent_infrastructure import InMemoryToolRegistry, McpClient, McpTool
+from agent_infrastructure import InMemoryToolRegistry
+from agent_infrastructure.mcp import McpClient, McpTool
 
 SERVER_SCRIPT = str(Path(__file__).parent / "fixtures" / "mcp_test_server.py")
 
