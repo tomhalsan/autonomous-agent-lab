@@ -1,6 +1,7 @@
 """Tests for MCP Streamable HTTP configuration, transport, and client lifecycle."""
 
 import socket
+from typing import Any
 
 import agent_infrastructure.mcp.client as mcp_client_module
 import anyio
@@ -16,6 +17,96 @@ def _get_free_port() -> int:
     port = sock.getsockname()[1]
     sock.close()
     return port
+
+
+class _TrackedAsyncContext:
+    def __init__(self, context: Any, name: str, events: list[str]) -> None:
+        self._context = context
+        self._name = name
+        self._events = events
+
+    async def __aenter__(self) -> Any:
+        result = await self._context.__aenter__()
+        self._events.append(f"{self._name}.enter")
+        return result
+
+    async def __aexit__(self, *exc_info: object) -> Any:
+        try:
+            result = await self._context.__aexit__(*exc_info)
+        except BaseException as exc:
+            if len(exc_info) > 1 and _contains_exception(exc, exc_info[1]):
+                self._events.append(f"{self._name}.exit")
+            else:
+                self._events.append(f"{self._name}.exit_failed")
+            raise
+        else:
+            self._events.append(f"{self._name}.exit")
+            return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._context, name)
+
+
+def _contains_exception(error: BaseException, expected: BaseException) -> bool:
+    if error is expected:
+        return True
+    if isinstance(error, BaseExceptionGroup):
+        return any(_contains_exception(nested, expected) for nested in error.exceptions)
+    return False
+
+
+def _track_mcp_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[str],
+) -> type[Any]:
+    original_http_client = mcp_client_module.httpx2.AsyncClient
+    monkeypatch.setattr(
+        mcp_client_module.httpx2,
+        "AsyncClient",
+        lambda **kwargs: _TrackedAsyncContext(
+            original_http_client(**kwargs),
+            "http",
+            events,
+        ),
+    )
+
+    original_transport = mcp_client_module.streamable_http_client
+    monkeypatch.setattr(
+        mcp_client_module,
+        "streamable_http_client",
+        lambda url, **kwargs: _TrackedAsyncContext(
+            original_transport(url, **kwargs),
+            "transport",
+            events,
+        ),
+    )
+
+    original_session = mcp_client_module.ClientSession
+    monkeypatch.setattr(
+        mcp_client_module,
+        "ClientSession",
+        lambda *args, **kwargs: _TrackedAsyncContext(
+            original_session(*args, **kwargs),
+            "session",
+            events,
+        ),
+    )
+    return original_session
+
+
+async def _start_mcp_server(
+    task_group: Any,
+    server: MCPServer,
+    port: int,
+) -> None:
+    async def run_server() -> None:
+        try:
+            await server.run_streamable_http_async(host="127.0.0.1", port=port)
+        except (anyio.get_cancelled_exc_class(), OSError, RuntimeError):
+            pass
+
+    task_group.start_soon(run_server)
+    await anyio.sleep(0.3)
 
 
 def test_mcp_http_client_config_validation_and_immutability() -> None:
@@ -124,64 +215,108 @@ async def test_mcp_streamable_http_client_lifecycle_and_execution() -> None:
 
 
 @pytest.mark.anyio
-async def test_mcp_http_client_initialization_cancellation_cleans_acquired_resources(
+async def test_mcp_http_client_initialization_failure_unwinds_acquired_resources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
+    session_class = _track_mcp_contexts(monkeypatch, events)
+    initialization_error = RuntimeError("MCP initialization failed")
 
-    class ManagedResource:
-        def __init__(self, name: str, enter_result: object) -> None:
-            self.name = name
-            self.enter_result = enter_result
+    async def fail_initialize(self: Any) -> None:
+        events.append("session.initialize")
+        raise initialization_error
 
-        async def __aenter__(self) -> object:
-            events.append(f"{self.name}.enter")
-            return self.enter_result
+    monkeypatch.setattr(session_class, "initialize", fail_initialize)
+    server = MCPServer("InitializationFailureServer")
+    port = _get_free_port()
+    client = McpClient.from_streamable_http(url=f"http://127.0.0.1:{port}/mcp", timeout=5.0)
 
-        async def __aexit__(self, *exc_info: object) -> None:
-            events.append(f"{self.name}.exit")
+    async with anyio.create_task_group() as tg:
+        await _start_mcp_server(tg, server, port)
+        with pytest.raises(RuntimeError) as raised:
+            await client.__aenter__()
 
-    class InitializingSession(ManagedResource):
-        async def initialize(self) -> None:
-            events.append("session.initialize")
-            raise cancellation
+        assert raised.value is initialization_error
+        assert "cancel scope" not in str(raised.value)
+        assert not client.is_active
+        assert events == [
+            "http.enter",
+            "transport.enter",
+            "session.enter",
+            "session.initialize",
+            "session.exit",
+            "transport.exit",
+            "http.exit",
+        ]
+        assert all(
+            "attempted to exit a cancel scope" not in note.lower()
+            for note in getattr(raised.value, "__notes__", [])
+        )
+        tg.cancel_scope.cancel()
 
-    http_client = ManagedResource("http", None)
-    http_client.enter_result = http_client
-    transport = ManagedResource("transport", ("read", "write"))
-    session = InitializingSession("session", None)
-    session.enter_result = session
+
+@pytest.mark.anyio
+async def test_mcp_http_client_initialization_cancellation_unwinds_sdk_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    session_class = _track_mcp_contexts(monkeypatch, events)
+    initialization_started = anyio.Event()
+    initialization_cancellations: list[BaseException] = []
+
+    async def wait_for_cancellation(self: Any) -> None:
+        events.append("session.initialize")
+        initialization_started.set()
+        try:
+            await anyio.sleep_forever()
+        except BaseException as exc:
+            initialization_cancellations.append(exc)
+            raise
 
     monkeypatch.setattr(
-        mcp_client_module.httpx2,
-        "AsyncClient",
-        lambda **kwargs: http_client,
+        session_class,
+        "initialize",
+        wait_for_cancellation,
     )
-    monkeypatch.setattr(
-        mcp_client_module,
-        "streamable_http_client",
-        lambda *args, **kwargs: transport,
-    )
-    monkeypatch.setattr(
-        mcp_client_module,
-        "ClientSession",
-        lambda read_stream, write_stream: session,
-    )
+    server = MCPServer("InitializationCancellationServer")
+    port = _get_free_port()
+    client = McpClient.from_streamable_http(url=f"http://127.0.0.1:{port}/mcp", timeout=5.0)
+    caught_cancellations: list[BaseException] = []
+    cancel_scopes: list[anyio.CancelScope] = []
+    enter_finished = anyio.Event()
 
-    client = McpClient.from_streamable_http(url="https://example.test/mcp")
-    cancellation = anyio.get_cancelled_exc_class()("cancel during initialization")
+    async def enter_client() -> None:
+        with anyio.CancelScope() as cancel_scope:
+            cancel_scopes.append(cancel_scope)
+            try:
+                await client.__aenter__()
+            except BaseException as exc:
+                caught_cancellations.append(exc)
+                raise
+        enter_finished.set()
 
-    with pytest.raises(type(cancellation)) as raised:
-        await client.__aenter__()
+    async with anyio.create_task_group() as tg:
+        await _start_mcp_server(tg, server, port)
+        tg.start_soon(enter_client)
+        await initialization_started.wait()
+        cancel_scopes[0].cancel()
+        await enter_finished.wait()
 
-    assert raised.value is cancellation
-    assert not client.is_active
-    assert events == [
-        "http.enter",
-        "transport.enter",
-        "session.enter",
-        "session.initialize",
-        "session.exit",
-        "transport.exit",
-        "http.exit",
-    ]
+        assert len(caught_cancellations) == 1
+        assert isinstance(caught_cancellations[0], anyio.get_cancelled_exc_class())
+        assert not client.is_active
+        assert events == [
+            "http.enter",
+            "transport.enter",
+            "session.enter",
+            "session.initialize",
+            "session.exit",
+            "transport.exit",
+            "http.exit",
+        ]
+        assert caught_cancellations[0] is initialization_cancellations[0]
+        assert all(
+            "attempted to exit a cancel scope" not in note.lower()
+            for note in getattr(caught_cancellations[0], "__notes__", [])
+        )
+        tg.cancel_scope.cancel()

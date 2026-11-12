@@ -54,7 +54,7 @@ To access the console:
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python -m pytest -q -m "not redis"
+python -m pytest -q -m "not redis and not external_provider"
 python -m ruff check .
 docker compose config --quiet
 ```

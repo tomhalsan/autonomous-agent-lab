@@ -1,5 +1,5 @@
 import copy
-import sys
+from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any, Self
 
@@ -119,9 +119,7 @@ class McpClient:
         if not isinstance(config, (McpServerConfig, McpHttpClientConfig)):
             raise TypeError("config must be an instance of McpServerConfig or McpHttpClientConfig")
         self._config = config
-        self._transport_ctx: Any = None
-        self._http_client: Any = None
-        self._session_ctx: Any = None
+        self._exit_stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
         self._is_active = False
 
@@ -164,6 +162,7 @@ class McpClient:
         return self._is_active
 
     async def __aenter__(self) -> Self:
+        exit_stack = AsyncExitStack()
         try:
             if isinstance(self._config, McpServerConfig):
                 params = StdioServerParameters(
@@ -172,42 +171,45 @@ class McpClient:
                     env=dict(self._config.env) if self._config.env is not None else None,
                     cwd=self._config.cwd,
                 )
-                transport_ctx = stdio_client(params)
-                read_stream, write_stream = await transport_ctx.__aenter__()
-                self._transport_ctx = transport_ctx
+                read_stream, write_stream = await exit_stack.enter_async_context(
+                    stdio_client(params)
+                )
             else:
                 http_client = httpx2.AsyncClient(
                     headers=self._config.headers,
                     timeout=self._config.timeout,
                 )
-                await http_client.__aenter__()
-                self._http_client = http_client
-                transport_ctx = streamable_http_client(
-                    self._config.url,
-                    http_client=http_client,
-                    terminate_on_close=self._config.terminate_on_close,
+                await exit_stack.enter_async_context(http_client)
+                read_stream, write_stream = await exit_stack.enter_async_context(
+                    streamable_http_client(
+                        self._config.url,
+                        http_client=http_client,
+                        terminate_on_close=self._config.terminate_on_close,
+                    )
                 )
-                read_stream, write_stream = await transport_ctx.__aenter__()
-                self._transport_ctx = transport_ctx
 
-            session_ctx = ClientSession(read_stream, write_stream)
-            session = await session_ctx.__aenter__()
-            self._session_ctx = session_ctx
-            self._session = session
+            session = await exit_stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
 
             with anyio.fail_after(self._config.timeout):
                 await session.initialize()
         except BaseException as original_error:
-            exc_info = sys.exc_info()
-            with anyio.CancelScope(shield=True):
-                try:
-                    await self.__aexit__(*exc_info)
-                except BaseException as cleanup_error:  # noqa: BLE001
+            try:
+                await exit_stack.__aexit__(
+                    type(original_error),
+                    original_error,
+                    original_error.__traceback__,
+                )
+            except BaseException as cleanup_error:  # noqa: BLE001
+                if cleanup_error is not original_error:
                     original_error.add_note(
                         f"MCP resource cleanup also failed: {cleanup_error!r}"
                     )
             raise
 
+        self._exit_stack = exit_stack
+        self._session = session
         self._is_active = True
         return self
 
@@ -219,21 +221,11 @@ class McpClient:
     ) -> None:
         self._is_active = False
         try:
-            if self._session_ctx is not None:
-                await self._session_ctx.__aexit__(exc_type, exc_val, exc_tb)
+            if self._exit_stack is not None:
+                await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         finally:
             self._session = None
-            self._session_ctx = None
-            try:
-                if self._transport_ctx is not None:
-                    await self._transport_ctx.__aexit__(exc_type, exc_val, exc_tb)
-            finally:
-                self._transport_ctx = None
-                if self._http_client is not None:
-                    try:
-                        await self._http_client.__aexit__(exc_type, exc_val, exc_tb)
-                    finally:
-                        self._http_client = None
+            self._exit_stack = None
 
     async def list_tools(self) -> list[McpTool]:
         """Discover tools from the MCP server and map them into Tiny Agent Lab Tool instances."""

@@ -36,7 +36,7 @@ Layer 4: Compose Configuration (PR CI: docker compose config --quiet)
    ▲
 Layer 3: Container Boundary (PR CI: build images, runtime import smoke checks)
    ▲
-Layer 2: Unit / Contract / Policy (PR CI: host pytest -m "not redis", fast deterministic fakes)
+Layer 2: Unit / Contract / Policy (PR CI: host pytest -m "not redis and not external_provider", fast deterministic fakes)
    ▲
 Layer 1: Static / Hygiene (PR CI: Ruff lint, git diff --check)
 ```
@@ -49,7 +49,7 @@ Layer 1: Static / Hygiene (PR CI: Ruff lint, git diff --check)
 - **What it cannot prove**: Functional correctness, runtime importability, or dynamic system behavior.
 
 ### Layer 2: Unit / Contract / Policy
-- **Mechanism**: Host-side `pytest -q -m "not redis"`, using mocks (`AsyncMock`), fakes (`InMemoryRedis`, `FakeMessageBus`), and deterministic fixtures.
+- **Mechanism**: Host-side `pytest -q -m "not redis and not external_provider"`, using mocks (`AsyncMock`), fakes (`InMemoryRedis`, `FakeMessageBus`), and deterministic fixtures.
 - **Execution**: Runs in PR CI (~950+ tests in under 3 seconds).
 - **Purpose**: Validate pure domain logic, contract serializations, candidate selection policies, routing classifiers, fallback traversal loops, telemetry schemas, input validations, and error handling.
 - **What it proves**: State transitions, algorithms, and application policies operate correctly under defined, controlled assumptions.
@@ -136,7 +136,7 @@ The post-release deployment of `v0.4.0` to `home-core` surfaced three distinct c
 ### Case Study 4: CI Integration Environment Contamination (Increment B Hardening)
 - **Symptom**: Four existing unit tests verifying the application's default unconfigured Redis URL (`redis://localhost:6379/0`) failed when `REDIS_URL` was injected into CI.
 - **Root Cause**: Injecting `REDIS_URL=redis://localhost:6379/15` across the entire `pytest -q` step contaminated application startup tests that intentionally verify default environment variable fallbacks.
-- **Lesson**: **Integration test configuration must remain isolated from unrelated unit tests.** PR CI must separate unit execution (`pytest -q -m "not redis"`) from integration execution (`REDIS_URL=... pytest -q -m redis`).
+- **Lesson**: **Integration test configuration must remain isolated from unrelated unit tests.** PR CI must separate unit execution (`pytest -q -m "not redis and not external_provider"`) from integration execution (`REDIS_URL=... pytest -q -m redis`).
 
 ---
 
@@ -199,7 +199,7 @@ An agent platform must never present generated model speculation as observed run
 | Validation Layer | Target Boundary | Primary Tools | Execution Cadence | Catches |
 | :--- | :--- | :--- | :--- | :--- |
 | **1. Static / Hygiene** | Source code | `ruff`, `git diff --check` | Pre-commit & PR CI | Syntax, styling, whitespace errors |
-| **2. Unit / Policy** | Application logic | `pytest -m "not redis"` | Pre-commit & PR CI | Broken contracts, invalid state transitions, routing logic errors |
+| **2. Unit / Policy** | Application logic | `pytest -m "not redis and not external_provider"` | Pre-commit & PR CI | Broken contracts, invalid state transitions, routing logic errors |
 | **3. Container Boundary** | Image filesystem | `docker build`, import checks | PR CI | Missing packages (`agent_policy`), bad `PYTHONPATH` |
 | **4. Compose Config** | Configuration artifact | `docker compose config` | PR CI | YAML syntax, invalid service attributes, bad variable expansions |
 | **5. Redis Integration** | External engine wire protocol | `pytest -m redis` (DB 15) | PR CI | Serialization wire errors, stream syntax, queue protocol bugs |
