@@ -239,3 +239,24 @@ To preserve architectural simplicity and prevent speculative complexity, the fol
 ## 13. Governance: Modifying Architectural Boundaries
 
 > **Mandatory Rule**: Significant architectural decisions (such as altering layer boundaries, introducing shared cross-service dependencies, bypassing ports/adapters, adding infrastructure services, or updating communication contracts) **require an explicit Architecture Decision Record (ADR) stored under `docs/adr/`** before implementation.
+
+## 14. Runtime Tool Discovery Boundary
+
+`agent_policy.ToolDiscoveryService` queries the shared `ToolRegistryReader` on
+every discovery request and returns `ToolRegistration` values in registry order.
+`ToolDiscoveryScope.categories` describes which catalog categories the caller
+wants to inspect; an empty category set returns all currently registered tools.
+The scope is immutable and category matching is case-insensitive.
+
+Discovery eligibility is not execution authorization. It does not interpret
+`AgentCapabilityMetadata.agent_type` or advertised `capabilities` as permission
+grants, rank or select tools, or invoke them. Agent-type applicability and actual
+permission grants remain undefined by the current contracts and are deferred to
+the tool-selection and authorization increments.
+
+`ToolRegistration.category` is the category source. A tool with
+`ToolDefinition.metadata is None` can be discovered only after registration with
+an explicit category; discovery does not synthesize metadata. The current
+`InMemoryToolRegistry` is process-local: a discovery service sharing that live
+instance sees later registrations, but this does not provide cross-process
+discovery.
