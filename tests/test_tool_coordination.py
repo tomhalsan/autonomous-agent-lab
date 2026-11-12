@@ -7,11 +7,19 @@ from pathlib import Path
 
 import pytest
 from agent_contracts import (
+    ToolAuthorizationContext,
+    ToolCapabilityMetadata,
     ToolDefinition,
+    ToolIdempotency,
     ToolInvocationProposal,
     ToolInvocationRequest,
     ToolInvocationResult,
+    ToolOperationType,
+    ToolPermissionGrant,
+    ToolPermissionScope,
     ToolRegistration,
+    ToolRiskLevel,
+    ToolSecurityAuditEvent,
     ToolSelectionDecision,
     ToolSelectionKind,
     ToolSelector,
@@ -38,6 +46,7 @@ class _Tool:
         description: str = "Search the web",
         parameters: dict[str, object] | None = None,
         result: ToolInvocationResult | None = None,
+        operation_type: ToolOperationType | None = ToolOperationType.READ_ONLY,
     ) -> None:
         self._definition = ToolDefinition(
             name=name,
@@ -50,6 +59,16 @@ class _Tool:
                 "required": ["query"],
                 "additionalProperties": False,
             },
+            metadata=(
+                ToolCapabilityMetadata(
+                    category="research",
+                    operation_type=operation_type,
+                    risk_level=ToolRiskLevel.LOW,
+                    idempotency=ToolIdempotency.IDEMPOTENT,
+                )
+                if operation_type is not None
+                else None
+            ),
         )
         self.result = result
         self.requests: list[ToolInvocationRequest] = []
@@ -105,6 +124,14 @@ def _registration(tool: _Tool, category: str = "research") -> ToolRegistration:
     return ToolRegistration(tool, category=category)
 
 
+class _RecordingAuditSink:
+    def __init__(self) -> None:
+        self.events: list[ToolSecurityAuditEvent] = []
+
+    async def deliver(self, event: ToolSecurityAuditEvent) -> None:
+        self.events.append(event)
+
+
 def _coordinator(
     registry: InMemoryToolRegistry,
     selector: ToolSelector,
@@ -117,6 +144,13 @@ def _coordinator(
         selector=selector,
         execution_boundary=TrustedCompositionToolInvoker(),
         corrector=corrector,
+        authorization_context=ToolAuthorizationContext(
+            agent_id="test-agent",
+            permission_scope=ToolPermissionScope(
+                [ToolPermissionGrant("web_search", ToolOperationType.READ_ONLY)]
+            ),
+        ),
+        audit_sink=_RecordingAuditSink(),
     )
 
 
@@ -403,6 +437,11 @@ async def test_cancellation_from_execution_boundary_propagates_without_retry() -
             ToolSelectionDecision.proposed_invocation("web_search", {"query": "weather"})
         ),  # type: ignore[arg-type]
         invoker,  # type: ignore[arg-type]
+        authorization_context=ToolAuthorizationContext(
+            "test-agent",
+            ToolPermissionScope([ToolPermissionGrant("web_search", ToolOperationType.READ_ONLY)]),
+        ),
+        audit_sink=_RecordingAuditSink(),
     )
 
     with pytest.raises(asyncio.CancelledError) as raised:
@@ -508,6 +547,11 @@ async def test_malformed_execution_result_becomes_invocation_failure() -> None:
             ToolSelectionDecision.proposed_invocation("web_search", {"query": "weather"})
         ),  # type: ignore[arg-type]
         invoker,  # type: ignore[arg-type]
+        authorization_context=ToolAuthorizationContext(
+            "test-agent",
+            ToolPermissionScope([ToolPermissionGrant("web_search", ToolOperationType.READ_ONLY)]),
+        ),
+        audit_sink=_RecordingAuditSink(),
     )
 
     result = await coordinator.coordinate("search the web")
@@ -521,10 +565,11 @@ async def test_malformed_execution_result_becomes_invocation_failure() -> None:
 
 
 def test_generic_coordination_modules_do_not_import_infrastructure_or_providers() -> None:
+    import agent_policy.tool_authorization as authorization_module
     import agent_policy.tool_coordination as coordination_module
     import agent_policy.tool_validation as validation_module
 
-    for module in (coordination_module, validation_module):
+    for module in (authorization_module, coordination_module, validation_module):
         source = Path(module.__file__).read_text()
         tree = ast.parse(source)
         imports = {

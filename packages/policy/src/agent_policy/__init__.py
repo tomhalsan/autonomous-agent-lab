@@ -11,6 +11,7 @@ from .inference_selection import (
     SelectionStrategy,
     parse_provider_priority,
 )
+from .tool_authorization import ExactToolAuthorizer, ToolAuthorizer, ToolSecurityAuditSink
 from .tool_coordination import (
     BoundedToolCoordinator,
     ToolCoordinationResult,
@@ -33,6 +34,7 @@ __all__ = [
     "DeterministicProviderSelector",
     "DeterministicToolArgumentCorrector",
     "DeterministicToolSelector",
+    "ExactToolAuthorizer",
     "ExcludedProviderCandidate",
     "ProviderDescriptor",
     "ProviderLocality",
@@ -42,11 +44,13 @@ __all__ = [
     "ToolArgumentCorrector",
     "ToolArgumentValidationResult",
     "ToolArgumentValidator",
+    "ToolAuthorizer",
     "ToolCoordinationResult",
     "ToolCoordinationStatus",
     "ToolDiscoveryScope",
     "ToolDiscoveryService",
     "ToolExecutionBoundary",
+    "ToolSecurityAuditSink",
     "TrustedCompositionToolInvoker",
     "parse_provider_priority",
 ]

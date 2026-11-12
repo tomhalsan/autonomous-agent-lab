@@ -253,9 +253,9 @@ The scope is immutable and category matching is case-insensitive.
 
 Discovery eligibility is not execution authorization. It does not interpret
 `AgentCapabilityMetadata.agent_type` or advertised `capabilities` as permission
-grants, rank or select tools, or invoke them. Agent-type applicability and actual
-permission grants remain undefined by the current contracts and are deferred to
-the tool-selection and authorization increments.
+grants, rank or select tools, or invoke them. Agent-type applicability is not
+inferred from advertised capabilities; authorization grants are supplied
+separately by trusted runtime composition.
 
 `ToolRegistration.category` is the category source. A tool with
 `ToolDefinition.metadata is None` can be discovered only after registration with
@@ -280,9 +280,21 @@ does not fabricate a natural-language synthesis or create an autonomous loop.
 The current Research Agent and Worker flows are not wired to this generic
 coordinator.
 
-Execution crosses `TrustedCompositionToolInvoker` only under an explicitly
-documented temporary trusted-composition assumption for deliberately supplied
-prototype or test tools. Discovery eligibility is not execution authorization;
-selection and registration are not authorization. Issue #27 remains responsible
-for replacing this assumption with real permission and authorization
-enforcement. Discovery remains process-local as described above.
+After validation and bounded correction, the coordinator authorizes the
+effective invocation using a trusted `ToolAuthorizationContext`. Permission
+scopes contain immutable exact-tool grants keyed by tool name and operation
+type; they are separate from descriptive tool metadata and advertised agent
+capabilities. Read-only and state-mutating operations both require a matching
+grant, and state-mutating operations require an explicit `state_mutating`
+grant.
+
+The coordinator delivers a sanitized authorization-decision event before
+crossing `ToolExecutionBoundary`. A denial never invokes the execution
+boundary. If required audit delivery fails, the coordinator does not execute
+even when authorization allowed; authorization, audit delivery, and execution
+attempt remain separate outcomes. The event records authorization, not
+execution success or failure; execution telemetry is outside this boundary.
+`TrustedCompositionToolInvoker` performs invocation only and is not itself an
+authorization or audit mechanism. Consumers must compose the coordinator with
+an audit sink. Invocation authorization is not filesystem or network
+sandboxing. Discovery remains process-local as described above.
