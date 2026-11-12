@@ -2,6 +2,7 @@ import os
 
 from research_agent.application.ports import ResearchExecutor
 from research_agent.domain.evaluator import EvidenceEvaluator
+from research_agent.infrastructure.mcp_tavily_executor import McpTavilyResearchExecutor
 from research_agent.infrastructure.stub_executor import StubResearchExecutor
 from research_agent.infrastructure.tavily_executor import TavilyResearchExecutor
 
@@ -35,6 +36,18 @@ def create_research_executor(
             evaluator=evaluator,
         )
 
+    if normalized == "tavily_mcp":
+        url = os.getenv("TAVILY_MCP_URL", "https://mcp.tavily.com/mcp/").strip()
+        resolved_key = (
+            api_key if api_key is not None else os.getenv("TAVILY_API_KEY", "")
+        ).strip()
+        headers = {"Authorization": f"Bearer {resolved_key}"} if resolved_key else None
+        return McpTavilyResearchExecutor(
+            url=url,
+            headers=headers,
+            evaluator=evaluator,
+        )
+
     raise ValueError(
-        f"Unsupported research executor: {raw_name!r}. Supported executors: ['stub', 'tavily']"
+        f"Unsupported research executor: {raw_name!r}. Supported executors: ['stub', 'tavily', 'tavily_mcp']"
     )

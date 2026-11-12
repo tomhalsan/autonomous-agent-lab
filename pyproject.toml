@@ -9,6 +9,7 @@ pythonpath = ["services/orchestrator/src", "services/worker/src", "services/rese
 testpaths = ["tests"]
 markers = [
     "redis: integration tests requiring an explicit live Redis instance via REDIS_URL",
+    "external_provider: opt-in live tests targeting external network or live providers",
 ]
 
 [tool.ruff]
