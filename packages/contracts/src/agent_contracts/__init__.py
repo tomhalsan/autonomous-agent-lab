@@ -32,6 +32,13 @@ from .messages import (
 )
 from .results import InferenceResponse, TaskResult
 from .routing import RoutingDecision, RoutingProvenance
+from .tool_selection import (
+    JSONValue,
+    ToolInvocationProposal,
+    ToolSelectionDecision,
+    ToolSelectionKind,
+    ToolSelector,
+)
 from .tools import (
     Tool,
     ToolCapabilityMetadata,
@@ -67,6 +74,7 @@ __all__ = [
     "InferenceHealthStatus",
     "InferenceProviderHealth",
     "InferenceResponse",
+    "JSONValue",
     "LivenessPolicy",
     "NonFallbackInferenceError",
     "ProviderFailureSummary",
@@ -80,6 +88,7 @@ __all__ = [
     "ToolError",
     "ToolErrorCode",
     "ToolIdempotency",
+    "ToolInvocationProposal",
     "ToolInvocationRequest",
     "ToolInvocationResult",
     "ToolOperationType",
@@ -87,6 +96,9 @@ __all__ = [
     "ToolRegistry",
     "ToolRegistryReader",
     "ToolRiskLevel",
+    "ToolSelectionDecision",
+    "ToolSelectionKind",
+    "ToolSelector",
     "__version__",
     "evaluate_agent_record",
     "evaluate_availability",

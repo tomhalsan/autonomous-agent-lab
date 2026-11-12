@@ -11,18 +11,42 @@ from .inference_selection import (
     SelectionStrategy,
     parse_provider_priority,
 )
+from .tool_coordination import (
+    BoundedToolCoordinator,
+    ToolCoordinationResult,
+    ToolCoordinationStatus,
+    ToolExecutionBoundary,
+    TrustedCompositionToolInvoker,
+)
 from .tool_discovery import ToolDiscoveryScope, ToolDiscoveryService
+from .tool_selection import DeterministicToolSelector
+from .tool_validation import (
+    DeterministicToolArgumentCorrector,
+    ToolArgumentCorrector,
+    ToolArgumentValidationResult,
+    ToolArgumentValidator,
+)
 
 __all__ = [
+    "BoundedToolCoordinator",
     "CostTier",
     "DeterministicProviderSelector",
+    "DeterministicToolArgumentCorrector",
+    "DeterministicToolSelector",
     "ExcludedProviderCandidate",
     "ProviderDescriptor",
     "ProviderLocality",
     "ProviderSelectionDecision",
     "RankedProviderCandidate",
     "SelectionStrategy",
+    "ToolArgumentCorrector",
+    "ToolArgumentValidationResult",
+    "ToolArgumentValidator",
+    "ToolCoordinationResult",
+    "ToolCoordinationStatus",
     "ToolDiscoveryScope",
     "ToolDiscoveryService",
+    "ToolExecutionBoundary",
+    "TrustedCompositionToolInvoker",
     "parse_provider_priority",
 ]

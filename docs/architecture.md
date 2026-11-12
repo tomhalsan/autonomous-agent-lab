@@ -263,3 +263,26 @@ an explicit category; discovery does not synthesize metadata. The current
 `InMemoryToolRegistry` is process-local: a discovery service sharing that live
 instance sees later registrations, but this does not provide cross-process
 discovery.
+
+## 15. Bounded Provider-Neutral Tool Use
+
+The tool-use policy consumes the current catalog through the existing
+`ToolDiscoveryService`, then follows the stable boundaries of selection,
+argument validation, an explicit authorization seam, execution, and a
+continuation result. Selection contracts are provider-neutral and agent-neutral.
+The deterministic selector is a replaceable reference implementation; its
+matching behavior is not part of the selection contract.
+
+The initial coordination policy permits at most one correction attempt, at most
+one tool invocation, and one continuation path. The coordinator returns the
+successful `ToolInvocationResult` for a concrete consumer to continue with; it
+does not fabricate a natural-language synthesis or create an autonomous loop.
+The current Research Agent and Worker flows are not wired to this generic
+coordinator.
+
+Execution crosses `TrustedCompositionToolInvoker` only under an explicitly
+documented temporary trusted-composition assumption for deliberately supplied
+prototype or test tools. Discovery eligibility is not execution authorization;
+selection and registration are not authorization. Issue #27 remains responsible
+for replacing this assumption with real permission and authorization
+enforcement. Discovery remains process-local as described above.
