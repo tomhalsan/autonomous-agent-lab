@@ -52,7 +52,7 @@ class GetRoutingDecision:
 
 
 class GetTaskInferenceTelemetry:
-    """Query the newest successful inference execution telemetry envelope for a task ID."""
+    """Query task-scoped inference execution telemetry and fallback history."""
 
     def __init__(self, reader: StateReader) -> None:
         self._reader = reader

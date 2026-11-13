@@ -3,6 +3,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import redis.asyncio as redis
 from agent_contracts import InferenceExecutionTelemetry, TaskRequested
 from orchestrator.domain.capability import AgentCapability
 from orchestrator.infrastructure.redis_adapter import RedisGateway
@@ -301,6 +302,7 @@ async def test_redis_gateway_task_inference_telemetry_newest_successful() -> Non
     )
 
     # xrevrange returns newest entries first
+    gateway._client.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     gateway._client.xrevrange = AsyncMock(  # type: ignore[method-assign]
         return_value=[
             (
@@ -331,8 +333,9 @@ async def test_redis_gateway_task_inference_telemetry_newest_successful() -> Non
 
 
 @pytest.mark.anyio
-async def test_redis_gateway_task_inference_telemetry_ignores_failed() -> None:
+async def test_redis_gateway_task_inference_telemetry_surfaces_failed_attempts() -> None:
     gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     telem_failed = InferenceExecutionTelemetry(
         provider_name="cloudflare",
         attempt_index=0,
@@ -343,22 +346,38 @@ async def test_redis_gateway_task_inference_telemetry_ignores_failed() -> None:
     gateway._client.xrevrange = AsyncMock(  # type: ignore[method-assign]
         return_value=[
             (
+                "1000-2",
+                {
+                    "task_id": "task-test-failed",
+                    "state": "error",
+                },
+            ),
+            (
                 "1000-1",
                 {
                     "task_id": "task-test-failed",
                     "inference_telemetry": json.dumps(telem_failed.to_dict()),
                 },
-            )
+            ),
         ]
     )
 
     result = await gateway.task_inference_telemetry("task-test-failed")
-    assert result is None
+    assert result is not None
+    assert result["task_id"] == "task-test-failed"
+    assert result["inference_telemetry"] is None
+    assert result["final_status"] == "all_providers_failed"
+    assert result["history_status"] == "complete"
+    assert len(result["attempts"]) == 1
+    assert result["attempts"][0]["provider_name"] == "cloudflare"
+    assert result["attempts"][0]["status"] == "fallback_eligible_failure"
+    assert result["attempts"][0]["failure_reason"] == "provider_unavailable_error"
 
 
 @pytest.mark.anyio
 async def test_redis_gateway_task_inference_telemetry_ignores_other_tasks() -> None:
     gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     telem_success = InferenceExecutionTelemetry(
         provider_name="gemini",
         attempt_index=0,
@@ -385,6 +404,7 @@ async def test_redis_gateway_task_inference_telemetry_ignores_other_tasks() -> N
 @pytest.mark.anyio
 async def test_redis_gateway_task_inference_telemetry_handles_malformed_and_invalid() -> None:
     gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     gateway._client.xrevrange = AsyncMock(  # type: ignore[method-assign]
         return_value=[
             # Malformed JSON
@@ -415,15 +435,43 @@ async def test_redis_gateway_task_inference_telemetry_handles_malformed_and_inva
     )
 
     result = await gateway.task_inference_telemetry("task-malformed")
-    assert result is None
+    assert result is not None
+    assert result["task_id"] == "task-malformed"
+    assert result["inference_telemetry"] is None
+    assert result["history_status"] == "partial"
+    assert result["attempts"] == []
 
 
 @pytest.mark.anyio
 async def test_redis_gateway_task_inference_telemetry_returns_none_when_empty() -> None:
     gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     gateway._client.xrevrange = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
     result = await gateway.task_inference_telemetry("task-any")
     assert result is None
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_event_stream_read_failure_raises_telemetry_storage_error() -> None:
+    from orchestrator.application.ports import TelemetryStorageError
+
+    gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    gateway._client.xrevrange = AsyncMock(side_effect=redis.ConnectionError("Connection refused"))  # type: ignore[method-assign]
+
+    with pytest.raises(TelemetryStorageError, match="Event stream storage unavailable"):
+        await gateway.task_inference_telemetry("task-stream-fail")
+
+
+@pytest.mark.anyio
+async def test_redis_gateway_durable_key_read_failure_raises_telemetry_storage_error() -> None:
+    from orchestrator.application.ports import TelemetryStorageError
+
+    gateway = RedisGateway("redis://localhost:6379/0")
+    gateway._client.get = AsyncMock(side_effect=redis.RedisError("Redis cluster error"))  # type: ignore[method-assign]
+
+    with pytest.raises(TelemetryStorageError, match="Task durable state storage unavailable"):
+        await gateway.task_inference_telemetry("task-durable-fail")
 
 

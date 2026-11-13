@@ -33,16 +33,21 @@ class FakeTaskQueue:
         )
         self.enqueued.append((task, capability))
 
+
 class FakeStateReader:
     def __init__(
         self,
         agents_data: list[dict[str, str]] | None = None,
         events_data: list[dict[str, str]] | None = None,
         routing_decisions: dict[str, dict[str, Any]] | None = None,
+        task_results: dict[str, Any] | None = None,
+        task_statuses: dict[str, Any] | None = None,
     ) -> None:
         self.agents_data = agents_data or []
         self.events_data = events_data or []
         self.routing_decisions = routing_decisions or {}
+        self.task_results = task_results or {}
+        self.task_statuses = task_statuses or {}
         self.last_events_limit: int | None = None
 
     async def agents(self) -> list[dict[str, str]]:
@@ -64,32 +69,91 @@ class FakeStateReader:
         return None
 
     async def task_inference_telemetry(self, task_id: str) -> dict[str, Any] | None:
-        for event in self.events_data:
-            if event.get("task_id") == task_id and event.get("inference_telemetry"):
-                raw_telem = event["inference_telemetry"]
-                import json
+        import json
 
-                try:
-                    telem = (
-                        json.loads(raw_telem) if isinstance(raw_telem, str) else raw_telem
-                    )
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                if not isinstance(telem, dict):
-                    continue
-                from agent_contracts import InferenceExecutionTelemetry
+        from agent_contracts import FallbackTransition, InferenceExecutionTelemetry
+        from orchestrator.application.inference_history import (
+            TaskEventObservation,
+            project_task_inference_history,
+        )
 
-                validated = None
+        clean_task_id = str(task_id).strip()
+        if not clean_task_id:
+            return None
+
+        matching = [e for e in self.events_data if e.get("task_id") == clean_task_id]
+        task_completed = clean_task_id in self.task_results
+        task_exists_durable = (
+            task_completed
+            or (clean_task_id in self.routing_decisions)
+            or (clean_task_id in self.task_statuses)
+        )
+        task_failed = False
+        if clean_task_id in self.task_statuses:
+            s = self.task_statuses[clean_task_id]
+            if (isinstance(s, dict) and s.get("status") in ("error", "failed")) or s in (
+                "error",
+                "failed",
+            ):
+                task_failed = True
+
+        observations: list[TaskEventObservation] = []
+        for stream_order, e in enumerate(matching):
+            event_id = str(e.get("event_id", f"1-{stream_order}"))
+            state = e.get("state")
+            is_terminal_lifecycle = state in ("idle", "completed")
+            is_terminal_error = state == "error"
+
+            parsed_telem: InferenceExecutionTelemetry | None = None
+            raw_telem = e.get("inference_telemetry")
+            is_malformed = False
+            if raw_telem:
                 try:
-                    validated = InferenceExecutionTelemetry.from_dict(telem)
-                except (KeyError, TypeError, ValueError):
-                    pass
-                if validated is not None and validated.status == "succeeded":
-                    return {
-                        "task_id": task_id,
-                        "inference_telemetry": validated.to_dict(),
-                    }
-        return None
+                    telem_data = json.loads(raw_telem) if isinstance(raw_telem, str) else raw_telem
+                    if isinstance(telem_data, dict):
+                        parsed_telem = InferenceExecutionTelemetry.from_dict(telem_data)
+                    else:
+                        is_malformed = True
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    is_malformed = True
+
+            parsed_trans: FallbackTransition | None = None
+            raw_trans = e.get("fallback_transition")
+            if raw_trans:
+                try:
+                    trans_data = json.loads(raw_trans) if isinstance(raw_trans, str) else raw_trans
+                    if isinstance(trans_data, dict):
+                        parsed_trans = FallbackTransition.from_dict(trans_data)
+                    else:
+                        is_malformed = True
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    is_malformed = True
+
+            observations.append(
+                TaskEventObservation(
+                    event_id=event_id,
+                    task_id=clean_task_id,
+                    stream_position=(
+                        int(event_id.split("-")[0]) if event_id.split("-")[0].isdigit() else 0,
+                        int(event_id.split("-")[1]) if len(event_id.split("-")) > 1 and event_id.split("-")[1].isdigit() else 0,
+                    ),
+                    stream_order=stream_order,
+                    state=state,
+                    inference_telemetry=parsed_telem,
+                    fallback_transition=parsed_trans,
+                    is_terminal_lifecycle=is_terminal_lifecycle,
+                    is_terminal_error=is_terminal_error,
+                    is_malformed=is_malformed,
+                )
+            )
+
+        return project_task_inference_history(
+            task_id=clean_task_id,
+            observations=observations,
+            task_exists_durable=task_exists_durable,
+            task_completed=task_completed,
+            task_failed=task_failed,
+        )
 
 
 class FakeResultReader:

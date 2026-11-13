@@ -1773,8 +1773,11 @@
       }
     }
 
+    let currentTelemetryEnvelope = null;
+
     // --- Inference Execution Telemetry Presentation (Issue #18 Increment 1) ---
     function clearInferenceMeta() {
+      currentTelemetryEnvelope = null;
       if (taskInferenceMetaEl) {
         taskInferenceMetaEl.style.display = 'none';
         taskInferenceMetaEl.innerHTML = '';
@@ -1783,7 +1786,58 @@
 
     function renderInferenceMeta(telem) {
       if (!taskInferenceMetaEl) return;
+
+      const envelope = currentTelemetryEnvelope;
+      const attempts = (envelope && Array.isArray(envelope.attempts)) ? envelope.attempts : [];
+      const historyStatus = (envelope && typeof envelope.history_status === 'string') ? envelope.history_status : '';
+      const finalStatus = (envelope && typeof envelope.final_status === 'string') ? envelope.final_status : '';
+
       if (!telem || typeof telem !== 'object' || Array.isArray(telem)) {
+        if (attempts.length > 0) {
+          const failedItems = [];
+          const isAllFailed = finalStatus === 'all_providers_failed';
+          const statusText = isAllFailed
+            ? 'all_providers_failed'
+            : (finalStatus || 'Inference incomplete');
+          const statusColor = isAllFailed
+            ? 'var(--state-error)'
+            : 'var(--text-muted)';
+          failedItems.push(`
+            <span class="inference-meta-item">
+              <span class="meta-label">Status:</span>
+              <strong class="meta-val" style="color: ${statusColor};">${esc(statusText)}</strong>
+            </span>
+          `);
+          if (historyStatus) {
+            failedItems.push(`
+              <span class="inference-meta-item">
+                <span class="meta-label">History:</span>
+                <span class="meta-val">${esc(historyStatus)}</span>
+              </span>
+            `);
+          }
+          for (const att of attempts) {
+            const attIdx = (typeof att.attempt_index === 'number') ? (att.attempt_index + 1) : '?';
+            const pName = typeof att.provider_name === 'string' ? att.provider_name.trim() : 'unknown';
+            const failReason = typeof att.failure_reason === 'string' ? att.failure_reason : '';
+            const sc = (typeof att.status_code === 'number') ? ` (${att.status_code})` : '';
+            failedItems.push(`
+              <span class="inference-meta-item">
+                <span class="meta-label">Attempt ${attIdx}:</span>
+                <span class="meta-val">${esc(pName)}: ${esc(failReason || att.status)}${esc(sc)}</span>
+              </span>
+            `);
+          }
+          const headerColor = isAllFailed ? 'var(--state-error)' : 'var(--text-muted)';
+          taskInferenceMetaEl.innerHTML = `
+            <span class="inference-meta-header" style="color: ${headerColor};">Inference:</span>
+            <div class="inference-meta-group">
+              ${failedItems.join('')}
+            </div>
+          `;
+          taskInferenceMetaEl.style.display = 'flex';
+          return;
+        }
         clearInferenceMeta();
         return;
       }
@@ -1835,6 +1889,25 @@
             <span class="meta-val">${telem.attempt_index + 1}</span>
           </span>
         `);
+      }
+
+      // 5. Prior fallback note if multiple attempts occurred
+      if (attempts.length > 1) {
+        const failedPrior = attempts.filter(a => a.status !== 'succeeded');
+        if (failedPrior.length > 0) {
+          const priorNotes = failedPrior.map(a => {
+            const idx = (typeof a.attempt_index === 'number') ? (a.attempt_index + 1) : '?';
+            const p = typeof a.provider_name === 'string' ? a.provider_name.trim() : '';
+            const r = typeof a.failure_reason === 'string' ? a.failure_reason : '';
+            return `${idx}:${p}(${r})`;
+          }).join(', ');
+          items.push(`
+            <span class="inference-meta-item" style="opacity: 0.85;">
+              <span class="meta-label">Fallback from:</span>
+              <span class="meta-val">${esc(priorNotes)}</span>
+            </span>
+          `);
+        }
       }
 
       taskInferenceMetaEl.innerHTML = `
@@ -1945,31 +2018,53 @@
                 const telem = envelope && typeof envelope === 'object' && !Array.isArray(envelope)
                   ? envelope.inference_telemetry
                   : null;
+                currentTelemetryEnvelope = envelope;
                 if (telem && typeof telem === 'object' && !Array.isArray(telem)) {
                   renderInferenceMeta(telem);
                   updateRoutingObservation('completed', null, telem.provider_name);
                 } else {
-                  clearInferenceMeta();
+                  renderInferenceMeta(null);
                   updateRoutingObservation('completed');
                 }
               } else if (activeTaskId === taskId) {
+                currentTelemetryEnvelope = null;
                 clearInferenceMeta();
                 updateRoutingObservation('completed');
               }
             } catch {
               if (activeTaskId === taskId) {
+                currentTelemetryEnvelope = null;
                 clearInferenceMeta();
                 updateRoutingObservation('completed');
               }
             }
             return;
           } else if (data.status === 'pending') {
+            currentTelemetryEnvelope = null;
             clearInferenceMeta();
             updateRoutingObservation('pending');
           } else if (data.status === 'error' || data.status === 'failed') {
-            clearInferenceMeta();
             updateRoutingObservation('failed', data.detail || 'Execution failure');
             stopResultPolling();
+            try {
+              const telemRes = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/telemetry`);
+              if (telemRes.ok && activeTaskId === taskId) {
+                const envelope = await telemRes.json();
+                if (envelope && typeof envelope === 'object') {
+                  currentTelemetryEnvelope = envelope;
+                  renderInferenceMeta(envelope.inference_telemetry);
+                } else {
+                  currentTelemetryEnvelope = null;
+                  clearInferenceMeta();
+                }
+              } else {
+                currentTelemetryEnvelope = null;
+                clearInferenceMeta();
+              }
+            } catch {
+              currentTelemetryEnvelope = null;
+              clearInferenceMeta();
+            }
             return;
           }
         } else if (res.status === 404) {

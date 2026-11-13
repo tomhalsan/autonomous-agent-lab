@@ -1,15 +1,33 @@
 import json
+import logging
 from typing import Any
 
 import redis.asyncio as redis
 from agent_contracts import (
     AgentEvent,
+    FallbackTransition,
     InferenceExecutionTelemetry,
     RoutingDecision,
     TaskRequested,
 )
 
+from orchestrator.application.inference_history import (
+    TaskEventObservation,
+    project_task_inference_history,
+)
+from orchestrator.application.ports import TelemetryStorageError
 from orchestrator.domain.capability import AgentCapability
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_redis_stream_id(event_id: str) -> tuple[int, int]:
+    """Parse a Redis stream ID ('<ms>-<seq>') into an integer tuple for chronological sorting."""
+    try:
+        parts = event_id.strip().split("-", 1)
+        return (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+    except (AttributeError, ValueError):
+        return (0, 0)
 
 CAPABILITY_QUEUE_MAP: dict[AgentCapability, str] = {
     AgentCapability.GENERAL: "agent.tasks.general",
@@ -128,32 +146,108 @@ class RedisGateway:
         return None
 
     async def task_inference_telemetry(self, task_id: str) -> dict[str, Any] | None:
-        rows = await self._client.xrevrange("agent.events")
-        for _event_id, fields in rows:
-            if fields.get("task_id") != task_id:
-                continue
-            raw_telem = fields.get("inference_telemetry")
-            if not raw_telem:
-                continue
+        clean_task_id = str(task_id).strip()
+        if not clean_task_id:
+            return None
+
+        # Query durable evidence if available
+        try:
+            raw_result = await self._client.get(f"task.result:{clean_task_id}")
+            raw_status = await self._client.get(f"task.status:{clean_task_id}")
+            raw_routing = await self._client.get(f"task.routing:{clean_task_id}")
+        except (redis.RedisError, ConnectionError, OSError) as exc:
+            logger.error("Failed querying durable keys for task %s: %s", clean_task_id, exc.__class__.__name__)
+            raise TelemetryStorageError(
+                f"Task durable state storage unavailable: {exc.__class__.__name__}"
+            ) from exc
+
+        task_completed = raw_result is not None
+        task_exists_durable = task_completed or (raw_status is not None) or (raw_routing is not None)
+        task_failed = False
+        if raw_status is not None:
             try:
-                telem_data = (
-                    json.loads(raw_telem) if isinstance(raw_telem, str) else raw_telem
-                )
+                status_data = json.loads(raw_status)
+                if isinstance(status_data, dict) and status_data.get("status") in ("error", "failed"):
+                    task_failed = True
             except (json.JSONDecodeError, TypeError):
-                continue
-            if not isinstance(telem_data, dict):
-                continue
-            validated: InferenceExecutionTelemetry | None = None
-            try:
-                validated = InferenceExecutionTelemetry.from_dict(telem_data)
-            except (KeyError, TypeError, ValueError):
                 pass
-            if validated is not None and validated.status == "succeeded":
-                return {
-                    "task_id": task_id,
-                    "inference_telemetry": validated.to_dict(),
-                }
-        return None
+
+        try:
+            rows = await self._client.xrevrange("agent.events")
+        except (redis.RedisError, ConnectionError, OSError) as exc:
+            logger.error("Failed querying agent.events stream for task %s: %s", clean_task_id, exc.__class__.__name__)
+            raise TelemetryStorageError(
+                f"Event stream storage unavailable: {exc.__class__.__name__}"
+            ) from exc
+
+        chronological_rows = list(reversed(rows))
+        observations: list[TaskEventObservation] = []
+        for stream_order, (raw_event_id, raw_fields) in enumerate(chronological_rows):
+            event_id = (
+                raw_event_id.decode("utf-8")
+                if isinstance(raw_event_id, (bytes, bytearray))
+                else str(raw_event_id)
+            )
+            fields: dict[str, Any] = {}
+            for k, v in raw_fields.items():
+                key_str = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                val_str = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else v
+                fields[key_str] = val_str
+
+            if fields.get("task_id") != clean_task_id:
+                continue
+
+            state = fields.get("state")
+            is_terminal_lifecycle = state in ("idle", "completed")
+            is_terminal_error = state == "error"
+
+            is_malformed = False
+            parsed_telem: InferenceExecutionTelemetry | None = None
+            raw_telem = fields.get("inference_telemetry")
+            if raw_telem:
+                try:
+                    telem_data = json.loads(raw_telem) if isinstance(raw_telem, str) else raw_telem
+                    if isinstance(telem_data, dict):
+                        parsed_telem = InferenceExecutionTelemetry.from_dict(telem_data)
+                    else:
+                        is_malformed = True
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    is_malformed = True
+
+            parsed_trans: FallbackTransition | None = None
+            raw_trans = fields.get("fallback_transition")
+            if raw_trans:
+                try:
+                    trans_data = json.loads(raw_trans) if isinstance(raw_trans, str) else raw_trans
+                    if isinstance(trans_data, dict):
+                        parsed_trans = FallbackTransition.from_dict(trans_data)
+                    else:
+                        is_malformed = True
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    is_malformed = True
+
+            observations.append(
+                TaskEventObservation(
+                    event_id=event_id,
+                    task_id=clean_task_id,
+                    stream_position=_parse_redis_stream_id(event_id),
+                    stream_order=stream_order,
+                    state=state,
+                    inference_telemetry=parsed_telem,
+                    fallback_transition=parsed_trans,
+                    is_terminal_lifecycle=is_terminal_lifecycle,
+                    is_terminal_error=is_terminal_error,
+                    is_malformed=is_malformed,
+                )
+            )
+
+        return project_task_inference_history(
+            task_id=clean_task_id,
+            observations=observations,
+            task_exists_durable=task_exists_durable,
+            task_completed=task_completed,
+            task_failed=task_failed,
+        )
 
     async def publish(self, event: AgentEvent) -> None:
         mapping = {}
@@ -168,4 +262,3 @@ class RedisGateway:
 
     async def aclose(self) -> None:
         await self._client.aclose()
-
