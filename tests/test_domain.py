@@ -20,6 +20,10 @@ def test_task_accepts_prompt() -> None:
         "Investigate recent distributed state synchronization developments",
         "Find sources about data portability across clouds",
         "Compare current features and pricing of local and cloud LLMs",
+        "Research trends in EDM music",
+        "Compare PostgreSQL and CockroachDB for multi-region writes",
+        "Conduct a literature review of retrieval-augmented generation",
+        "Deep dive into EV battery recycling technologies",
         "Find the published benchmarks comparing redis throughput",
         "Survey available vector databases as of today",
         "Find recent CVEs for fault recovery models",
@@ -38,6 +42,9 @@ def test_deterministic_router_routes_research_prompts(prompt: str) -> None:
         "Research consensus algorithms",
         "Investigate distributed state synchronization",
         "Analyze data portability across clouds",
+        "Research",
+        "Compare",
+        "Investigate",
         "Compare local and cloud LLMs",
         "Evaluate caching strategies",
         "Benchmark redis throughput",
@@ -74,6 +81,21 @@ def test_deterministic_router_routes_case_insensitively() -> None:
     assert router.route("rEsEaRcH the latest developments") == AgentCapability.RESEARCH
     assert router.route("INVESTIGATE recent CVEs") == AgentCapability.RESEARCH
     assert router.route("FIND SOURCES for security audit") == AgentCapability.RESEARCH
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Investigate this traceback in my Python script: KeyError",
+        "Investigate this exception",
+        "Analyze this stack trace",
+        "Compare these two local Python functions",
+        "Benchmark this Python function",
+    ],
+)
+def test_deterministic_router_keeps_local_code_tasks_general(prompt: str) -> None:
+    router = DeterministicCapabilityRouter()
+    assert router.route(prompt) == AgentCapability.GENERAL
 
 
 def test_deterministic_router_respects_word_boundaries() -> None:

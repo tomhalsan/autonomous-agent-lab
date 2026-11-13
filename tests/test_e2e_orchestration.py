@@ -259,7 +259,28 @@ async def test_e2e_runtime_registration_and_dynamic_routing() -> None:
 
 
 @pytest.mark.anyio
-async def test_e2e_specialized_research_agent_dynamic_routing() -> None:
+@pytest.mark.parametrize(
+    ("prompt", "expected_signal"),
+    [
+        ("Research trends in EDM music", "research_synthesis"),
+        (
+            "Compare PostgreSQL and CockroachDB for multi-region writes",
+            "research_synthesis",
+        ),
+        (
+            "Conduct a literature review of retrieval-augmented generation",
+            "research_synthesis",
+        ),
+        ("Deep dive into EV battery recycling technologies", "research_synthesis"),
+        (
+            "Research the latest consensus protocols in distributed state machines",
+            "freshness_or_current_info",
+        ),
+    ],
+)
+async def test_e2e_specialized_research_agent_dynamic_routing(
+    prompt: str, expected_signal: str
+) -> None:
     """Verifies prompt classification dynamically routes research tasks to specialized research agents."""
     app, store = make_test_environment()
 
@@ -293,11 +314,9 @@ async def test_e2e_specialized_research_agent_dynamic_routing() -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        # Submit a research query with clear research intent
-        # Phase B requires external retrieval/freshness/source evidence rather than weak verbs alone
         res_task = await client.post(
             "/api/tasks",
-            json={"prompt": "Research the latest consensus protocols in distributed state machines"},
+            json={"prompt": prompt},
         )
         assert res_task.status_code == 202
         research_task_id = res_task.json()["task_id"]
@@ -305,7 +324,7 @@ async def test_e2e_specialized_research_agent_dynamic_routing() -> None:
         # Dequeued specifically by the research agent on its custom queue
         task = await research_bus.next_task()
         assert task.task_id == research_task_id
-        assert "consensus protocols" in task.prompt
+        assert task.prompt == prompt
 
         # Verify routing decision recorded research capability and selected target
         r_res = await client.get(f"/api/tasks/{research_task_id}/routing")
@@ -315,6 +334,9 @@ async def test_e2e_specialized_research_agent_dynamic_routing() -> None:
         assert decision["required_capabilities"] == ["research"]
         assert decision["selected_agent_id"] == "research-agent-1"
         assert decision["dispatch_target"] == research_queue
+        assert decision["provenance"]["assessment_clarity"] == "clear"
+        assert decision["provenance"]["provisional_capability"] == "research"
+        assert expected_signal in decision["provenance"]["deterministic_signal_types"]
 
 
 # ==============================================================================

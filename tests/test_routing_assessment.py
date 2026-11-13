@@ -131,6 +131,9 @@ class TestDeterministicAssessmentPolicy:
         self, router: DeterministicCapabilityRouter
     ) -> None:
         prompts = [
+            "Research",
+            "Compare",
+            "Investigate",
             "Research consensus algorithms",
             "Investigate distributed state synchronization",
             "Analyze data portability across clouds",
@@ -152,6 +155,63 @@ class TestDeterministicAssessmentPolicy:
                 for s in assessment.signals
             )
             assert "Weak research verb" in assessment.reason
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "Research trends in EDM music",
+            "Compare PostgreSQL and CockroachDB for multi-region writes",
+            "Conduct a literature review of retrieval-augmented generation",
+            "Deep dive into EV battery recycling technologies",
+        ],
+    )
+    def test_contextual_research_synthesis_routes_to_research(
+        self, router: DeterministicCapabilityRouter, prompt: str
+    ) -> None:
+        assessment = router.assess(prompt)
+
+        assert assessment.provisional_capability == AgentCapability.RESEARCH
+        assert assessment.clarity == RoutingClarity.CLEAR
+        assert any(
+            signal.signal_type == RoutingSignalType.RESEARCH_SYNTHESIS
+            and signal.strength == SignalStrength.STRONG
+            for signal in assessment.signals
+        )
+
+    @pytest.mark.parametrize(
+        ("prompt", "evidence"),
+        [
+            ("Investigate this traceback in my Python script: KeyError", "traceback"),
+            ("Investigate this exception", "this exception"),
+            ("Analyze this stack trace", "this stack trace"),
+            ("Compare these two local Python functions", "these two local Python functions"),
+            ("Benchmark this Python function", "this Python function"),
+        ],
+    )
+    def test_explicit_local_targets_remain_general(
+        self,
+        router: DeterministicCapabilityRouter,
+        prompt: str,
+        evidence: str,
+    ) -> None:
+        assessment = router.assess(prompt)
+
+        assert assessment.provisional_capability == AgentCapability.GENERAL
+        assert assessment.clarity == RoutingClarity.CLEAR
+        assert any(
+            signal.signal_type == RoutingSignalType.LOCAL_CODE_OR_DEBUGGING
+            and signal.strength == SignalStrength.STRONG
+            and evidence.lower() in signal.evidence.lower()
+            for signal in assessment.signals
+        )
+        assert any(
+            signal.signal_type == RoutingSignalType.WEAK_RESEARCH_VERB
+            for signal in assessment.signals
+        )
+        assert not any(
+            signal.signal_type == RoutingSignalType.RESEARCH_SYNTHESIS
+            for signal in assessment.signals
+        )
 
     def test_compare_assess_on_supplied_local_artifacts(
         self, router: DeterministicCapabilityRouter
