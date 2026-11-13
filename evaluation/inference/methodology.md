@@ -138,6 +138,22 @@ summaries. The proposed run is `stage1b-20261113-0817`, with artifacts at
 eventual merged Stage 1B implementation commit for live execution, not the
 earlier `98f8d9b` dry-run commit.
 
+The original Stage 1B campaign remains immutable evidence: its result is two
+successes and four failures. A proposed follow-up diagnostic campaign is
+`stage1b-cf-diagnostic-20261113-01`, with at most one inference call for each
+previously failing Cloudflare combination:
+
+- General / `@cf/google/gemma-4-26b-a4b-it`
+- General / `@cf/openai/gpt-oss-20b`
+- Research / `@cf/qwen/qwen3.8-27b`
+- Research / `@cf/openai/gpt-oss-20b`
+
+The purpose would be to capture bounded failure categories for those
+combinations. It is a distinct diagnostic campaign, not an extension or
+repetition of the original run; it must not overwrite or be merged into the
+original attempt records. No retries, fallback, or Tavily calls are permitted.
+This proposal is documented only and does not authorize or execute live calls.
+
 ## Stage gates and call budgets
 
 | Stage | Scope | Planned live inference calls |

@@ -526,7 +526,7 @@ async def test_failed_call_is_not_retried_or_fallen_back_and_secrets_are_not_per
     assert len(requests) == 1
     assert requests[0]["path"].endswith("/ai/run/@cf/google/gemma-4-26b-a4b-it")
     assert attempts[0].status == "failed"
-    assert attempts[0].failure_category == "execution_error"
+    assert attempts[0].failure_category == "http_5xx"
     assert attempts[0].attempt_id == item.attempt_id
     assert CF_TOKEN not in serialized
     assert GEMINI_KEY not in serialized
