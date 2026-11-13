@@ -117,6 +117,27 @@ descriptor—from being produced for that candidate. It does not create an
 `EvaluationAttempt`. These resolvers are Stage 1A evaluation support, not a
 production metadata service, cache, or model-profile system.
 
+Stage 1B adds a direct evaluation-only invoker for the frozen six-call smoke.
+It uses the descriptor's exact model and explicit output limit, calls the
+existing Worker or Research inference adapter once, and maps its normalized
+result into `ProviderOutput`. It does not invoke production orchestration,
+fallback, retry, health selection, or Tavily. The frozen Research case supplies
+its question and evidence directly. Temperature behavior is taken from each
+descriptor; an adapter/settings mismatch is rejected before a request.
+
+The Stage 1B preparation helper selects `general-debug-01` and
+`research-insufficient-04`, builds repetition-0 descriptors from fresh
+snapshots, and validates six unique attempt IDs without invoking a provider.
+Live execution still requires an explicit human GO. Generated run artifacts
+belong under `evaluation/inference/runs/<run_id>/` and are gitignored because
+they may contain model-generated content; commit only intentionally reviewed
+summaries. The proposed run is `stage1b-20261113-0817`, with artifacts at
+`evaluation/inference/runs/stage1b-20261113-0817/attempts.jsonl`,
+`evaluation/inference/runs/stage1b-20261113-0817/blinded-review.jsonl`, and
+`evaluation/inference/runs/stage1b-20261113-0817/report.md`. Record the
+eventual merged Stage 1B implementation commit for live execution, not the
+earlier `98f8d9b` dry-run commit.
+
 ## Stage gates and call budgets
 
 | Stage | Scope | Planned live inference calls |
