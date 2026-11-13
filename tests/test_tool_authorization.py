@@ -1,5 +1,6 @@
 """Exact-tool authorization and audit-before-execution behavior."""
 
+from collections.abc import Awaitable, Callable
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -11,6 +12,7 @@ from agent_contracts import (
     ToolCapabilityMetadata,
     ToolDefinition,
     ToolExecutionState,
+    ToolExecutionTelemetry,
     ToolIdempotency,
     ToolInvocationProposal,
     ToolInvocationRequest,
@@ -113,6 +115,7 @@ def _coordinator(
     authorizer: object | None = None,
     deliver_audit: bool = True,
     authorization_context: ToolAuthorizationContext | None = None,
+    on_telemetry: Callable[[ToolExecutionTelemetry], Awaitable[None]] | None = None,
 ) -> tuple[BoundedToolCoordinator, _ExecutionBoundary, _RecordingAuditSink]:
     registry = InMemoryToolRegistry()
     registry.register(tool, category="test")
@@ -141,6 +144,7 @@ def _coordinator(
         authorization_context=context,
         audit_sink=sink if deliver_audit else None,
         authorizer=authorizer,  # type: ignore[arg-type]
+        on_telemetry=on_telemetry,
     )
     return coordinator, boundary, sink
 
@@ -191,6 +195,34 @@ async def test_ungranted_read_only_invocation_is_denied_before_execution() -> No
     assert result.execution_state is ToolExecutionState.NOT_ATTEMPTED
     assert boundary.calls == []
     assert len(sink.events) == 1
+
+
+@pytest.mark.anyio
+async def test_denial_and_audit_failure_never_emit_execution_telemetry() -> None:
+    telemetry: list[ToolExecutionTelemetry] = []
+
+    async def record(event: ToolExecutionTelemetry) -> None:
+        telemetry.append(event)
+
+    denied, denied_boundary, _ = _coordinator(
+        _Tool(),
+        scope=ToolPermissionScope([]),
+        on_telemetry=record,
+    )
+    denied_result = await denied.coordinate("read the data")
+    assert denied_result.status is ToolCoordinationStatus.AUTHORIZATION_DENIED
+    assert denied_boundary.calls == []
+    assert telemetry == []
+
+    failed_audit, failed_boundary, _ = _coordinator(
+        _Tool(),
+        audit_sink=_RecordingAuditSink(RuntimeError("audit unavailable")),
+        on_telemetry=record,
+    )
+    audit_result = await failed_audit.coordinate("read the data")
+    assert audit_result.status is ToolCoordinationStatus.AUDIT_DELIVERY_FAILURE
+    assert failed_boundary.calls == []
+    assert telemetry == []
 
 
 @pytest.mark.anyio

@@ -1,9 +1,12 @@
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
+
+from .tools import ToolErrorCode
 
 
 def now_iso() -> str:
@@ -193,9 +196,100 @@ class InferenceExecutionTelemetry:
 
 
 @dataclass(frozen=True)
+class ToolExecutionTelemetry:
+    """Sanitized operational measurements for one terminal tool execution."""
+
+    tool_name: str
+    agent_id: str
+    call_id: str
+    duration_ms: float
+    outcome: str
+    argument_size_bytes: int | None
+    result_size_bytes: int | None
+    task_id: str | None = None
+    started_at: str | None = None
+    error_code: ToolErrorCode | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("tool_name", "agent_id", "call_id"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be a non-empty string")
+
+        if isinstance(self.duration_ms, bool) or not isinstance(self.duration_ms, (int, float)):
+            raise TypeError("duration_ms must be a finite non-negative number")
+        try:
+            is_finite_duration = math.isfinite(self.duration_ms)
+        except OverflowError:
+            is_finite_duration = False
+        if not is_finite_duration or self.duration_ms < 0:
+            raise ValueError("duration_ms must be a finite non-negative number")
+        object.__setattr__(self, "duration_ms", float(self.duration_ms))
+
+        if not isinstance(self.outcome, str) or self.outcome not in {"succeeded", "failed"}:
+            raise ValueError("outcome must be 'succeeded' or 'failed'")
+
+        for field_name in ("argument_size_bytes", "result_size_bytes"):
+            value = getattr(self, field_name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{field_name} must be a non-negative integer or None")
+
+        for field_name in ("task_id", "started_at"):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{field_name} must be a non-empty string or None")
+
+        error_code = self.error_code
+        if isinstance(error_code, str) and not isinstance(error_code, ToolErrorCode):
+            try:
+                error_code = ToolErrorCode(error_code)
+            except ValueError as exc:
+                raise ValueError(f"Unknown tool error code {error_code!r}") from exc
+            object.__setattr__(self, "error_code", error_code)
+        elif error_code is not None and not isinstance(error_code, ToolErrorCode):
+            raise TypeError("error_code must be a ToolErrorCode, string, or None")
+
+        if self.outcome == "succeeded" and self.error_code is not None:
+            raise ValueError("successful telemetry must not include an error_code")
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "tool_name": self.tool_name,
+            "agent_id": self.agent_id,
+            "call_id": self.call_id,
+            "duration_ms": self.duration_ms,
+            "argument_size_bytes": self.argument_size_bytes,
+            "result_size_bytes": self.result_size_bytes,
+            "outcome": self.outcome,
+        }
+        if self.task_id is not None:
+            data["task_id"] = self.task_id
+        if self.started_at is not None:
+            data["started_at"] = self.started_at
+        if self.error_code is not None:
+            data["error_code"] = self.error_code.value
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolExecutionTelemetry":
+        if not isinstance(data, dict):
+            raise TypeError("data must be a dict")
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, value: str) -> "ToolExecutionTelemetry":
+        return cls.from_dict(json.loads(value))
+
+
+@dataclass(frozen=True)
 class AgentEvent:
     agent_id: str
-    state: str
+    state: str | None
     detail: str
     occurred_at: str
     task_id: str | None = None
@@ -203,6 +297,7 @@ class AgentEvent:
     fallback_transition: FallbackTransition | None = None
     inference_telemetry: InferenceExecutionTelemetry | None = None
     version: int = 1
+    tool_execution_telemetry: ToolExecutionTelemetry | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.fallback_transition, dict):
@@ -231,16 +326,40 @@ class AgentEvent:
                 f"inference_telemetry must be InferenceExecutionTelemetry, dict, or None, got {type(self.inference_telemetry).__name__}"
             )
 
+        if isinstance(self.tool_execution_telemetry, dict):
+            object.__setattr__(
+                self,
+                "tool_execution_telemetry",
+                ToolExecutionTelemetry.from_dict(self.tool_execution_telemetry),
+            )
+        elif self.tool_execution_telemetry is not None and not isinstance(
+            self.tool_execution_telemetry, ToolExecutionTelemetry
+        ):
+            raise TypeError(
+                "tool_execution_telemetry must be ToolExecutionTelemetry, dict, or None"
+            )
+
+        if (
+            self.tool_execution_telemetry is not None
+            and self.tool_execution_telemetry.agent_id != self.agent_id
+        ):
+            raise ValueError("tool execution telemetry agent_id must match the event agent_id")
+        if self.tool_execution_telemetry is not None and self.state is not None:
+            raise ValueError("tool execution telemetry events must not carry agent state")
+        if self.state is None and self.tool_execution_telemetry is None:
+            raise ValueError("events without state require tool execution telemetry")
+
     @classmethod
     def create(
         cls,
         agent_id: str,
-        state: str,
+        state: str | None,
         detail: str,
         task_id: str | None = None,
         routing_decision: dict[str, Any] | None = None,
         fallback_transition: FallbackTransition | None = None,
         inference_telemetry: InferenceExecutionTelemetry | None = None,
+        tool_execution_telemetry: ToolExecutionTelemetry | None = None,
     ) -> "AgentEvent":
         return cls(
             agent_id=agent_id,
@@ -251,25 +370,60 @@ class AgentEvent:
             routing_decision=routing_decision,
             fallback_transition=fallback_transition,
             inference_telemetry=inference_telemetry,
+            tool_execution_telemetry=tool_execution_telemetry,
         )
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
+        if self.state is None:
+            data.pop("state", None)
         if self.routing_decision is None:
             data.pop("routing_decision", None)
         if self.fallback_transition is None:
             data.pop("fallback_transition", None)
         if self.inference_telemetry is None:
             data.pop("inference_telemetry", None)
+        if self.tool_execution_telemetry is None:
+            data.pop("tool_execution_telemetry", None)
+        else:
+            data["tool_execution_telemetry"] = self.tool_execution_telemetry.to_dict()
         return data
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "AgentEvent":
-        return cls(**data)
+    def from_dict(cls, data: dict[str, Any]) -> "AgentEvent":
+        if not isinstance(data, dict):
+            raise TypeError("data must be a dict")
+        allowed_fields = {
+            "agent_id",
+            "state",
+            "detail",
+            "occurred_at",
+            "task_id",
+            "routing_decision",
+            "fallback_transition",
+            "inference_telemetry",
+            "version",
+            "tool_execution_telemetry",
+        }
+        unexpected_fields = data.keys() - allowed_fields
+        if unexpected_fields:
+            raise TypeError(f"unexpected AgentEvent fields: {sorted(unexpected_fields)}")
+        return cls(
+            agent_id=data["agent_id"],
+            state=data.get("state"),
+            detail=data["detail"],
+            occurred_at=data["occurred_at"],
+            task_id=data.get("task_id"),
+            routing_decision=data.get("routing_decision"),
+            fallback_transition=data.get("fallback_transition"),
+            inference_telemetry=data.get("inference_telemetry"),
+            version=data.get("version", 1),
+            tool_execution_telemetry=data.get("tool_execution_telemetry"),
+        )
 
     @classmethod
     def from_json(cls, value: str) -> "AgentEvent":
-        return cls(**json.loads(value))
+        return cls.from_dict(json.loads(value))

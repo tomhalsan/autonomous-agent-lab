@@ -2,7 +2,9 @@
 
 import ast
 import asyncio
-from collections.abc import Sequence
+import json
+import time
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,8 @@ from agent_contracts import (
     ToolAuthorizationContext,
     ToolCapabilityMetadata,
     ToolDefinition,
+    ToolErrorCode,
+    ToolExecutionTelemetry,
     ToolIdempotency,
     ToolInvocationProposal,
     ToolInvocationRequest,
@@ -137,6 +141,8 @@ def _coordinator(
     selector: ToolSelector,
     *,
     corrector: ToolArgumentCorrector | None = None,
+    on_telemetry: Callable[[ToolExecutionTelemetry], Awaitable[None]] | None = None,
+    clock: Callable[[], int] | None = None,
 ) -> BoundedToolCoordinator:
     return BoundedToolCoordinator(
         discovery=ToolDiscoveryService(registry),
@@ -151,6 +157,8 @@ def _coordinator(
             ),
         ),
         audit_sink=_RecordingAuditSink(),
+        on_telemetry=on_telemetry,
+        clock=clock if clock is not None else time.perf_counter_ns,
     )
 
 
@@ -430,6 +438,11 @@ async def test_cancellation_from_execution_boundary_propagates_without_retry() -
     registry.register(tool, category="research")
     cancellation = asyncio.CancelledError("cancel invocation")
     invoker = _CancellingInvoker()
+    telemetry: list[ToolExecutionTelemetry] = []
+
+    async def record(event: ToolExecutionTelemetry) -> None:
+        telemetry.append(event)
+
     coordinator = BoundedToolCoordinator(
         ToolDiscoveryService(registry),
         ToolDiscoveryScope(categories={"research"}),
@@ -442,6 +455,8 @@ async def test_cancellation_from_execution_boundary_propagates_without_retry() -
             ToolPermissionScope([ToolPermissionGrant("web_search", ToolOperationType.READ_ONLY)]),
         ),
         audit_sink=_RecordingAuditSink(),
+        on_telemetry=record,
+        clock=lambda: 1,
     )
 
     with pytest.raises(asyncio.CancelledError) as raised:
@@ -450,6 +465,7 @@ async def test_cancellation_from_execution_boundary_propagates_without_retry() -
     assert raised.value is cancellation
     assert invoker.calls == 1
     assert tool.requests == []
+    assert telemetry == []
 
 
 @pytest.mark.parametrize(
@@ -515,14 +531,184 @@ async def test_tool_exception_becomes_invocation_failure() -> None:
     selector = _FixedSelector(
         ToolSelectionDecision.proposed_invocation("web_search", {"query": "weather"})
     )
+    telemetry: list[ToolExecutionTelemetry] = []
 
-    result = await _coordinator(registry, selector).coordinate("search the web")
+    async def record(event: ToolExecutionTelemetry) -> None:
+        telemetry.append(event)
+
+    result = await _coordinator(
+        registry,
+        selector,
+        on_telemetry=record,
+        clock=lambda: 1,
+    ).coordinate("search the web")
 
     assert result.status is ToolCoordinationStatus.TOOL_INVOCATION_FAILURE
     assert result.invocation_result is not None
     assert result.invocation_result.error is not None
     assert result.invocation_result.error.message == "execution broke"
     assert len(tool.requests) == 1
+    assert len(telemetry) == 1
+    assert telemetry[0].error_code is ToolErrorCode.EXECUTION_FAILURE
+    assert "execution broke" not in telemetry[0].to_json()
+
+
+@pytest.mark.anyio
+async def test_tool_execution_telemetry_measures_only_boundary_and_omits_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agent_policy.tool_coordination as coordination
+
+    trace: list[str] = []
+    events: list[ToolExecutionTelemetry] = []
+    clock_values = iter((1_000_000_000, 1_025_000_000))
+
+    def clock() -> int:
+        trace.append("clock")
+        return next(clock_values)
+
+    original_size = coordination._json_size_bytes
+
+    def measure(value: object) -> int | None:
+        trace.append("measure")
+        return original_size(value)
+
+    monkeypatch.setattr(coordination, "_json_size_bytes", measure)
+
+    async def record(event: ToolExecutionTelemetry) -> None:
+        trace.append("publish")
+        events.append(event)
+
+    class _TracingTool(_Tool):
+        async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+            trace.append("invoke")
+            return await super().execute(request)
+
+    tool = _TracingTool()
+    registry = InMemoryToolRegistry()
+    registry.register(tool, category="research")
+    result = await _coordinator(
+        registry,
+        _FixedSelector(
+            ToolSelectionDecision.proposed_invocation("web_search", {"query": "weather"})
+        ),
+        on_telemetry=record,
+        clock=clock,
+    ).coordinate("search the web")
+
+    assert result.status is ToolCoordinationStatus.READY_FOR_CONTINUATION
+    assert trace == ["measure", "clock", "invoke", "clock", "measure", "publish"]
+    assert len(events) == 1
+    event = events[0]
+    assert event.tool_name == "web_search"
+    assert event.agent_id == "test-agent"
+    assert event.call_id == tool.requests[0].call_id
+    assert event.duration_ms == 25
+    assert event.outcome == "succeeded"
+    assert event.error_code is None
+    assert event.argument_size_bytes == len(
+        json.dumps(
+            {"query": "weather"},
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            ensure_ascii=True,
+        ).encode("utf-8")
+    )
+    assert event.result_size_bytes == len(
+        json.dumps(
+            {"evidence": "observed result"},
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            ensure_ascii=True,
+        ).encode("utf-8")
+    )
+    assert "weather" not in event.to_json()
+    assert "observed result" not in event.to_json()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("output", "expected_size"),
+    [(object(), None), (None, 4)],
+)
+async def test_result_size_measurement_is_best_effort(
+    output: object | None,
+    expected_size: int | None,
+) -> None:
+
+    class _UnserializableTool(_Tool):
+        async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+            self.requests.append(request)
+            return ToolInvocationResult.create_success(request.call_id, request.tool_name, output)
+
+    tool = _UnserializableTool()
+    registry = InMemoryToolRegistry()
+    registry.register(tool, category="research")
+    events: list[ToolExecutionTelemetry] = []
+
+    async def record(event: ToolExecutionTelemetry) -> None:
+        events.append(event)
+
+    result = await _coordinator(
+        registry,
+        _FixedSelector(
+            ToolSelectionDecision.proposed_invocation("web_search", {"query": "weather"})
+        ),
+        on_telemetry=record,
+    ).coordinate("search the web")
+
+    assert result.status is ToolCoordinationStatus.READY_FOR_CONTINUATION
+    assert result.invocation_result is not None
+    assert result.invocation_result.output is output
+    assert events[0].result_size_bytes == expected_size
+
+
+@pytest.mark.anyio
+async def test_telemetry_callback_failure_does_not_change_successful_execution() -> None:
+    async def fail(_event: ToolExecutionTelemetry) -> None:
+        raise RuntimeError("telemetry storage detail")
+
+    registry = InMemoryToolRegistry()
+    registry.register(_Tool(), category="research")
+    result = await _coordinator(
+        registry,
+        DeterministicToolSelector(),
+        on_telemetry=fail,
+    ).coordinate("search the web")
+
+    assert result.status is ToolCoordinationStatus.READY_FOR_CONTINUATION
+    assert result.invocation_result is not None and result.invocation_result.success
+
+
+@pytest.mark.anyio
+async def test_duration_measurement_failure_does_not_change_successful_execution() -> None:
+    clock_calls = 0
+    events: list[ToolExecutionTelemetry] = []
+
+    def clock() -> int:
+        nonlocal clock_calls
+        clock_calls += 1
+        if clock_calls == 2:
+            raise RuntimeError("clock unavailable")
+        return 1
+
+    async def record(event: ToolExecutionTelemetry) -> None:
+        events.append(event)
+
+    registry = InMemoryToolRegistry()
+    registry.register(_Tool(), category="research")
+    result = await _coordinator(
+        registry,
+        DeterministicToolSelector(),
+        on_telemetry=record,
+        clock=clock,
+    ).coordinate("search the web")
+
+    assert result.status is ToolCoordinationStatus.READY_FOR_CONTINUATION
+    assert result.invocation_result is not None and result.invocation_result.success
+    assert events == []
 
 
 @pytest.mark.anyio

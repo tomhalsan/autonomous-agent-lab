@@ -16,6 +16,7 @@ from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
     InferenceExecutionTelemetry,
+    ToolExecutionTelemetry,
 )
 from orchestrator.infrastructure.redis_adapter import RedisGateway
 from orchestrator.presentation.api import create_app
@@ -118,6 +119,71 @@ def make_test_environment() -> tuple[Any, InMemoryRedis]:
     gateway._client = store
     app = create_app(gateway=gateway, enforce_availability=True)
     return app, store
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("bus_type", "agent_id"),
+    [
+        (WorkerRedisBus, "worker-telemetry"),
+        (ResearchRedisBus, "research-telemetry"),
+    ],
+)
+async def test_telemetry_event_is_queryable_without_mutating_current_state(
+    bus_type: type[WorkerRedisBus] | type[ResearchRedisBus],
+    agent_id: str,
+) -> None:
+    store = InMemoryRedis()
+    bus = bus_type("redis://fake:6379/0")
+    bus.client = store
+    bus.current_state = "working"
+    state_key = f"agent.state:{agent_id}"
+    existing_state = {
+        "agent_id": agent_id,
+        "state": "working",
+        "updated_at": "2026-11-11T11:00:00+00:00",
+    }
+    await store.hset(state_key, mapping=existing_state)
+    await store.xadd(
+        "agent.events",
+        {"agent_id": agent_id, "task_id": "task-telemetry-1", "state": "working"},
+    )
+
+    telemetry = ToolExecutionTelemetry(
+        tool_name="web_search",
+        agent_id=agent_id,
+        call_id="call-telemetry-1",
+        duration_ms=5.0,
+        outcome="succeeded",
+        argument_size_bytes=12,
+        result_size_bytes=16,
+        task_id="task-telemetry-1",
+    )
+    event = AgentEvent.create(
+        agent_id=agent_id,
+        state=None,
+        detail="Tool execution telemetry",
+        task_id=telemetry.task_id,
+        tool_execution_telemetry=telemetry,
+    )
+
+    await bus.publish(event)
+
+    assert bus.current_state == "working"
+    assert await store.hgetall(state_key) == existing_state
+    gateway = RedisGateway("redis://fake:6379/0")
+    gateway._client = store
+    stream_events = await gateway.events()
+    assert len(stream_events) == 2
+    stored = stream_events[0]
+    assert "state" not in stored
+    assert json.loads(stored["tool_execution_telemetry"]) == telemetry.to_dict()
+
+    assert await gateway.get_result("task-telemetry-1") == {
+        "task_id": "task-telemetry-1",
+        "status": "pending",
+        "output": None,
+    }
 
 
 # ==============================================================================

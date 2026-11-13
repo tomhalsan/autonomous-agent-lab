@@ -56,7 +56,7 @@ class RedisGateway:
             }
 
         events = await self.events(limit=100)
-        matching = [e for e in events if e.get("task_id") == task_id]
+        matching = [e for e in events if e.get("task_id") == task_id and e.get("state") is not None]
         if matching:
             latest = matching[0]
             state = latest.get("state", "pending")

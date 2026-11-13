@@ -1,6 +1,11 @@
 """One bounded discovery-to-invocation cycle with an explicit execution seam."""
 
+import json
+import logging
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
@@ -13,6 +18,7 @@ from agent_contracts import (
     ToolCapabilityMetadata,
     ToolErrorCode,
     ToolExecutionState,
+    ToolExecutionTelemetry,
     ToolInvocationProposal,
     ToolInvocationRequest,
     ToolInvocationResult,
@@ -33,6 +39,23 @@ from .tool_validation import (
     ToolArgumentValidationResult,
     ToolArgumentValidator,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _json_size_bytes(value: object) -> int | None:
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            ensure_ascii=True,
+        ).encode("utf-8")
+    except Exception:  # noqa: BLE001 - serialization must not affect tool execution
+        logger.debug("Tool execution telemetry size measurement unavailable")
+        return None
+    return len(encoded)
 
 
 class ToolCoordinationStatus(str, Enum):
@@ -211,7 +234,13 @@ class BoundedToolCoordinator:
         authorization_context: ToolAuthorizationContext | None = None,
         authorizer: ToolAuthorizer | None = None,
         audit_sink: ToolSecurityAuditSink | None = None,
+        on_telemetry: Callable[[ToolExecutionTelemetry], Awaitable[None]] | None = None,
+        clock: Callable[[], int] = time.perf_counter_ns,
     ) -> None:
+        if on_telemetry is not None and not callable(on_telemetry):
+            raise TypeError("on_telemetry must be callable or None")
+        if not callable(clock):
+            raise TypeError("clock must be callable")
         self._discovery = discovery
         self._scope = scope
         self._selector = selector
@@ -221,6 +250,8 @@ class BoundedToolCoordinator:
         self._authorization_context = authorization_context
         self._authorizer = authorizer if authorizer is not None else ExactToolAuthorizer()
         self._audit_sink = audit_sink
+        self._on_telemetry = on_telemetry
+        self._clock = clock
 
     async def coordinate(self, goal: str) -> ToolCoordinationResult:
         try:
@@ -329,15 +360,32 @@ class BoundedToolCoordinator:
                 audit_delivery_outcome=audit_delivery_outcome,
             )
 
+        argument_size_bytes = (
+            _json_size_bytes(request.arguments) if self._on_telemetry is not None else None
+        )
+        try:
+            started_at = datetime.now(UTC).isoformat() if self._on_telemetry is not None else None
+        except Exception:  # noqa: BLE001 - clock failure must not affect tool execution
+            logger.debug("Tool execution telemetry start-time measurement unavailable")
+            started_at = None
+        try:
+            started_ns = self._clock() if self._on_telemetry is not None else None
+        except Exception:  # noqa: BLE001 - clock failure must not affect tool execution
+            logger.debug("Tool execution telemetry duration measurement unavailable")
+            started_ns = None
+
         try:
             invocation_result = await self._execution_boundary.invoke(registration, request)
         except Exception as exc:  # noqa: BLE001 - tool implementations may raise arbitrary execution errors
+            duration_ms = self._duration_ms(started_ns)
             invocation_result = ToolInvocationResult.create_failure(
                 call_id=request.call_id,
                 tool_name=request.tool_name,
                 error=str(exc) or type(exc).__name__,
                 code=ToolErrorCode.EXECUTION_FAILURE,
             )
+        else:
+            duration_ms = self._duration_ms(started_ns)
 
         if (
             not isinstance(invocation_result, ToolInvocationResult)
@@ -349,6 +397,16 @@ class BoundedToolCoordinator:
                 tool_name=request.tool_name,
                 error="Execution boundary returned a malformed tool result",
                 code=ToolErrorCode.EXECUTION_FAILURE,
+            )
+
+        if duration_ms is not None:
+            await self._publish_telemetry(
+                registration=registration,
+                request=request,
+                invocation_result=invocation_result,
+                started_at=started_at,
+                duration_ms=duration_ms,
+                argument_size_bytes=argument_size_bytes,
             )
 
         if not invocation_result.success:
@@ -375,6 +433,59 @@ class BoundedToolCoordinator:
             audit_delivery_outcome=audit_delivery_outcome,
             execution_state=ToolExecutionState.ATTEMPTED,
         )
+
+    def _duration_ms(self, started_ns: int | None) -> float | None:
+        if started_ns is None:
+            return None
+        try:
+            elapsed_ns = self._clock() - started_ns
+            if elapsed_ns < 0:
+                logger.debug("Tool execution telemetry duration measurement was negative")
+                return None
+            return elapsed_ns / 1_000_000
+        except Exception:  # noqa: BLE001 - clock failure must not affect tool execution
+            logger.debug("Tool execution telemetry duration measurement unavailable")
+            return None
+
+    async def _publish_telemetry(
+        self,
+        *,
+        registration: ToolRegistration,
+        request: ToolInvocationRequest,
+        invocation_result: ToolInvocationResult,
+        started_at: str | None,
+        duration_ms: float,
+        argument_size_bytes: int | None,
+    ) -> None:
+        if self._on_telemetry is None:
+            return
+        try:
+            agent_id = self._context_agent_id(self._authorization_context)
+            if not isinstance(agent_id, str) or not agent_id.strip():
+                logger.warning("Tool execution telemetry has no trusted agent identity")
+                return
+            result_size_bytes = (
+                _json_size_bytes(invocation_result.output)
+                if invocation_result.success or invocation_result.output is not None
+                else None
+            )
+            telemetry = ToolExecutionTelemetry(
+                tool_name=registration.name,
+                agent_id=agent_id,
+                call_id=request.call_id,
+                task_id=None,
+                started_at=started_at,
+                duration_ms=duration_ms,
+                argument_size_bytes=argument_size_bytes,
+                result_size_bytes=result_size_bytes,
+                outcome="succeeded" if invocation_result.success else "failed",
+                error_code=(
+                    invocation_result.error.code if invocation_result.error is not None else None
+                ),
+            )
+            await self._on_telemetry(telemetry)
+        except Exception:  # noqa: BLE001 - telemetry must not affect tool execution
+            logger.warning("Tool execution telemetry publication failed")
 
     def _authorize(
         self, registration: ToolRegistration, request: ToolInvocationRequest
