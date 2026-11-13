@@ -1372,7 +1372,8 @@ async def test_worker_task_processor_end_to_end_exhaustion_lifecycle() -> None:
     assert ev_telem2.inference_telemetry.provider_name == "p2"
 
     assert ev_error.state == "error"
-    assert ev_error.detail == AllInferenceProvidersFailedError.MESSAGE
+    assert ev_error.detail == "Task failed"
+    assert AllInferenceProvidersFailedError.MESSAGE not in ev_error.detail
     assert ev_idle.state == "idle"
 
 

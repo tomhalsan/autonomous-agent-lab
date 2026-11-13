@@ -161,13 +161,15 @@ async def test_research_processor_success_transitions() -> None:
     assert working_event.state == "working"
     assert working_event.agent_id == "research-agent-1"
     assert working_event.task_id == task.task_id
-    assert "Processing: Research consensus algorithms" in working_event.detail
+    assert working_event.detail == "Processing task"
+    assert task.prompt not in working_event.detail
 
     # Transition 2: idle
     assert idle_event.state == "idle"
     assert idle_event.agent_id == "research-agent-1"
     assert idle_event.task_id == task.task_id
-    assert "Completed: Deterministic execution completed" in idle_event.detail
+    assert idle_event.detail == "Task completed"
+    assert "Deterministic execution completed" not in idle_event.detail
 
 
 @pytest.mark.anyio
@@ -192,7 +194,8 @@ async def test_research_processor_failure_lifecycle_preserves_error_state() -> N
 
     assert error_event.state == "error"
     assert error_event.task_id == task.task_id
-    assert "Simulated execution failure" in error_event.detail
+    assert error_event.detail == "Task failed"
+    assert "Simulated execution failure" not in error_event.detail
 
 
 @pytest.mark.anyio
@@ -266,7 +269,8 @@ async def test_orchestrator_state_reader_and_dashboard_compatibility() -> None:
     # <b>${esc(x.agent_id)}</b> <span class="ok">${esc(x.state)}</span><br>${esc(x.detail)}
     assert research_agent_state["agent_id"] == "research-agent-1"
     assert research_agent_state["state"] == "error"  # Preserved in error after failed task
-    assert "Simulated execution failure" in research_agent_state["detail"]
+    assert research_agent_state["detail"] == "Task failed"
+    assert "Simulated execution failure" not in research_agent_state["detail"]
     assert "task_id" in research_agent_state
     assert research_agent_state["task_id"] == failing_task.task_id
 
@@ -639,8 +643,8 @@ async def test_research_processor_with_tavily_executor_integration() -> None:
     assert len(bus.published) == 2
     assert bus.published[0].state == "working"
     assert bus.published[1].state == "idle"
-    assert "Completed:" in bus.published[1].detail
-    assert "Raft vs Paxos" in bus.published[1].detail
+    assert bus.published[1].detail == "Task completed"
+    assert "Raft vs Paxos" not in bus.published[1].detail
 
 
 @pytest.mark.anyio
@@ -849,10 +853,8 @@ async def test_research_processor_with_inference_provider_synthesizes_output() -
     assert len(bus.published) == 2
     assert bus.published[0].state == "working"
     assert bus.published[1].state == "idle"
-    assert (
-        "Completed: Synthesized research for: Investigate raft log compaction"
-        in bus.published[1].detail
-    )
+    assert bus.published[1].detail == "Task completed"
+    assert "Synthesized research" not in bus.published[1].detail
 
 
 @pytest.mark.anyio
@@ -917,7 +919,8 @@ async def test_research_processor_inference_error_publishes_error_event() -> Non
     assert len(bus.published) == 2
     assert bus.published[0].state == "working"
     assert bus.published[1].state == "error"
-    assert "Simulated synthesis failure" in bus.published[1].detail
+    assert bus.published[1].detail == "Task failed"
+    assert "Simulated synthesis failure" not in bus.published[1].detail
 
 
 # --- Main Service Wiring Tests for InferenceProvider ---
@@ -2185,7 +2188,8 @@ async def test_research_processor_with_tavily_and_cloudflare_inference() -> None
     assert len(bus.published) == 2
     assert bus.published[0].state == "working"
     assert bus.published[1].state == "idle"
-    assert "Completed: Key Findings" in bus.published[1].detail
+    assert bus.published[1].detail == "Task completed"
+    assert "Key Findings" not in bus.published[1].detail
 
 
 # --- Main Service Wiring Tests for Cloudflare ---

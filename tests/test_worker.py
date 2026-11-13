@@ -87,7 +87,7 @@ async def test_successful_task_processing_transitions() -> None:
 
     assert idle_event.state == "idle"
     assert idle_event.task_id == task.task_id
-    assert "Completed" in idle_event.detail
+    assert idle_event.detail == "Task completed"
 
 
 @pytest.mark.anyio
@@ -114,7 +114,8 @@ async def test_failed_task_processing_transitions_and_restores_idle() -> None:
     # 2. Error recorded in history with task id
     assert error_event.state == "error"
     assert error_event.task_id == task.task_id
-    assert "Invalid prompt parameters" in error_event.detail
+    assert error_event.detail == "Task failed"
+    assert "Invalid prompt parameters" not in error_event.detail
 
     # 3. Restored to idle so worker is available for next task
     assert restored_idle_event.state == "idle"
@@ -248,9 +249,11 @@ async def test_task_processor_stores_result_on_success() -> None:
     assert len(bus.published) == 2
     assert bus.published[0].state == "working"
     assert bus.published[0].task_id == task.task_id
+    assert bus.published[0].detail == "Processing task"
     assert bus.published[1].state == "idle"
     assert bus.published[1].task_id == task.task_id
-    assert f"Completed: {task.prompt}" in bus.published[1].detail
+    assert bus.published[1].detail == "Task completed"
+    assert task.prompt not in bus.published[1].detail
 
 
 @pytest.mark.anyio
@@ -465,9 +468,11 @@ async def test_task_processor_inference_failure_lifecycle_and_no_persistence() -
     assert len(bus.published) == 3
     assert bus.published[0].state == "working"
     assert bus.published[0].task_id == task.task_id
+    assert bus.published[0].detail == "Processing task"
     assert bus.published[1].state == "error"
     assert bus.published[1].task_id == task.task_id
-    assert "Inference engine offline" in bus.published[1].detail
+    assert bus.published[1].detail == "Task failed"
+    assert "Inference engine offline" not in bus.published[1].detail
     assert bus.published[2].state == "idle"
     assert bus.published[2].detail == "Waiting for work"
 
