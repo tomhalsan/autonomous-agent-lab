@@ -255,25 +255,40 @@ class CloudflareInferenceProvider:
                 status_code=response.status_code,
             )
 
-        response_text = result_payload.get("response")
-        if response_text is None or not isinstance(response_text, str):
+        response_text: str | None = None
+        finish_reason: str | None = None
+
+        raw_response = result_payload.get("response")
+        if isinstance(raw_response, str) and raw_response.strip():
+            response_text = raw_response
+            raw_fr = result_payload.get("finish_reason") or data.get("finish_reason")
+            if isinstance(raw_fr, str):
+                finish_reason = raw_fr
+        else:
+            choices = result_payload.get("choices")
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0]
+                if isinstance(first_choice, dict):
+                    message = first_choice.get("message")
+                    if isinstance(message, dict):
+                        content = message.get("content")
+                        if isinstance(content, str) and content.strip():
+                            response_text = content
+                            raw_fr = first_choice.get("finish_reason")
+                            if isinstance(raw_fr, str):
+                                finish_reason = raw_fr
+
+        if response_text is None:
+            if "choices" in result_payload:
+                err = "Malformed Cloudflare Workers AI response: missing or invalid 'result.choices[0].message.content' string"
+            else:
+                err = "Malformed Cloudflare Workers AI response: missing 'result.response' string"
             raise FallbackEligibleInferenceError(
-                "Malformed Cloudflare Workers AI response: missing 'result.response' string",
+                err,
                 provider_name=self.provider_name,
                 reason="malformed_response",
                 status_code=response.status_code,
             )
-
-        # Extract safe non-secret completion metadata where available
-        finish_reason = (
-            result_payload.get("finish_reason")
-            or data.get("finish_reason")
-            or (
-                data.get("choices")
-                and isinstance(data["choices"], list)
-                and data["choices"][0].get("finish_reason")
-            )
-        )
 
         raw_usage = result_payload.get("usage") or data.get("usage") or {}
         usage_dict: dict[str, int] = {}
