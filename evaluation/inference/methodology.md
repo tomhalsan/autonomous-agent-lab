@@ -95,21 +95,27 @@ records deliberate overrides such as output limits or temperature. Effective
 invocation descriptors preserve both policy and the resulting intended values,
 including whether each value is explicit, provider-default, or unset.
 
-Stage 1 should use a provider-specific Gemini resolver over the authoritative
-`models.get`/`models.list` metadata capability. The repository currently has a
-Gemini `models.get` request path; Stage 1 must verify the live metadata fields
-before normalizing them.
+Stage 1A provides evaluation-only provider metadata resolvers. Cloudflare
+resolution uses one exact account catalog search and one schema GET per unique
+model. Gemini resolution uses the existing non-generating `models.get` path,
+once per unique model. A campaign resolves each provider/model identity once
+and reuses its snapshot across workloads; the six frozen candidates contain
+four unique identities, so the planned metadata budget is seven GET requests
+(six Cloudflare and one Gemini). Retrieval timestamps are recorded in snapshots.
 
-For Cloudflare, Stage 1 should use the account-visible catalog/metadata
-endpoints already used by the project (`/ai/models/search` and
-`/ai/models/schema`). The normalized field mapping must be based on inspected
-live responses and schemas, not inferred from public marketing pages. Catalog
-discovery does not add models to the frozen candidate matrix.
+Cloudflare normalization uses only returned catalog and schema fields.
+`context_window`, request `max_tokens` bounds, and absent input/output limits
+remain unmapped; a schema-declared `max_tokens` default is recorded only as
+`default_output_tokens`, not as a runtime guarantee. Gemini maps only the
+observed model name, generation method, token limits, temperature fields, and
+thinking flag. Unreported facts remain null.
 
-Metadata discovery happens before inference and is excluded from inference
-latency. Metadata lookup failures are reported separately from model inference
-failures. Stage 1 must decide whether snapshots refresh once per run or under
-another bounded policy; Stage 0 does not invent a production cache.
+Metadata resolution happens before inference and is excluded from inference
+latency. A resolution failure has a sanitized, typed boundary distinct from
+inference failure and prevents a snapshot—and therefore a live invocation
+descriptor—from being produced for that candidate. It does not create an
+`EvaluationAttempt`. These resolvers are Stage 1A evaluation support, not a
+production metadata service, cache, or model-profile system.
 
 ## Stage gates and call budgets
 
