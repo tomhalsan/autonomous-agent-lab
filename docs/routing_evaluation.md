@@ -210,9 +210,10 @@ To verify the hybrid execution plumbing prior to introducing model providers (Ph
 | `FRESHNESS_OR_CURRENT_INFO` | `RESEARCH` | `STRONG` | Reusable temporal qualifiers (`today's`, `currently supported`, `latest release`, `current guidance`). |
 | `CHANGING_EXTERNAL_INFO` | `RESEARCH` | `STRONG` | High-frequency changing information (`pricing tiers`, `stock market trends`, `breaking changes`). |
 | `OUTSIDE_AUTHORITY_OR_PROVIDER` | `RESEARCH` | `STRONG` | Inquiries targeting specific external conferences, standards bodies (NIST, ISO), or vulnerability registries (NVD, CVE). |
+| `RESEARCH_SYNTHESIS` | `RESEARCH` | `STRONG` | Scoped synthesis cues such as trends in a subject, a criterion-based comparison of technologies, a literature review, or a deep dive. |
 | `EXPLICIT_EXTERNAL_RETRIEVAL` | `RESEARCH` | `STRONG` | Explicit directions to query live external search engines. |
 | `SUPPLIED_LOCAL_ARTIFACT` | `GENERAL` | `STRONG` | Actual presence of structural markers (fenced code, diffs, stack traces, INI configs, JSON payloads). |
-| `LOCAL_CODE_OR_DEBUGGING` | `GENERAL` | `STRONG` | Local coding/debugging tasks (`write a python script`, `fix this bug`, `loop termination analysis`). |
+| `LOCAL_CODE_OR_DEBUGGING` | `GENERAL` | `STRONG` | Local coding/debugging tasks and explicit local targets (`write a python script`, `this exception`, `this stack trace`, `this function`). |
 | `TRANSFORMATION_OR_REWRITE` | `GENERAL` | `STRONG` | Code or text transformations (`refactor this function`, `convert correlated subquery to CTE`). |
 | `ESTABLISHED_CONCEPTUAL_EXPLANATION` | `GENERAL` | `STRONG` | Established computing theory, protocol mechanics, basic math, or physical science explanation. |
 | `ALL_DATA_SUPPLIED_INLINE` | `GENERAL` | `STRONG` | Tasks where all necessary input data is provided inline. |
@@ -227,6 +228,8 @@ Weak research-like verbs (`analyze`, `assess`, `benchmark`, `compare`, `evaluate
 - **Weak verb + strong Research evidence** -> follows strong Research evidence (e.g. *"Research the latest developments in quantum computing"* -> `RESEARCH / CLEAR`).
 - **Weak verb alone** -> provisional `GENERAL`, with clarity marked `AMBIGUOUS` (e.g. *"Research consensus algorithms"* -> `GENERAL / AMBIGUOUS`).
 - The word "research" alone is never proof of external retrieval.
+
+Scoped research-synthesis evidence can be strong without explicit freshness wording. Examples include trends in a subject, comparing technologies against a stated criterion, literature reviews, and deep dives. Explicit local code/debugging targets suppress these synthesis cues; generic verbs remain weak.
 
 #### 2. Generalized Freshness & Negative Guards
 Freshness is recognized when temporal qualifiers (`today`, `today's`, `current`, `currently`, `latest`, `recent`, `up-to-date`, `as of`) attach to volatile external facts (supported versions, releases, pricing, vulnerabilities, office holders, product capabilities, market conditions, standards or guidance).

@@ -290,6 +290,24 @@ STRONG_GENERAL_PATTERNS: list[tuple[RoutingSignalType, re.Pattern[str]]] = [
     ),
 ]
 
+LOCAL_CODE_TARGET_PATTERN = re.compile(
+    r"\b(?:this|that|my|these|those|the)\s+(?:(?:two|both)\s+)?"
+    r"(?:(?:local)\s+)?(?:(?:python)\s+)?"
+    r"(?:traceback|exception|stack\s+trace|code|script|functions?)\b",
+    re.IGNORECASE,
+)
+
+RESEARCH_SYNTHESIS_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\btrends?\s+in\b", re.IGNORECASE),
+    re.compile(
+        r"\bcompare\b[^.!?;\n]*\b(?:and|versus|vs)\b[^.!?;\n]*"
+        r"\b(?:for|in\s+terms\s+of)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bliterature\s+review\b", re.IGNORECASE),
+    re.compile(r"\bdeep\s+dive\s+into\b", re.IGNORECASE),
+)
+
 WEAK_RESEARCH_VERB_PATTERN = re.compile(
     r"\b(analyse|analyses|analysis|analyze|analyzed|analyzes|analyzing|assess|assessed|assesses|assessing|assessment|benchmark|benchmarked|benchmarks|benchmarking|comparative|compare|compared|compares|comparing|comparison|conduct|conducted|conducting|conducts|evaluate|evaluated|evaluates|evaluating|evaluation|explore|explored|explores|exploring|investigate|investigated|investigates|investigating|investigation|research|researched|researches|researching|study|studied|studies|studying|survey|surveyed|surveys|surveying)\b",
     re.IGNORECASE,
@@ -426,6 +444,41 @@ class DeterministicCapabilityRouter:
                         evidence=match.group(0),
                     )
                 )
+
+        local_target_match = LOCAL_CODE_TARGET_PATTERN.search(prompt)
+        if local_target_match and not any(
+            signal.signal_type == RoutingSignalType.LOCAL_CODE_OR_DEBUGGING for signal in signals
+        ):
+            signals.append(
+                RoutingSignal(
+                    signal_type=RoutingSignalType.LOCAL_CODE_OR_DEBUGGING,
+                    target_capability=AgentCapability.GENERAL,
+                    strength=SignalStrength.STRONG,
+                    evidence=local_target_match.group(0),
+                )
+            )
+
+        has_explicit_local_context = any(
+            signal.signal_type
+            in {
+                RoutingSignalType.LOCAL_CODE_OR_DEBUGGING,
+                RoutingSignalType.SUPPLIED_LOCAL_ARTIFACT,
+            }
+            for signal in signals
+        )
+        if not has_explicit_local_context:
+            for pattern in RESEARCH_SYNTHESIS_PATTERNS:
+                match = pattern.search(prompt)
+                if match:
+                    signals.append(
+                        RoutingSignal(
+                            signal_type=RoutingSignalType.RESEARCH_SYNTHESIS,
+                            target_capability=AgentCapability.RESEARCH,
+                            strength=SignalStrength.STRONG,
+                            evidence=match.group(0),
+                        )
+                    )
+                    break
 
         # Compound mixed task signal
         compound_match = COMPOUND_TASK_PATTERN.search(prompt)

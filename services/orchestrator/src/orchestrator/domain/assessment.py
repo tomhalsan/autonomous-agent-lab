@@ -39,6 +39,7 @@ class RoutingSignalType(StrEnum):
     FRESHNESS_OR_CURRENT_INFO = "freshness_or_current_info"
     CHANGING_EXTERNAL_INFO = "changing_external_info"
     OUTSIDE_AUTHORITY_OR_PROVIDER = "outside_authority_or_provider"
+    RESEARCH_SYNTHESIS = "research_synthesis"
 
     # Strong General signals
     SUPPLIED_LOCAL_ARTIFACT = "supplied_local_artifact"
