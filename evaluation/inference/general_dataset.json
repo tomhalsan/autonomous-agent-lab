@@ -1,0 +1,77 @@
+{
+  "name": "general",
+  "version": "1.0.1",
+  "cases": [
+    {
+      "id": "general-debug-01",
+      "category": "local_debugging",
+      "instruction": "Explain the cause of the failure and give the smallest correction. Do not rewrite unrelated code.",
+      "input": "```python\ndef first_item(items):\n    return items[0]\n\nfirst_item([])  # raises IndexError\n```",
+      "checks": [
+        {"id": "names-empty-list-failure", "kind": "contains_all", "values": ["empty", "IndexError"]},
+        {"id": "offers-guarded-correction", "kind": "contains_any", "values": ["if not items", "if items", "items[0] if"]},
+        {"id": "avoids-unrelated-rewrite", "kind": "max_words", "value": 100}
+      ],
+      "human_rubric_items": ["Correctly explains why indexing fails.", "Proposes the smallest safe change without changing unrelated behavior."]
+    },
+    {
+      "id": "general-transform-02",
+      "category": "transformation_rewrite",
+      "instruction": "Rewrite the function to return a new list with strings stripped of surrounding whitespace and empty strings removed. Preserve the input list.",
+      "input": "def clean(values):\n    return values",
+      "checks": [
+        {"id": "returns-new-list-expression", "kind": "contains_any", "values": ["[", "list("]},
+        {"id": "mentions-strip", "kind": "contains_all", "values": ["strip"]},
+        {"id": "mentions-empty-filter", "kind": "contains_any", "values": ["if ", "!= ", "not "]}
+      ],
+      "human_rubric_items": ["The transformation strips each string and removes empty results.", "The input list is not mutated."]
+    },
+    {
+      "id": "general-synthesis-03",
+      "category": "supplied_content_synthesis",
+      "instruction": "Summarize only the supplied facts in one or two sentences. Do not infer additional features.",
+      "input": "The fictional Northbridge library reopened in 2022. It serves 240 residents in its district. Its rooftop solar panels supplied 65% of the building's electricity in the measured year. The source says nothing about a mobile app.",
+      "checks": [
+        {"id": "includes-all-supplied-facts", "kind": "contains_all", "values": ["2022", "240", "65%"]},
+        {"id": "concise-summary", "kind": "max_words", "value": 55}
+      ],
+      "human_rubric_items": ["Covers the supplied facts accurately.", "Adds no claims not supported by the supplied text."]
+    },
+    {
+      "id": "general-explanation-04",
+      "category": "concise_technical_explanation",
+      "instruction": "In at most 45 words, explain what a database index does. Include that it can speed up reads and that it uses storage and may add write overhead.",
+      "input": "Topic: database indexes.",
+      "checks": [
+        {"id": "mentions-read-speed", "kind": "contains_any", "values": ["speed", "faster", "quick"]},
+        {"id": "mentions-storage", "kind": "contains_any", "values": ["storage", "space"]},
+        {"id": "mentions-write-cost", "kind": "contains_any", "values": ["write", "insert", "update"]},
+        {"id": "within-word-limit", "kind": "max_words", "value": 45}
+      ],
+      "human_rubric_items": ["Explains the read-performance purpose accurately.", "Includes storage and write-cost tradeoffs.", "Respects the length limit."]
+    },
+    {
+      "id": "general-instructions-05",
+      "category": "instruction_following",
+      "instruction": "Return exactly three bullet points, each no more than eight words. Include the caveat phrase 'depends on configuration'. Do not add an introduction or conclusion.",
+      "input": "A task queue buffers work, workers consume tasks, and retries can duplicate side effects unless handlers are idempotent.",
+      "checks": [
+        {"id": "exactly-three-bullets", "kind": "bullet_count", "value": 3},
+        {"id": "each-bullet-within-limit", "kind": "bullet_word_limit", "value": 8},
+        {"id": "includes-required-caveat", "kind": "contains_all", "values": ["depends on configuration"]}
+      ],
+      "human_rubric_items": ["Follows the exact bullet and length constraints.", "Preserves the queue, worker, and retry caveat correctly."]
+    },
+    {
+      "id": "general-json-06",
+      "category": "structured_output",
+      "instruction": "Return JSON only, with exactly the keys 'status' and 'count'. 'status' must be a string and 'count' must be an integer. No Markdown.",
+      "input": "A batch contains four completed jobs.",
+      "checks": [
+        {"id": "exact-json-object-contract", "kind": "json_object", "keys": {"status": "string", "count": "integer"}},
+        {"id": "exact-supplied-batch-values", "kind": "json_values", "values": {"status": "completed", "count": 4}}
+      ],
+      "human_rubric_items": ["Uses only the required keys and value types.", "Reports the supplied batch state accurately."]
+    }
+  ]
+}

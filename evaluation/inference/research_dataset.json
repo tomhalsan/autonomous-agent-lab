@@ -1,0 +1,107 @@
+{
+  "name": "research",
+  "version": "1.0.1",
+  "cases": [
+    {
+      "id": "research-support-01",
+      "category": "supported_vs_unsupported",
+      "instruction": "Separate what the evidence supports from what it does not establish. Cite source IDs in square brackets, such as [S1].",
+      "question": "What did the Orchid-7 pilot establish about setup time and team productivity?",
+      "sources": [
+        {"id": "S1", "url": "https://sources.example/orchid7/pilot", "excerpt": "In a six-week pilot with 32 volunteer teams, median initial setup time fell from 50 minutes to 41 minutes after Orchid-7 was introduced. The report did not measure long-term productivity or teams outside the pilot."},
+        {"id": "S2", "url": "https://sources.example/orchid7/method", "excerpt": "The pilot included 32 teams that opted in. The authors caution that the sample may not represent all teams."}
+      ],
+      "checks": [
+        {"id": "cites-supported-source", "kind": "required_citations", "values": ["S1"]},
+        {"id": "does-not-claim-universal-productivity", "kind": "forbids_any", "values": ["all teams became more productive", "productivity increased by 18%"]},
+        {"id": "mentions-limitation", "kind": "contains_any", "values": ["did not measure", "not measured", "cannot establish", "not establish"]}
+      ],
+      "human_rubric_items": ["Distinguishes the measured setup-time result from unmeasured productivity.", "Does not generalize the volunteer pilot to all teams.", "Attributes claims to the correct source."]
+    },
+    {
+      "id": "research-conflict-02",
+      "category": "conflicting_evidence",
+      "instruction": "Describe the disagreement without forcing consensus. Cite each source ID that supports a perspective.",
+      "question": "Did the two trials find that quiet-room access improved task completion?",
+      "sources": [
+        {"id": "S1", "url": "https://sources.example/quiet-room/trial-a", "excerpt": "Trial A, involving 80 participants over two weeks, reported a 6% increase in completed tasks when participants had access to a quiet room."},
+        {"id": "S2", "url": "https://sources.example/quiet-room/trial-b", "excerpt": "Trial B, involving 74 participants over two weeks, found no measurable difference in completed tasks between quiet-room access and the comparison condition."}
+      ],
+      "checks": [
+        {"id": "cites-both-conflicting-sources", "kind": "required_citations", "values": ["S1", "S2"]},
+        {"id": "identifies-disagreement", "kind": "contains_any", "values": ["differ", "disagree", "conflict", "whereas", "while"]}
+      ],
+      "human_rubric_items": ["Represents both findings fairly.", "Does not imply the evidence resolves the disagreement.", "Keeps attribution attached to the appropriate result."]
+    },
+    {
+      "id": "research-attribution-03",
+      "category": "claim_source_attribution",
+      "instruction": "Report both findings and attribute each to its source. Cite source IDs in square brackets.",
+      "question": "What do the two reports say about the fictional Delta sensor?",
+      "sources": [
+        {"id": "S1", "url": "https://sources.example/delta/field-report", "excerpt": "A field report says the Delta sensor recorded a median of 12 readings per hour during one seven-day deployment."},
+        {"id": "S2", "url": "https://sources.example/delta/lab-report", "excerpt": "A laboratory report says the Delta sensor's calibration drift stayed below 0.4% during a 30-day bench test."}
+      ],
+      "checks": [
+        {"id": "cites-both-sources", "kind": "required_citations", "values": ["S1", "S2"]},
+        {"id": "includes-distinct-measurements", "kind": "contains_all", "values": ["12", "0.4%"]},
+        {"id": "uses-citation-allowlist", "kind": "citation_allowlist", "values": ["S1", "S2"]}
+      ],
+      "human_rubric_items": ["Links the hourly reading claim to S1.", "Links the calibration claim to S2.", "Does not imply the two measurements came from the same test."]
+    },
+    {
+      "id": "research-insufficient-04",
+      "category": "insufficient_evidence",
+      "instruction": "State explicitly whether the evidence is sufficient. Do not infer a cause that is not described. Cite any source used.",
+      "question": "Did the fictional Harbor sensor outage happen because of a battery defect?",
+      "sources": [
+        {"id": "S1", "url": "https://sources.example/harbor/status-note", "excerpt": "A status note says the Harbor sensor stopped reporting for three hours on 14 May. It does not describe the cause or mention the battery."}
+      ],
+      "checks": [
+        {"id": "states-insufficient-evidence", "kind": "contains_any", "values": ["insufficient", "cannot determine", "does not say", "not establish"]},
+        {"id": "cites-available-source", "kind": "required_citations", "values": ["S1"]},
+        {"id": "does-not-assert-battery-cause", "kind": "forbids_any", "values": ["battery defect caused", "caused by a battery defect"]}
+      ],
+      "human_rubric_items": ["Explicitly recognizes the missing causal evidence.", "Does not assert the proposed battery explanation.", "Uses the source only for what it reports."]
+    },
+    {
+      "id": "research-long-context-05",
+      "category": "longer_evidence_with_distractor",
+      "instruction": "Summarize the evidence about the fictional Cedar microgrid's measured storage pilot. Cite relevant source IDs. Ignore unrelated material and do not infer performance beyond the reported period.",
+      "question": "What can be said about Cedar's storage pilot and its limits?",
+      "sources": [
+        {"id": "S1", "url": "https://sources.example/cedar/pilot", "excerpt": "The Cedar microgrid tested a 40 kWh battery for 28 days in autumn. During that period, the battery supplied 17% of evening electricity use on average."},
+        {"id": "S2", "url": "https://sources.example/cedar/method", "excerpt": "The measurement used a single microgrid and did not include winter operation. The report gives no estimate of battery lifetime or replacement cost."},
+        {"id": "S3", "url": "https://sources.example/cedar/operator-note", "excerpt": "The operator recorded two monitoring interruptions lasting less than one hour each. The report says these periods were excluded from the evening-use calculation."},
+        {"id": "S4", "url": "https://sources.example/distractor/harvest-festival", "excerpt": "The nearby town held its annual harvest festival in October and displayed locally made ceramic bowls."}
+      ],
+      "checks": [
+        {"id": "cites-relevant-evidence", "kind": "required_citations", "values": ["S1", "S2"]},
+        {"id": "includes-measured-period-and-share", "kind": "contains_all", "values": ["28 days", "17%"]},
+        {"id": "does-not-invent-lifetime", "kind": "forbids_any", "values": ["lasts 10 years", "ten-year lifetime"]},
+        {"id": "citation-ids-are-allowlisted", "kind": "citation_allowlist", "values": ["S1", "S2", "S3", "S4"]},
+        {"id": "does-not-cite-distractor", "kind": "forbids_any", "values": ["[S4]"]}
+      ],
+      "human_rubric_items": ["Covers the measured duration and share accurately.", "Preserves single-site, seasonal, and unmeasured-lifetime limitations.", "Ignores the unrelated distractor.", "Does not invent battery performance."]
+    },
+    {
+      "id": "research-findings-06",
+      "category": "fixed_count_cited_findings",
+      "instruction": "Return exactly three concise bullet-point findings, each ending with at least one source citation in square brackets. Include no extra findings.",
+      "question": "What did the three fictional field notes report about the Lark water filters?",
+      "sources": [
+        {"id": "S1", "url": "https://sources.example/lark/filter-flow", "excerpt": "In a 10-day bench test, the Lark filter processed 3.2 liters per minute."},
+        {"id": "S2", "url": "https://sources.example/lark/turbidity", "excerpt": "In the same bench test, median output turbidity was 0.7 NTU."},
+        {"id": "S3", "url": "https://sources.example/lark/maintenance", "excerpt": "The field note says the filter cartridge was replaced once after 10 days; it gives no longer-term replacement interval."}
+      ],
+      "checks": [
+        {"id": "exactly-three-findings", "kind": "bullet_count", "value": 3},
+        {"id": "each-finding-has-citation", "kind": "bullet_citation"},
+        {"id": "citations-are-allowlisted", "kind": "citation_allowlist", "values": ["S1", "S2", "S3"]},
+        {"id": "includes-reported-values", "kind": "contains_all", "values": ["3.2", "0.7", "10 days"]},
+        {"id": "does-not-invent-interval", "kind": "forbids_any", "values": ["replace every month", "monthly replacement"]}
+      ],
+      "human_rubric_items": ["Provides exactly three distinct findings.", "Cites the source for each finding.", "Does not turn one 10-day observation into a long-term maintenance interval."]
+    }
+  ]
+}
