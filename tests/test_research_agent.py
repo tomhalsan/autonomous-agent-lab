@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -8,6 +9,7 @@ import pytest
 from agent_contracts import (
     AgentCapabilityMetadata,
     AgentEvent,
+    FallbackEligibleInferenceError,
     FallbackTransition,
     TaskRequested,
     TaskResult,
@@ -1431,6 +1433,431 @@ async def test_cloudflare_provider_malformed_response_missing_response_string() 
 
     with pytest.raises(RuntimeError, match="missing 'result.response' string"):
         await provider.synthesize(question="What is consensus?", evidence="Evidence")
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_verified_choices_envelope_parses_successfully() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "id": "chatcmpl-research-id",
+                "object": "chat.completion",
+                "created": 1731520000,
+                "model": "@cf/openai/gpt-oss-20b",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "Raft achieves consensus through replicated logs. Key finding: quorum required.",
+                            "reasoning_content": "Internal thinking steps to omit",
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 40,
+                    "completion_tokens": 60,
+                    "total_tokens": 100,
+                },
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/@cf/openai/gpt-oss-20b"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        model="@cf/openai/gpt-oss-20b",
+        client=mock_client,
+    )
+    res = await provider.synthesize(question="What is Raft?", evidence="Raft docs")
+    assert "Raft achieves consensus" in res.content
+    assert res.provider == "cloudflare"
+    assert res.model == "@cf/openai/gpt-oss-20b"
+    assert res.finish_reason == "stop"
+    assert res.usage == {"prompt_tokens": 40, "completion_tokens": 60, "total_tokens": 100}
+    assert res.truncated is False
+    assert "Internal thinking steps" not in res.content
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_verified_choices_missing_usage_defaults_empty() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Research synthesis without usage.",
+                        },
+                        "finish_reason": "length",
+                    }
+                ],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    res = await provider.synthesize(question="What is Raft?", evidence="Raft docs")
+    assert "Research synthesis without usage." in res.content
+    assert res.finish_reason == "length"
+    assert res.usage is None
+    assert res.truncated is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("invalid_content", ["", "   ", None, 123, ["list_content"], {"dict": "content"}])
+async def test_cloudflare_research_provider_verified_choices_invalid_content_rejected(
+    invalid_content: Any,
+) -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": invalid_content,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert exc_info.value.reason == "malformed_response"
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_empty_choices_list_rejected() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert exc_info.value.reason == "malformed_response"
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_choices_first_item_not_dict_rejected() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": ["not_a_dict"],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert exc_info.value.reason == "malformed_response"
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_choices_message_missing_rejected() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [{"index": 0}],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert exc_info.value.reason == "malformed_response"
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_choices_message_not_dict_rejected() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [{"message": "not_a_dict"}],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert exc_info.value.reason == "malformed_response"
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_choices_message_content_missing_rejected() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [{"message": {"role": "assistant"}}],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert exc_info.value.reason == "malformed_response"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "unverified_body",
+    [
+        {"choices": [{"message": {"content": "top-level only"}}], "success": True, "errors": [], "messages": []},
+        {"result": {"output_text": "output_text only"}, "success": True, "errors": [], "messages": []},
+        {"result": {"choices": [{"text": "choice text only"}]}, "success": True, "errors": [], "messages": []},
+    ],
+)
+async def test_cloudflare_research_provider_unverified_shapes_rejected(unverified_body: dict[str, Any]) -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json=unverified_body,
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert exc_info.value.reason == "malformed_response"
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_both_verified_shapes_legacy_response_takes_precedence() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "response": "Legacy response research answer",
+                "finish_reason": "stop_legacy",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Choices response research answer",
+                        },
+                        "finish_reason": "stop_choices",
+                    }
+                ],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    res = await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert "Legacy response research answer" in res.content
+    assert res.finish_reason == "stop_legacy"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("invalid_fr", [123, ["stop"], {"finish_reason": "stop"}])
+async def test_cloudflare_research_provider_choices_non_string_finish_reason_defaults_none(invalid_fr: Any) -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Valid research answer",
+                        },
+                        "finish_reason": invalid_fr,
+                    }
+                ],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    res = await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert "Valid research answer" in res.content
+    assert res.finish_reason is None
+
+
+@pytest.mark.anyio
+async def test_cloudflare_research_provider_reasoning_content_never_returned_as_text() -> None:
+    mock_client = AsyncMock()
+    mock_response = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Real research text",
+                            "reasoning_content": "Secret internal thought chain",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response
+
+    provider = CloudflareInferenceProvider(
+        account_id="test-acc",
+        api_token="test-tok",
+        client=mock_client,
+    )
+    res = await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert "Real research text" in res.content
+    assert "Secret internal thought chain" not in res.content
+
+    mock_response_no_content = httpx.Response(
+        status_code=200,
+        json={
+            "result": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "reasoning_content": "Only internal thinking",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            "success": True,
+            "errors": [],
+            "messages": [],
+        },
+        request=httpx.Request("POST", "https://api.cloudflare.com/client/v4/accounts/test-acc/ai/run/model"),
+    )
+    mock_client.post.return_value = mock_response_no_content
+    with pytest.raises(FallbackEligibleInferenceError) as exc_info:
+        await provider.synthesize(question="Test question", evidence="Test evidence")
+    assert exc_info.value.reason == "malformed_response"
 
 
 @pytest.mark.anyio
