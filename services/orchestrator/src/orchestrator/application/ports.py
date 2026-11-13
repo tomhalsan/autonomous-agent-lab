@@ -33,6 +33,10 @@ class StateReader(Protocol):
     async def task_inference_telemetry(self, task_id: str) -> dict[str, Any] | None: ...
 
 
+class TelemetryStorageError(RuntimeError):
+    """Raised when telemetry storage or event stream is unavailable or read fails."""
+
+
 class EventPublisher(Protocol):
     async def publish(self, event: AgentEvent) -> None: ...
 

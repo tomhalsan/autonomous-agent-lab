@@ -773,6 +773,29 @@ async def test_inference_metadata_reset_behavior_clears_stale_metadata() -> None
     unavail_block = html.split("function renderRoutingUnavailable(")[1].split("pipelineStepperEl.innerHTML")[0]
     assert "clearInferenceMeta();" in unavail_block
 
+
+@pytest.mark.anyio
+async def test_presentation_partial_unknown_outcome_not_labeled_all_providers_failed() -> None:
+    html = await dashboard()
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+
+    # When final_status is null/empty and attempts exist, status must display a neutral outcome, not all_providers_failed
+    assert "const isAllFailed = finalStatus === 'all_providers_failed';" in render_fn
+    assert "finalStatus || 'Inference incomplete'" in render_fn
+    assert "finalStatus || 'all_providers_failed'" not in render_fn
+
+
+@pytest.mark.anyio
+async def test_presentation_explicit_all_providers_failed_labeled_correctly() -> None:
+    html = await dashboard()
+    render_fn = html.split("function renderInferenceMeta(")[1].split("function updateRoutingObservation(")[0]
+
+    # Explicit all_providers_failed is checked explicitly
+    assert "const isAllFailed = finalStatus === 'all_providers_failed';" in render_fn
+    assert "isAllFailed" in render_fn
+    assert "'all_providers_failed'" in render_fn
+
+
     # Failed task observation clears metadata
     failed_block = html.split("if (status === 'failed') {")[1].split("routingStatusEl.innerHTML")[0]
     assert "clearInferenceMeta();" in failed_block

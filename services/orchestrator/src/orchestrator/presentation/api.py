@@ -17,6 +17,7 @@ from orchestrator.application.ports import (
     StateReader,
     TaskDispatcher,
     TaskQueue,
+    TelemetryStorageError,
 )
 from orchestrator.application.queries import (
     FindCandidatesByCapability,
@@ -110,6 +111,8 @@ async def task_telemetry(task_id: str, request: Request) -> dict[str, Any]:
         telemetry = await get_task_inference_telemetry.execute(task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TelemetryStorageError as exc:
+        raise HTTPException(status_code=503, detail="Task telemetry storage unavailable") from exc
     if telemetry is None:
         raise HTTPException(
             status_code=404,
