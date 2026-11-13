@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from agent_contracts import InferenceError, NonFallbackInferenceError
+
 from evaluation.inference.checks import evaluate_checks, validate_check_specs
 from evaluation.inference.datasets import canonical_json
 from evaluation.inference.models import (
@@ -52,6 +54,38 @@ def _failure_category(error: Exception) -> str:
     if isinstance(error, TimeoutError):
         return "timeout"
     if isinstance(error, (TypeError, ValueError)):
+        return "invalid_response"
+    if not isinstance(error, InferenceError):
+        return "execution_error"
+
+    reason = error.reason
+    status_code = error.status_code
+    if type(status_code) is not int or not 100 <= status_code <= 599:
+        status_code = None
+
+    if status_code == 429:
+        return "rate_limited"
+    if status_code in (401, 403):
+        return "authentication_or_authorization"
+    if reason in {
+        "blocked_safety",
+        "blocked_recitation",
+        "blocked_blocklist",
+        "blocked_prohibited_content",
+        "blocked_spii",
+    } and isinstance(error, NonFallbackInferenceError):
+        return "safety_block"
+    if status_code is not None and 400 <= status_code <= 499:
+        return "http_4xx"
+    if status_code is not None and 500 <= status_code <= 599:
+        return "http_5xx"
+    if reason == "rate_limited":
+        return "rate_limited"
+    if reason == "timeout":
+        return "timeout"
+    if reason == "connection_error":
+        return "connection_error"
+    if reason == "malformed_response":
         return "invalid_response"
     return "execution_error"
 

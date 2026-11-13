@@ -6,6 +6,11 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from agent_contracts import (
+    FallbackEligibleInferenceError,
+    InferenceError,
+    NonFallbackInferenceError,
+)
 
 from evaluation.inference.candidates import CANDIDATES
 from evaluation.inference.datasets import load_dataset
@@ -20,7 +25,11 @@ from evaluation.inference.models import (
     ProviderOutput,
 )
 from evaluation.inference.reporting import read_attempts
-from evaluation.inference.runner import run_evaluation, scheduled_attempt_id
+from evaluation.inference.runner import (
+    _failure_category,
+    run_evaluation,
+    scheduled_attempt_id,
+)
 
 _COMMIT = "3ee0bc92d33a98ac72fedb84bb1f929df6301a26"
 _TIMESTAMP = "2025-01-01T00:00:00Z"
@@ -85,9 +94,16 @@ def _run_policy(
 
 
 class FakeInvoker:
-    def __init__(self, *, fail: bool = False, no_usage: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        no_usage: bool = False,
+        error: Exception | None = None,
+    ) -> None:
         self.fail = fail
         self.no_usage = no_usage
+        self.error = error
         self.calls: list[tuple[str, str]] = []
 
     async def invoke(
@@ -97,6 +113,8 @@ class FakeInvoker:
     ) -> ProviderOutput:
         candidate = descriptor.candidate
         self.calls.append((candidate.id, case.id))
+        if self.error is not None:
+            raise self.error
         if self.fail:
             raise RuntimeError("private diagnostic body must not be persisted")
         return ProviderOutput(
@@ -464,6 +482,126 @@ async def test_failure_retains_descriptor_and_sanitized_category(tmp_path: Path)
     assert attempts[0].output is None
     assert invoker.calls == [(candidate.id, "general-json-06")]
     assert "private diagnostic body" not in (tmp_path / "failure.jsonl").read_text()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_category"),
+    [
+        (TimeoutError("timeout"), "timeout"),
+        (TypeError("invalid output"), "invalid_response"),
+        (ValueError("invalid output"), "invalid_response"),
+        (
+            FallbackEligibleInferenceError(
+                "provider message", provider_name="cloudflare", reason="timeout"
+            ),
+            "timeout",
+        ),
+        (
+            FallbackEligibleInferenceError(
+                "provider message",
+                provider_name="cloudflare",
+                reason="rate_limited",
+                status_code=429,
+            ),
+            "rate_limited",
+        ),
+        (
+            NonFallbackInferenceError(
+                "provider message",
+                provider_name="gemini",
+                reason="client_error_403",
+                status_code=403,
+            ),
+            "authentication_or_authorization",
+        ),
+        (
+            NonFallbackInferenceError(
+                "provider message",
+                provider_name="cloudflare",
+                reason="client_error_404",
+                status_code=404,
+            ),
+            "http_4xx",
+        ),
+        (
+            FallbackEligibleInferenceError(
+                "provider message",
+                provider_name="cloudflare",
+                reason="server_error_503",
+                status_code=503,
+            ),
+            "http_5xx",
+        ),
+        (
+            FallbackEligibleInferenceError(
+                "provider message", provider_name="cloudflare", reason="connection_error"
+            ),
+            "connection_error",
+        ),
+        (
+            FallbackEligibleInferenceError(
+                "provider message",
+                provider_name="gemini",
+                reason="malformed_response",
+                status_code=200,
+            ),
+            "invalid_response",
+        ),
+        (
+            NonFallbackInferenceError(
+                "provider message",
+                provider_name="gemini",
+                reason="blocked_safety",
+                status_code=400,
+            ),
+            "safety_block",
+        ),
+        (InferenceError("provider message", provider_name="cloudflare"), "execution_error"),
+        (
+            FallbackEligibleInferenceError(
+                "provider message",
+                provider_name="cloudflare",
+                reason="provider-specific-reason",
+            ),
+            "execution_error",
+        ),
+        (RuntimeError("unrelated failure"), "execution_error"),
+    ],
+)
+def test_failure_category_uses_only_known_structured_evidence(
+    error: Exception,
+    expected_category: str,
+) -> None:
+    assert _failure_category(error) == expected_category
+
+
+@pytest.mark.anyio
+async def test_structured_failure_persists_only_allowlisted_category(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    candidate = _candidate()
+    sentinel = "provider-secret-sentinel"
+    error = FallbackEligibleInferenceError(
+        f"private provider message {sentinel}",
+        provider_name=f"provider-{sentinel}",
+        reason=f"raw-reason-{sentinel}",
+        status_code=429,
+    )
+    attempts = await _run(
+        candidates=(candidate,),
+        descriptors=(_descriptor(candidate),),
+        output_path=tmp_path / "structured-failure.jsonl",
+        run_id="structured-failure",
+        invoker=FakeInvoker(error=error),
+    )
+
+    persisted = (tmp_path / "structured-failure.jsonl").read_text()
+    assert attempts[0].failure_category == "rate_limited"
+    assert _failure_category(error) == "rate_limited"
+    assert sentinel not in persisted
+    assert sentinel not in repr(attempts[0])
+    assert sentinel not in caplog.text
 
 
 @pytest.mark.anyio
