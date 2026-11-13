@@ -52,7 +52,7 @@ class TaskProcessor:
         logger.info("Worker %s processing task %s", self.agent_id, task.task_id)
         await self.bus.publish(
             AgentEvent.create(
-                self.agent_id, "working", f"Processing: {task.prompt}", task.task_id
+                self.agent_id, "working", "Processing task", task.task_id
             )
         )
         try:
@@ -74,7 +74,7 @@ class TaskProcessor:
 
             await self.bus.publish(
                 AgentEvent.create(
-                    self.agent_id, "idle", f"Completed: {task.prompt}", task.task_id
+                    self.agent_id, "idle", "Task completed", task.task_id
                 )
             )
             logger.info("Worker %s completed task %s successfully", self.agent_id, task.task_id)
@@ -82,7 +82,7 @@ class TaskProcessor:
             logger.exception("Task %s failed during execution", task.task_id)
             # 1. Record failure in event stream and set current state to error
             await self.bus.publish(
-                AgentEvent.create(self.agent_id, "error", str(exc), task.task_id)
+                AgentEvent.create(self.agent_id, "error", "Task failed", task.task_id)
             )
             # 2. Transition current state back to idle so the worker is available for next task
             await self.bus.publish(

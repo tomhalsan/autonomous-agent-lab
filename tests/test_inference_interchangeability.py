@@ -241,11 +241,13 @@ async def test_worker_task_processor_substitution(provider_type: str) -> None:
     assert len(bus.published) == 2
     assert bus.published[0].state == "working"
     assert bus.published[0].task_id == task.task_id
-    assert bus.published[0].detail == f"Processing: {task.prompt}"
+    assert bus.published[0].detail == "Processing task"
+    assert task.prompt not in bus.published[0].detail
 
     assert bus.published[1].state == "idle"
     assert bus.published[1].task_id == task.task_id
-    assert bus.published[1].detail == f"Completed: {task.prompt}"
+    assert bus.published[1].detail == "Task completed"
+    assert task.prompt not in bus.published[1].detail
 
 
 @pytest.mark.anyio
@@ -349,11 +351,13 @@ async def test_research_processor_substitution(provider_type: str) -> None:
     assert len(bus.published) == 2
     assert bus.published[0].state == "working"
     assert bus.published[0].task_id == task.task_id
-    assert bus.published[0].detail == f"Processing: {task.prompt}"
+    assert bus.published[0].detail == "Processing task"
+    assert task.prompt not in bus.published[0].detail
 
     assert bus.published[1].state == "idle"
     assert bus.published[1].task_id == task.task_id
-    assert f"Completed: {saved.output}" == bus.published[1].detail
+    assert bus.published[1].detail == "Task completed"
+    assert saved.output not in bus.published[1].detail
 
 
 @pytest.mark.anyio
