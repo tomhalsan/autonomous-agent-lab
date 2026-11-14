@@ -26,10 +26,13 @@ We prioritize:
 5. **Deterministic Testing:** All tests must run quickly and deterministically using in-memory fakes without requiring live cloud APIs, paid tokens, or running Docker containers.
 6. **Local Verification:** Before submitting a pull request, run the complete verification suite locally:
    ```bash
-   pytest -q
-   ruff check .
+   .venv/bin/python -m pytest -q
+   .venv/bin/python -m ruff check .
    git diff --check
    ```
+   Deterministic tests isolate provider environment variables. Tests marked
+   `external_provider` require the deliberate `--run-external-providers` option;
+   see the [testing strategy](docs/testing-strategy.md) before running them.
 7. **Submit a Pull Request:** Open a PR against the `main` branch with a clear description of the change, architectural rationale, and verification steps.
 
 ## Credential & Secret Discipline
