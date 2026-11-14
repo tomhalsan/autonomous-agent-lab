@@ -160,3 +160,31 @@ When new files are part of an implementation, ensure their whitespace/EOF format
 - Document important or interesting stabilized workflows when visual documentation can improve understanding, including SVG swimlane diagrams where appropriate.
 - Do not assume that an LLM, external provider, or more complex solution is inherently better than deterministic logic.
 - Do not introduce customer-specific or commercial architecture merely because it may be useful in a hypothetical future product. Keep the current project focused on learning and reusable autonomous-agent patterns.
+
+## 12. Prototype Console UI/UX
+
+### Identity and purpose
+
+- Tiny Robot Lab is the umbrella project; Tiny Agent Lab is the public name of the autonomous-agent project, even though the repository remains `autonomous-agent-lab`. The canonical public console URL is agents.tinyrobotlab.com. Do not use "Autonomous Agent Lab" as the public-facing project or product name in new UI.
+- Treat the console as an agent and distributed-systems observability workbench that helps learners and developers understand what the running system actually did, not as a generic AI chat application or SaaS dashboard.
+- Use plain, direct, concise project-explanatory copy in Tiny Robot Lab's human-written voice; avoid marketing language and artificial enthusiasm.
+
+### Runtime truth and observability
+
+- Surface real runtime evidence when available: task state, execution stages, routing, agent identity and capabilities, provider selection and fallback, tool discovery and selection, authorization, tool execution, latency, status metadata, and inspectable results.
+- Never fabricate agents, capabilities, availability, providers, health, routing, fallback, tools, authorization, execution stages, telemetry, latency, or task and result states. Verify visible state against current contracts, implementation, tests, or authoritative backend behavior; an ADR, roadmap, issue, or planned capability alone is not evidence of runtime behavior.
+- Keep unknown, unavailable, failed, and incomplete states visibly distinct when exposed by the backend. Do not invent frontend state for visual appeal.
+- Make activity streams explain meaningful transitions, routing, provider attempts and fallback, tool behavior, authorization, outcomes, latency, and bounded technical metadata. Do not turn telemetry into a duplicate prompt/output log or put large final outputs, raw JSON payloads, or repeated prompts in the primary stream; use a result or inspector surface for full output when useful.
+- Never render, log, serialize into client-visible state, or otherwise expose API keys, access tokens, authorization headers, credential-bearing URLs, unsanitized provider exceptions, or other secret-bearing configuration. Preserve credential-safe provider and exception boundaries; frontend diagnostics must use sanitized, contractually supported runtime information, not provider internals. Do not reintroduce prompt/output or provider-exception disclosure through debugging UI.
+
+### Visual character
+
+- Keep the console in the Tiny Robot Lab visual family through compatible design tokens, typography, a restrained palette, engineering-notebook character, human-designed details, and shared identity—not by copying website layouts. Preserve the robot identity where appropriate without competing with operational content.
+- Favor hairline borders, compact radii, clean sans-serif UI typography, and monospace or tabular treatment for IDs, providers, tools, states, timestamps, latency, and other technical metadata. Use restrained semantic status colors, clear hierarchy, purposeful density, strong readability, visible keyboard focus, and responsive layouts.
+- Avoid generic chat conventions, dashboard card walls, excessive rounded containers or shadows, neon or glowing UI, decorative gradients without information value, unnecessary animation, Unicode emoji as interface icons, repetitive subtitles under obvious headings, and cosmetic elements that compete with runtime state.
+
+### Change discipline and validation
+
+- Inspect the current console before editing. Preserve API and event contracts and working live-state integration unless a contract change is explicitly requested. Prefer small component-level increments; do not migrate frameworks for visual redesign, change backend architecture to simplify styling, or refactor outside the requested increment.
+- Keep parsing and state interpretation deterministic; add or update tests when interpretation changes. Follow the repository's deterministic and external-provider testing rules, using `.venv/bin/python` explicitly, and run repository-native frontend/static checks where available.
+- For relevant changes, test representative desktop and mobile widths, visible keyboard focus and basic accessibility, and live connection and rendering of real runtime state. Verify that activity and telemetry remain bounded and useful and that no credential or secret regression is introduced. Report only validation actually performed.
