@@ -44,7 +44,7 @@ jobs:
         run: ruff check .
 
       - name: Run test suite
-        run: pytest -q -m "not redis and not external_provider"
+        run: pytest -q
 
       - name: Run real Redis integration tests
         env:

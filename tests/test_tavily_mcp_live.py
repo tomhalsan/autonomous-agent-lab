@@ -1,8 +1,8 @@
 """Opt-in live external validation against the official Tavily remote MCP server.
 
-Excluded from default CI via the 'external_provider' marker.
+Excluded by default unless --run-external-providers is supplied.
 Run explicitly with:
-    pytest tests/test_tavily_mcp_live.py -m external_provider -s
+    .venv/bin/python -m pytest --run-external-providers -m external_provider tests/test_tavily_mcp_live.py -s
 """
 
 import os

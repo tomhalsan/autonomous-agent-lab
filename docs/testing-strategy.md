@@ -36,20 +36,21 @@ Layer 4: Compose Configuration (PR CI: docker compose config --quiet)
    ▲
 Layer 3: Container Boundary (PR CI: build images, runtime import smoke checks)
    ▲
-Layer 2: Unit / Contract / Policy (PR CI: host pytest -m "not redis and not external_provider", fast deterministic fakes)
+Layer 2: Unit / Contract / Policy (PR CI: default pytest run, fast deterministic fakes)
    ▲
 Layer 1: Static / Hygiene (PR CI: Ruff lint, git diff --check)
 ```
 
 ### Layer 1: Static / Hygiene
-- **Mechanism**: `ruff check .`, `git diff --check`, `git diff --cached --check`.
+- **Mechanism**: Locally, `.venv/bin/python -m ruff check .`; in CI, `ruff check .`; also run `git diff --check` and `git diff --cached --check`.
 - **Execution**: Runs in PR CI and pre-commit checks.
 - **Purpose**: Fast, deterministic static analysis, code quality, syntax checking, and pre-commit whitespace hygiene.
 - **What it proves**: Code adheres to project formatting, type-safety annotations, linting standards, and clean Git whitespace hygiene.
 - **What it cannot prove**: Functional correctness, runtime importability, or dynamic system behavior.
 
 ### Layer 2: Unit / Contract / Policy
-- **Mechanism**: Host-side `pytest -q -m "not redis and not external_provider"`, using mocks (`AsyncMock`), fakes (`InMemoryRedis`, `FakeMessageBus`), and deterministic fixtures.
+- **Mechanism**: Locally, `.venv/bin/python -m pytest -q`; in CI, `pytest -q`. Both use mocks (`AsyncMock`), fakes (`InMemoryRedis`, `FakeMessageBus`), and deterministic fixtures. Pytest excludes `redis` tests by default; `tests/conftest.py` independently deselects every `external_provider` test unless `--run-external-providers` is supplied.
+- **Environment isolation**: An autouse test fixture removes provider selectors, credentials, endpoints, and model settings from the ambient environment for deterministic tests. Tests that intentionally exercise environment behavior can still set values with `monkeypatch`.
 - **Execution**: Runs in PR CI (~950+ tests in under 3 seconds).
 - **Purpose**: Validate pure domain logic, contract serializations, candidate selection policies, routing classifiers, fallback traversal loops, telemetry schemas, input validations, and error handling.
 - **What it proves**: State transitions, algorithms, and application policies operate correctly under defined, controlled assumptions.
@@ -75,7 +76,10 @@ Layer 1: Static / Hygiene (PR CI: Ruff lint, git diff --check)
 ### Layer 5: Real Redis Integration
 - **Mechanism**: Ephemeral `redis:7-alpine` service container in PR CI running exactly four focused integration tests in [`tests/test_redis_integration.py`](../tests/test_redis_integration.py) via:
   ```bash
-  REDIS_URL=redis://localhost:6379/15 pytest -q -m redis
+  # Local
+  REDIS_URL=redis://localhost:6379/15 .venv/bin/python -m pytest -q -m redis
+  # CI
+  pytest -q -m redis
   ```
 - **Execution**: Runs in PR CI in a dedicated workflow step isolated from standard unit tests.
 - **Safety & Isolation**:
@@ -91,6 +95,10 @@ Layer 1: Static / Hygiene (PR CI: Ruff lint, git diff --check)
 ### Layer 6: External-Provider Contract Validation
 - **Mechanism**: Targeted, opt-in contract checks against live remote vendor endpoints (Cloudflare Workers AI, Google Gemini, Tavily Search API).
 - **Execution**: Manual or pre-release verification; **never** part of ordinary PR CI.
+- **Opt-in**: Every test marked `external_provider` is deselected during collection unless `--run-external-providers` is explicitly supplied. This collection guard is independent of `-m` expressions, so `-m "not redis"` or `-m external_provider` cannot enable a live test by itself. Example:
+  ```bash
+  .venv/bin/python -m pytest --run-external-providers -m external_provider tests/test_tavily_mcp_live.py -s
+  ```
 - **Design Rules**:
   - Keep real-provider tests minimal and focused on contract assertions (e.g. metadata lookups, model aliases, authentication).
   - Do not create expansive live test suites.
@@ -136,7 +144,7 @@ The post-release deployment of `v0.4.0` to `home-core` surfaced three distinct c
 ### Case Study 4: CI Integration Environment Contamination (Increment B Hardening)
 - **Symptom**: Four existing unit tests verifying the application's default unconfigured Redis URL (`redis://localhost:6379/0`) failed when `REDIS_URL` was injected into CI.
 - **Root Cause**: Injecting `REDIS_URL=redis://localhost:6379/15` across the entire `pytest -q` step contaminated application startup tests that intentionally verify default environment variable fallbacks.
-- **Lesson**: **Integration test configuration must remain isolated from unrelated unit tests.** PR CI must separate unit execution (`pytest -q -m "not redis and not external_provider"`) from integration execution (`REDIS_URL=... pytest -q -m redis`).
+- **Lesson**: **Integration test configuration must remain isolated from unrelated unit tests.** The default pytest selection excludes Redis tests; CI runs the Redis integration tests separately with `REDIS_URL=... pytest -q -m redis`.
 
 ---
 
@@ -199,9 +207,9 @@ An agent platform must never present generated model speculation as observed run
 | Validation Layer | Target Boundary | Primary Tools | Execution Cadence | Catches |
 | :--- | :--- | :--- | :--- | :--- |
 | **1. Static / Hygiene** | Source code | `ruff`, `git diff --check` | Pre-commit & PR CI | Syntax, styling, whitespace errors |
-| **2. Unit / Policy** | Application logic | `pytest -m "not redis and not external_provider"` | Pre-commit & PR CI | Broken contracts, invalid state transitions, routing logic errors |
+| **2. Unit / Policy** | Application logic | Local `.venv/bin/python -m pytest -q`; CI `pytest -q` | Pre-commit & PR CI | Broken contracts, invalid state transitions, routing logic errors |
 | **3. Container Boundary** | Image filesystem | `docker build`, import checks | PR CI | Missing packages (`agent_policy`), bad `PYTHONPATH` |
 | **4. Compose Config** | Configuration artifact | `docker compose config` | PR CI | YAML syntax, invalid service attributes, bad variable expansions |
-| **5. Redis Integration** | External engine wire protocol | `pytest -m redis` (DB 15) | PR CI | Serialization wire errors, stream syntax, queue protocol bugs |
+| **5. Redis Integration** | External engine wire protocol | Local `.venv/bin/python -m pytest -m redis`; CI `pytest -m redis` (DB 15) | PR CI | Serialization wire errors, stream syntax, queue protocol bugs |
 | **6. Provider Contract** | Vendor API semantics | Opt-in live test scripts | Pre-release / manual | Vendor metadata quirks, alias 404s, schema discrepancies |
 | **7. Real Deployment** | Full physical stack | `compose.yaml` on `home-core` | Release validation | Latency thresholds, tunnel routing, browser UI rendering |

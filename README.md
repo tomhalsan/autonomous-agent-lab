@@ -52,12 +52,20 @@ To access the console:
 
 ## Quality checks
 
+Use the repository-local Python environment for development and tests:
+
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest -q -m "not redis and not external_provider"
-python -m ruff check .
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check .
 docker compose config --quiet
 ```
+
+External-provider tests are always deselected unless explicitly enabled. To run
+the live Tavily check, use
+`.venv/bin/python -m pytest --run-external-providers -m external_provider tests/test_tavily_mcp_live.py -s`.
+This deliberately contacts the configured external provider.
 
 For full details on our seven validation layers, container packaging tests, isolated Redis integration suite, and release-validation guidance, see the [Testing Strategy](docs/testing-strategy.md).
 
