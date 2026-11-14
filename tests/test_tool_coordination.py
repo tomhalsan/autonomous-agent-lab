@@ -13,6 +13,7 @@ from agent_contracts import (
     ToolCapabilityMetadata,
     ToolDefinition,
     ToolErrorCode,
+    ToolExecutionState,
     ToolExecutionTelemetry,
     ToolIdempotency,
     ToolInvocationProposal,
@@ -551,6 +552,141 @@ async def test_tool_exception_becomes_invocation_failure() -> None:
     assert len(telemetry) == 1
     assert telemetry[0].error_code is ToolErrorCode.EXECUTION_FAILURE
     assert "execution broke" not in telemetry[0].to_json()
+
+
+@pytest.mark.anyio
+async def test_timeout_error_degrades_to_invocation_failure_with_telemetry() -> None:
+    """Unit/policy failure contract (Issue #30): a TimeoutError raised by tool
+    execution degrades to TOOL_INVOCATION_FAILURE without escaping.
+
+    This is deterministic coordinator-level coverage, not an integration test:
+    the tool is a local fake and no production service is involved.
+    """
+
+    class _TimeoutTool(_Tool):
+        async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+            self.requests.append(request)
+            raise TimeoutError("search timed out")
+
+    tool = _TimeoutTool()
+    registry = InMemoryToolRegistry()
+    registry.register(tool, category="research")
+    selector = _FixedSelector(
+        ToolSelectionDecision.proposed_invocation("web_search", {"query": "weather"})
+    )
+    telemetry: list[ToolExecutionTelemetry] = []
+
+    async def record(event: ToolExecutionTelemetry) -> None:
+        telemetry.append(event)
+
+    result = await _coordinator(
+        registry,
+        selector,
+        on_telemetry=record,
+        clock=lambda: 1,
+    ).coordinate("search the web")
+
+    assert result.status is ToolCoordinationStatus.TOOL_INVOCATION_FAILURE
+    assert result.invocation_result is not None
+    assert result.invocation_result.success is False
+    assert result.invocation_result.error is not None
+    assert result.invocation_result.error.code is ToolErrorCode.EXECUTION_FAILURE
+    assert result.invocation_result.error.message == "search timed out"
+    assert result.error == "search timed out"
+    assert result.execution_state is ToolExecutionState.ATTEMPTED
+    assert len(tool.requests) == 1
+    assert len(telemetry) == 1
+    assert telemetry[0].outcome == "failed"
+    assert telemetry[0].error_code is ToolErrorCode.EXECUTION_FAILURE
+    assert "search timed out" not in telemetry[0].to_json()
+
+
+@pytest.mark.anyio
+async def test_unavailable_tool_result_preserves_error_code_with_single_invocation() -> None:
+    """Unit/policy failure contract (Issue #30): a returned tool failure carrying
+    ToolErrorCode.UNAVAILABLE stays TOOL_INVOCATION_FAILURE with the code
+    preserved and exactly one invocation.
+
+    This is deterministic coordinator-level coverage, not an integration test:
+    the tool is a local fake and no production service is involved.
+    """
+
+    class _UnavailableTool(_Tool):
+        async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+            self.requests.append(request)
+            return ToolInvocationResult.create_failure(
+                call_id=request.call_id,
+                tool_name=request.tool_name,
+                error="search backend unavailable",
+                code=ToolErrorCode.UNAVAILABLE,
+            )
+
+    tool = _UnavailableTool()
+    registry = InMemoryToolRegistry()
+    registry.register(tool, category="research")
+    selector = _FixedSelector(
+        ToolSelectionDecision.proposed_invocation("web_search", {"query": "weather"})
+    )
+    telemetry: list[ToolExecutionTelemetry] = []
+
+    async def record(event: ToolExecutionTelemetry) -> None:
+        telemetry.append(event)
+
+    result = await _coordinator(
+        registry,
+        selector,
+        on_telemetry=record,
+        clock=lambda: 1,
+    ).coordinate("search the web")
+
+    assert result.status is ToolCoordinationStatus.TOOL_INVOCATION_FAILURE
+    assert result.invocation_result is not None
+    assert result.invocation_result.success is False
+    assert result.invocation_result.error is not None
+    assert result.invocation_result.error.code is ToolErrorCode.UNAVAILABLE
+    assert result.invocation_result.error.message == "search backend unavailable"
+    assert result.error == "search backend unavailable"
+    assert result.execution_state is ToolExecutionState.ATTEMPTED
+    assert len(tool.requests) == 1
+    assert len(telemetry) == 1
+    assert telemetry[0].outcome == "failed"
+    assert telemetry[0].error_code is ToolErrorCode.UNAVAILABLE
+
+
+@pytest.mark.anyio
+async def test_failed_tool_invocation_is_attempted_exactly_once() -> None:
+    """Unit/policy failure contract (Issue #30): an ordinary failed tool
+    invocation is attempted exactly once, proving no silent retry.
+
+    This is deterministic coordinator-level coverage, not an integration test:
+    the tool is a local fake and no production service is involved.
+    """
+
+    class _FailingTool(_Tool):
+        async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+            self.requests.append(request)
+            return ToolInvocationResult.create_failure(
+                call_id=request.call_id,
+                tool_name=request.tool_name,
+                error="provider failed",
+            )
+
+    tool = _FailingTool()
+    registry = InMemoryToolRegistry()
+    registry.register(tool, category="research")
+    selector = _FixedSelector(
+        ToolSelectionDecision.proposed_invocation("web_search", {"query": "weather"})
+    )
+
+    result = await _coordinator(registry, selector).coordinate("search the web")
+
+    assert result.status is ToolCoordinationStatus.TOOL_INVOCATION_FAILURE
+    assert result.invocation_result is not None
+    assert result.invocation_result.success is False
+    assert result.invocation_result.error is not None
+    assert result.invocation_result.error.message == "provider failed"
+    assert result.execution_state is ToolExecutionState.ATTEMPTED
+    assert len(tool.requests) == 1
 
 
 @pytest.mark.anyio
