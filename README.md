@@ -5,8 +5,8 @@ Autonomous Agent Lab is Lab #1 under the [Tiny Robot Lab](https://tinyrobotlab.c
 It is a non-commercial, open-source educational testbed for exploring how modern AI and autonomous-agent systems actually work by building them from scratch: asynchronous messaging queues, dynamic capability registration, heartbeat liveness policies, evidence-conditioned synthesis, and provider-neutral Clean Architecture boundaries.
 
 - **Current Release:** `v0.4.0 — Resilient Multi-Provider Inference`
-- **Live Experimental Lab:** [lab.tinyrobotlab.com](https://lab.tinyrobotlab.com)
-- **Umbrella Website:** [tinyrobotlab.com](https://tinyrobotlab.com)
+- **Live Experimental Lab:** [Tiny Agent Lab](https://agents.tinyrobotlab.com)
+- **Umbrella Website:** [Tiny Robot Lab](https://tinyrobotlab.com)
 
 ## Architecture
 
