@@ -39,28 +39,46 @@ class TavilyResearchExecutor:
                 raise ValueError(
                     "TAVILY_API_KEY environment variable is required for TavilyResearchExecutor"
                 )
-            self._client = AsyncTavilyClient(api_key=self._api_key)
+            creation_error_type: str | None = None
+            try:
+                self._client = AsyncTavilyClient(api_key=self._api_key)
+            except Exception as exc:  # noqa: BLE001 - do not retain provider errors that may contain credentials
+                creation_error_type = type(exc).__name__
+                logger.error(
+                    "Tavily client creation failed (error_type=%s)",
+                    creation_error_type,
+                )
+            if creation_error_type is not None:
+                raise RuntimeError(
+                    "Tavily client creation failed "
+                    f"(error_type={creation_error_type})"
+                ) from None
+
+    def __repr__(self) -> str:
+        return "TavilyResearchExecutor(api_key='[REDACTED]')"
 
     async def execute(self, task: TaskRequested) -> ResearchResult:
         logger.info("Executing Tavily research search for task %s", task.task_id)
+        failure_message: str | None = None
         try:
             response = await self._client.search(query=task.prompt)
-        except Exception as exc:
-            err_msg = str(exc)
-            if self._api_key and self._api_key in err_msg:
-                err_msg = err_msg.replace(self._api_key, "[REDACTED]")
+        except Exception as exc:  # noqa: BLE001 - sanitize all provider errors before propagation
+            error_type = type(exc).__name__
             logger.error(
-                "Tavily search failed for task %s: %s",
+                "Tavily search failed for task %s (error_type=%s)",
                 task.task_id,
-                err_msg,
+                error_type,
             )
-            raise RuntimeError(
-                f"Tavily search failed for task {task.task_id}: {err_msg}"
-            ) from exc
+            failure_message = (
+                f"Tavily search failed for task {task.task_id} "
+                f"(error_type={error_type})"
+            )
+        else:
+            return process_tavily_search_payload(
+                task_id=task.task_id,
+                query=task.prompt,
+                payload=response,
+                evaluator=self._evaluator,
+            )
 
-        return process_tavily_search_payload(
-            task_id=task.task_id,
-            query=task.prompt,
-            payload=response,
-            evaluator=self._evaluator,
-        )
+        raise RuntimeError(failure_message) from None

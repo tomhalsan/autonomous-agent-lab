@@ -632,6 +632,50 @@ async def test_cloudflare_provider_successful_generate() -> None:
     assert messages[1]["content"] == prompt
 
 
+@pytest.mark.parametrize(
+    ("request_error_type", "reason"),
+    [
+        (httpx.RequestError, "connection_error"),
+        (httpx.TimeoutException, "timeout"),
+    ],
+    ids=["request-error", "timeout"],
+)
+@pytest.mark.anyio
+async def test_cloudflare_provider_transport_failure_types_are_preserved(
+    request_error_type: type[httpx.RequestError],
+    reason: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_client = AsyncMock()
+    secret_token = f"worker-{reason}-canary"
+    request = httpx.Request(
+        "POST",
+        f"https://api.cloudflare.test/infer?token={secret_token}",
+        headers={"Authorization": f"Bearer {secret_token}"},
+    )
+    mock_client.post.side_effect = request_error_type(
+        f"Connection failed with {secret_token}",
+        request=request,
+    )
+
+    provider = CloudflareInferenceProvider(
+        account_id="acc",
+        api_token=secret_token,
+        client=mock_client,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await provider.generate("Any prompt")
+
+    err_str = str(exc_info.value)
+    if secret_token in err_str + caplog.text:
+        pytest.fail("Cloudflare transport failure exposed a credential")
+    assert f"error_type={request_error_type.__name__}" in err_str
+    assert exc_info.value.reason == reason
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
 @pytest.mark.anyio
 async def test_cloudflare_provider_http_error_redacts_secret() -> None:
     mock_client = AsyncMock()

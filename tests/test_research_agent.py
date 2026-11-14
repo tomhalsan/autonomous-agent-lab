@@ -604,10 +604,46 @@ async def test_tavily_executor_api_failure_handling() -> None:
 
 
 @pytest.mark.anyio
-async def test_tavily_executor_redacts_api_key_on_failure() -> None:
+async def test_tavily_executor_repr_redacts_api_key() -> None:
+    secret_key = "tavily-repr-canary"
+    executor = TavilyResearchExecutor(api_key=secret_key, client=AsyncMock())
+
+    representation = repr(executor)
+
+    if secret_key in representation:
+        pytest.fail("Tavily executor repr unexpectedly contained an API key")
+    assert "[REDACTED]" in representation
+
+
+def test_tavily_client_creation_failure_is_sanitized() -> None:
+    secret_key = "tavily-client-creation-canary"
+    with (
+        patch(
+            "research_agent.infrastructure.tavily_executor.AsyncTavilyClient",
+            side_effect=RuntimeError(secret_key),
+        ),
+        pytest.raises(RuntimeError) as exc_info,
+    ):
+        TavilyResearchExecutor(api_key=secret_key)
+
+    message = str(exc_info.value)
+    if secret_key in message:
+        pytest.fail("Tavily client creation failure exposed a credential")
+    assert "client creation failed" in message
+    assert "RuntimeError" in message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+@pytest.mark.anyio
+async def test_tavily_executor_sanitizes_provider_failure_without_chaining(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     secret_key = "tvly-super-secret-key-99999"
     mock_client = AsyncMock()
-    mock_client.search.side_effect = RuntimeError(f"HTTP 401 Unauthorized for {secret_key}")
+    mock_client.search.side_effect = RuntimeError(
+        f"HTTP 401 Unauthorized for {secret_key}"
+    )
 
     executor = TavilyResearchExecutor(api_key=secret_key, client=mock_client)
     task = TaskRequested.create("auth fail query")
@@ -615,8 +651,13 @@ async def test_tavily_executor_redacts_api_key_on_failure() -> None:
     with pytest.raises(RuntimeError) as exc_info:
         await executor.execute(task)
 
-    assert secret_key not in str(exc_info.value)
-    assert "[REDACTED]" in str(exc_info.value)
+    message = str(exc_info.value)
+    if secret_key in message + caplog.text:
+        pytest.fail("Tavily provider failure exposed a credential")
+    assert "search failed" in message
+    assert "error_type=RuntimeError" in message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
 
 
 @pytest.mark.anyio
@@ -1363,9 +1404,13 @@ async def test_cloudflare_provider_network_failure() -> None:
 
     with pytest.raises(
         RuntimeError,
-        match="Cloudflare Workers AI request failed: Connection timed out",
-    ):
+        match=r"Cloudflare Workers AI request failed \(error_type=ConnectTimeout\)",
+    ) as exc_info:
         await provider.synthesize(question="What is consensus?", evidence="Evidence")
+
+    assert exc_info.value.reason == "timeout"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
 
 
 @pytest.mark.anyio
@@ -1864,11 +1909,29 @@ async def test_cloudflare_research_provider_reasoning_content_never_returned_as_
 
 
 @pytest.mark.anyio
-async def test_cloudflare_provider_redacts_api_token_on_failure() -> None:
-    secret_token = "secret-cf-super-token-xyz"
+@pytest.mark.parametrize(
+    ("request_error_type", "reason"),
+    [
+        (httpx.RequestError, "connection_error"),
+        (httpx.TimeoutException, "timeout"),
+    ],
+    ids=["request-error", "timeout"],
+)
+async def test_cloudflare_provider_request_failure_does_not_retain_raw_exception(
+    request_error_type: type[httpx.RequestError],
+    reason: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret_token = f"research-{reason}-canary"
     mock_client = AsyncMock()
-    mock_client.post.side_effect = httpx.RequestError(
-        f"Failed to connect using token {secret_token}"
+    request = httpx.Request(
+        "POST",
+        f"https://api.cloudflare.test/infer?api_key={secret_token}",
+        headers={"Authorization": f"Bearer {secret_token}"},
+    )
+    mock_client.post.side_effect = request_error_type(
+        f"Failed to connect using token {secret_token}",
+        request=request,
     )
 
     provider = CloudflareInferenceProvider(
@@ -1881,8 +1944,12 @@ async def test_cloudflare_provider_redacts_api_token_on_failure() -> None:
         await provider.synthesize(question="Test question", evidence="Test evidence")
 
     err_str = str(exc_info.value)
-    assert secret_token not in err_str
-    assert "[REDACTED]" in err_str
+    if secret_token in err_str + caplog.text:
+        pytest.fail("Cloudflare request failure exposed a credential")
+    assert f"error_type={request_error_type.__name__}" in err_str
+    assert exc_info.value.reason == reason
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
 
 
 @pytest.mark.anyio

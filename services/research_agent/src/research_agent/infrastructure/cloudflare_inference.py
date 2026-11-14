@@ -163,6 +163,8 @@ class CloudflareInferenceProvider:
         }
         payload = self._build_payload(question, evidence)
 
+        response: Any = None
+        request_failure: FallbackEligibleInferenceError | None = None
         try:
             if self._client is not None:
                 response = await self._client.post(
@@ -174,21 +176,36 @@ class CloudflareInferenceProvider:
                         endpoint, headers=headers, json=payload
                     )
         except httpx.TimeoutException as exc:
-            err_msg = self._redact(str(exc))
-            logger.error("Cloudflare Workers AI synthesis request timed out: %s", err_msg)
-            raise FallbackEligibleInferenceError(
-                f"Cloudflare Workers AI request failed: {err_msg}",
+            error_type = type(exc).__name__
+            logger.error(
+                "Cloudflare Workers AI synthesis request timed out (error_type=%s)",
+                error_type,
+            )
+            request_failure = FallbackEligibleInferenceError(
+                f"Cloudflare Workers AI request failed (error_type={error_type})",
                 provider_name=self.provider_name,
                 reason="timeout",
-            ) from exc
+            )
         except httpx.RequestError as exc:
-            err_msg = self._redact(str(exc))
-            logger.error("Cloudflare Workers AI HTTP request failed: %s", err_msg)
-            raise FallbackEligibleInferenceError(
-                f"Cloudflare Workers AI request failed: {err_msg}",
+            error_type = type(exc).__name__
+            logger.error(
+                "Cloudflare Workers AI HTTP request failed (error_type=%s)",
+                error_type,
+            )
+            request_failure = FallbackEligibleInferenceError(
+                f"Cloudflare Workers AI request failed (error_type={error_type})",
                 provider_name=self.provider_name,
                 reason="connection_error",
-            ) from exc
+            )
+
+        if request_failure is not None:
+            raise request_failure from None
+        if response is None:
+            raise FallbackEligibleInferenceError(
+                "Cloudflare Workers AI request returned no response",
+                provider_name=self.provider_name,
+                reason="connection_error",
+            )
 
         try:
             data = response.json()
