@@ -1,7 +1,7 @@
 -r services/orchestrator/requirements.txt
 -r services/worker/requirements.txt
 -r services/research_agent/requirements.txt
-pytest>=9.0.0
+pytest>=9.2.0
 anyio>=4.0.0
 ruff>=0.17.3
 
