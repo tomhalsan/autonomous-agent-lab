@@ -407,6 +407,90 @@ class TestDeterministicAssessmentPolicy:
         assert a1.signals == a2.signals
         assert a1.reason == a2.reason
 
+    def test_exact_production_failure_consensus_sources_routes_to_research(
+        self, router: DeterministicCapabilityRouter
+    ) -> None:
+        prompt = (
+            "Research current authoritative sources comparing Raft and Paxos consensus algorithms. "
+            "Cite the sources and explain the main differences, tradeoffs, and typical use cases."
+        )
+        assessment = router.assess(prompt)
+
+        assert assessment.provisional_capability == AgentCapability.RESEARCH
+        assert assessment.clarity == RoutingClarity.CLEAR
+        signal_types = {sig.signal_type for sig in assessment.signals}
+        assert RoutingSignalType.EXPLICIT_SOURCES_OR_CITATIONS in signal_types
+        assert RoutingSignalType.FRESHNESS_OR_CURRENT_INFO in signal_types
+        assert router.route(prompt) == AgentCapability.RESEARCH
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "Cite sources on Byzantine fault tolerance.",
+            "Cite the source for this finding.",
+            "Cite the sources comparing Raft and Paxos consensus algorithms.",
+            "Consult authoritative sources regarding TLS 1.3 session resumption.",
+            "Find authoritative source material on distributed snapshot algorithms.",
+            "Use current sources to evaluate post-quantum cryptography standards.",
+            "Analyze recent sources on database replication topologies.",
+            "Summarize latest sources discussing solid-state battery commercialization.",
+        ],
+    )
+    def test_explicit_sources_and_citations_positive_variants(
+        self, router: DeterministicCapabilityRouter, prompt: str
+    ) -> None:
+        assessment = router.assess(prompt)
+        assert assessment.provisional_capability == AgentCapability.RESEARCH
+        assert assessment.clarity == RoutingClarity.CLEAR
+        assert router.route(prompt) == AgentCapability.RESEARCH
+
+    @pytest.mark.parametrize(
+        ("prompt", "expected_capability", "expected_clarity"),
+        [
+            (
+                "Review this source code and cite the relevant lines for authentication logic.",
+                AgentCapability.GENERAL,
+                RoutingClarity.CLEAR,
+            ),
+            (
+                "Find the bug in this source code.",
+                AgentCapability.GENERAL,
+                RoutingClarity.CLEAR,
+            ),
+            (
+                "Cite the source code repository for Python.",
+                AgentCapability.GENERAL,
+                RoutingClarity.CLEAR,
+            ),
+            (
+                "Compare Raft and Paxos.",
+                AgentCapability.GENERAL,
+                RoutingClarity.AMBIGUOUS,
+            ),
+            (
+                "Explain the differences between Raft and Paxos.",
+                AgentCapability.GENERAL,
+                RoutingClarity.CLEAR,
+            ),
+            (
+                "Research consensus algorithms.",
+                AgentCapability.GENERAL,
+                RoutingClarity.AMBIGUOUS,
+            ),
+        ],
+    )
+    def test_explicit_sources_and_citations_negative_regressions(
+        self,
+        router: DeterministicCapabilityRouter,
+        prompt: str,
+        expected_capability: AgentCapability,
+        expected_clarity: RoutingClarity,
+    ) -> None:
+        assessment = router.assess(prompt)
+        assert assessment.provisional_capability == expected_capability
+        assert assessment.clarity == expected_clarity
+        assert router.route(prompt) == expected_capability
+
 
 class RouteOnlyTestDouble:
     """Test double implementing only CapabilityRouter (route), not AssessingCapabilityRouter."""

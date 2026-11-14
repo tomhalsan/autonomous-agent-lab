@@ -372,7 +372,7 @@ class TestFullDatasetBenchmarkExecution:
     def test_full_dataset_execution_completes_deterministically(self) -> None:
         result = run_benchmark(warmup=2, latency_iterations=3)
 
-        assert result.total_cases == 44
+        assert result.total_cases == 45
         assert result.clear_cases + result.ambiguous_cases == result.total_cases
         assert result.overall_correct <= result.total_cases
         assert 0.0 <= result.overall_accuracy <= 1.0
@@ -387,10 +387,10 @@ class TestFullDatasetBenchmarkExecution:
         # Confusion matrix sum must equal total cases
         assert result.confusion_matrix.total == result.total_cases
 
-        # Latency statistics must reflect the configured passes: 44 * 3 = 132 samples
+        # Latency statistics must reflect the configured passes: 45 * 3 = 135 samples
         assert result.latency.warmup_iterations == 2
         assert result.latency.measured_iterations == 3
-        assert result.latency.sample_count == 132
+        assert result.latency.sample_count == 135
         assert result.latency.mean_us > 0.0
         assert result.latency.p50_us > 0.0
         assert result.latency.min_us >= 0.0
@@ -403,9 +403,9 @@ class TestFullDatasetBenchmarkExecution:
     def test_full_dataset_execution_with_legacy_v2_baseline(self) -> None:
         result = run_benchmark(warmup=1, latency_iterations=1, legacy_v2=True)
         assert result.router_name == "LegacyRoutingV2Router"
-        assert result.total_cases == 44
-        assert result.overall_correct == 28
-        assert round(result.overall_accuracy * 100, 2) == 63.64
+        assert result.total_cases == 45
+        assert result.overall_correct == 29
+        assert round(result.overall_accuracy * 100, 2) == 64.44
 
 
 class TestValidationDatasetIntegrity:
@@ -513,24 +513,24 @@ class TestBenchmarkAdvisorSemantics:
     def test_simulated_advisor_decouples_provisional_and_final_accuracy(self) -> None:
         result = run_benchmark(warmup=0, latency_iterations=1, simulate_advisor=True)
 
-        assert result.total_cases == 44
-        assert result.clear_cases == 39
+        assert result.total_cases == 45
+        assert result.clear_cases == 40
         assert result.ambiguous_cases == 5
         assert result.advisor_consultation_count == 5
         assert result.simulated_advisor_enabled is True
 
-        # Deterministic provisional accuracy must be 100% (44/44)
-        assert result.provisional_overall_correct == 44
+        # Deterministic provisional accuracy must be 100% (45/45)
+        assert result.provisional_overall_correct == 45
         assert result.provisional_overall_accuracy == 1.0
-        assert result.provisional_clear_correct == 39
+        assert result.provisional_clear_correct == 40
         assert result.provisional_clear_accuracy == 1.0
         assert result.provisional_ambiguous_correct == 5
         assert result.provisional_ambiguous_accuracy == 1.0
 
         # Final post-simulation capability accuracy reflects synthetic override on eval-012
-        assert result.overall_correct == 43
-        assert round(result.overall_accuracy * 100, 2) == 97.73
-        assert result.clear_correct == 39
+        assert result.overall_correct == 44
+        assert round(result.overall_accuracy * 100, 2) == 97.78
+        assert result.clear_correct == 40
         assert result.clear_accuracy == 1.0
         assert result.ambiguous_correct == 4
         assert result.ambiguous_accuracy == 0.8
@@ -550,8 +550,8 @@ class TestBenchmarkAdvisorSemantics:
         assert r.is_final_correct is False
 
         report = format_benchmark_report(result)
-        assert "Provisional Capability Acc:  100.00% (44/44)" in report
-        assert "Final Capability Acc:         97.73% (43/44)" in report
+        assert "Provisional Capability Acc:  100.00% (45/45)" in report
+        assert "Final Capability Acc:         97.78% (44/45)" in report
         assert "Disagreement Source: Deterministic assessment was CORRECT; advisor recommendation changed final routing." in report
         assert "synthetic advisor override" not in report
         assert "[eval-012]" in report
@@ -560,7 +560,7 @@ class TestBenchmarkAdvisorSemantics:
     def test_clear_assessments_never_invoke_advisor(self) -> None:
         result = run_benchmark(warmup=0, latency_iterations=1, simulate_advisor=True)
         clear_results = [r for r in result.case_results if r.case.clarity == "clear"]
-        assert len(clear_results) == 39
+        assert len(clear_results) == 40
 
         for r in clear_results:
             assert r.advisor_recommendation is None
@@ -717,7 +717,7 @@ class TestBenchmarkAdvisorSemantics:
 
     def test_benchmark_run_enforces_populated_provisional_capability_invariant(self) -> None:
         result_dev = run_benchmark(warmup=0, latency_iterations=1, simulate_advisor=True)
-        assert len(result_dev.case_results) == 44
+        assert len(result_dev.case_results) == 45
         assert all(r.provisional_capability is not None for r in result_dev.case_results)
 
         result_val = run_benchmark(
@@ -727,5 +727,5 @@ class TestBenchmarkAdvisorSemantics:
             latency_iterations=1,
             simulate_advisor=True,
         )
-        assert len(result_val.case_results) == 34
+        assert len(result_val.case_results) == 35
         assert all(r.provisional_capability is not None for r in result_val.case_results)

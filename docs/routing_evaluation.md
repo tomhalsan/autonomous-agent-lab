@@ -21,13 +21,13 @@ As the platform evaluates potential improvements to capability routing (GitHub i
 
 Routing evaluation is separated into two version-controlled datasets to distinguish development iteration from regression and adversarial coverage:
 
-1. **Development Dataset** ([`evaluation/routing/dataset.json`](../evaluation/routing/dataset.json)): 44 curated test cases across 9 categories used to define and evaluate initial baseline signals. A 100% score on this dataset indicates that all known development cases pass, not universal production accuracy.
-2. **Validation Dataset** ([`evaluation/routing/validation_dataset.json`](../evaluation/routing/validation_dataset.json)): 34 diverse test cases and adversarial prompts created during the same implementation cycle. This dataset provides regression and adversarial coverage for weak-verb disambiguation, diagnostic artifacts, and edge cases.
+1. **Development Dataset** ([`evaluation/routing/dataset.json`](../evaluation/routing/dataset.json)): 45 curated test cases across 9 categories used to define and evaluate initial baseline signals. A 100% score on this dataset indicates that all known development cases pass, not universal production accuracy.
+2. **Validation Dataset** ([`evaluation/routing/validation_dataset.json`](../evaluation/routing/validation_dataset.json)): 35 diverse test cases and adversarial prompts created during the same implementation cycle. This dataset provides regression and adversarial coverage for weak-verb disambiguation, diagnostic artifacts, and edge cases.
 
 > [!IMPORTANT]
 > Development-set and validation-set metrics are always reported separately.
-> - The 44-case dataset is the primary development dataset.
-> - The 34-case validation dataset was created during the same implementation cycle; its results provide regression and adversarial coverage rather than an unbiased production-accuracy estimate.
+> - The 45-case dataset is the primary development dataset.
+> - The 35-case validation dataset was created during the same implementation cycle; its results provide regression and adversarial coverage rather than an unbiased production-accuracy estimate.
 > - An unbiased production-accuracy estimate requires a future independent lockbox dataset created independently after the implementation is frozen.
 
 ### Schema
@@ -56,8 +56,8 @@ Routing evaluation is separated into two version-controlled datasets to distingu
 
 ### Categories Covered Across Datasets
 
-- **Development Dataset (44 cases)**: `clear_general`, `clear_research`, `ambiguous_borderline`, `freshness_current_info`, `explicit_sources_evidence`, `explanatory_general`, `code_transformation`, `multi_clause_mixed`, `research_keywords_negative`.
-- **Validation Dataset (34 cases)**: `weak_verb_supplied_artifact`, `freshness_current_info`, `supported_versions_compatibility`, `changing_prices_availability`, `external_standards_guidance`, `historical_established_advances`, `negative_current_program_state`, `negative_current_electrical`, `vague_insufficient_evidence`, `mixed_supplied_and_external`, `compound_retrieval_prerequisite`, `weak_verb_alone`, `package_management_installation`, `personal_activity_temporal`, `diagnostic_evidence_supplied_artifact`, `volatile_demographic_freshness`.
+- **Development Dataset (45 cases)**: `clear_general`, `clear_research`, `ambiguous_borderline`, `freshness_current_info`, `explicit_sources_evidence`, `explanatory_general`, `code_transformation`, `multi_clause_mixed`, `research_keywords_negative`.
+- **Validation Dataset (35 cases)**: `weak_verb_supplied_artifact`, `freshness_current_info`, `supported_versions_compatibility`, `changing_prices_availability`, `external_standards_guidance`, `historical_established_advances`, `negative_current_program_state`, `negative_current_electrical`, `vague_insufficient_evidence`, `mixed_supplied_and_external`, `compound_retrieval_prerequisite`, `weak_verb_alone`, `package_management_installation`, `personal_activity_temporal`, `diagnostic_evidence_supplied_artifact`, `volatile_demographic_freshness`.
 
 ---
 
@@ -206,8 +206,8 @@ To verify the hybrid execution plumbing prior to introducing model providers (Ph
 
 | Signal Type | Target Capability | Strength | Description & Trigger Conditions |
 |---|---|---|---|
-| `EXPLICIT_SOURCES_OR_CITATIONS` | `RESEARCH` | `STRONG` | Explicit requests for literature, peer-reviewed studies, whitepapers, or source citations. |
-| `FRESHNESS_OR_CURRENT_INFO` | `RESEARCH` | `STRONG` | Reusable temporal qualifiers (`today's`, `currently supported`, `latest release`, `current guidance`). |
+| `EXPLICIT_SOURCES_OR_CITATIONS` | `RESEARCH` | `STRONG` | Explicit requests for literature, peer-reviewed studies, whitepapers, or source citations (including natural evidence-seeking variants like *cite sources*, *cite the source(s)*, or *authoritative sources*). |
+| `FRESHNESS_OR_CURRENT_INFO` | `RESEARCH` | `STRONG` | Reusable temporal qualifiers (`today's`, `currently supported`, `latest release`, `current guidance`, `current / recent / latest sources`). |
 | `CHANGING_EXTERNAL_INFO` | `RESEARCH` | `STRONG` | High-frequency changing information (`pricing tiers`, `stock market trends`, `breaking changes`). |
 | `OUTSIDE_AUTHORITY_OR_PROVIDER` | `RESEARCH` | `STRONG` | Inquiries targeting specific external conferences, standards bodies (NIST, ISO), or vulnerability registries (NVD, CVE). |
 | `RESEARCH_SYNTHESIS` | `RESEARCH` | `STRONG` | Scoped synthesis cues such as trends in a subject, a criterion-based comparison of technologies, a literature review, or a deep dive. |

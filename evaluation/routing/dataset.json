@@ -394,5 +394,14 @@
     "rationale": "Contains keyword 'compare', but evaluates Python language semantics and syntax patterns already in base training.",
     "category": "research_keywords_negative",
     "tags": ["compare_keyword", "python", "semantics"]
+  },
+  {
+    "id": "eval-045",
+    "prompt": "Cite the sources comparing optimistic and pessimistic concurrency control in distributed databases.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Explicit demand to cite external sources comparing concurrency control mechanisms requires research retrieval.",
+    "category": "explicit_sources_evidence",
+    "tags": ["citations", "sources", "concurrency"]
   }
 ]

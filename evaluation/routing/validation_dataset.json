@@ -304,5 +304,14 @@
     "rationale": "Inquires about volatile global demographic statistics ('alive on Earth right now') requiring real-time external factual retrieval.",
     "category": "volatile_demographic_freshness",
     "tags": ["freshness", "population", "demographics"]
+  },
+  {
+    "id": "val-035",
+    "prompt": "Use current authoritative sources to analyze the operational reliability of modern BFT consensus protocols.",
+    "expected_capability": "research",
+    "clarity": "clear",
+    "rationale": "Explicitly requests current authoritative sources for technical analysis, providing strong research signals for both freshness and authoritative evidence.",
+    "category": "freshness_current_info",
+    "tags": ["sources", "authoritative", "freshness", "consensus"]
   }
 ]
