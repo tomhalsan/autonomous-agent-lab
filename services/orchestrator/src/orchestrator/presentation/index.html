@@ -4,26 +4,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Autonomous Agent Lab</title>
+  <title>Tiny Agent Lab | Prototype Console</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
   <link rel="shortcut icon" href="/static/favicon.ico">
   <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
   <style>
     :root {
-      --bg-canvas: #080e1a;
-      --bg-panel: #0f172a;
-      --bg-panel-elevated: #162035;
-      --bg-input: #0a1120;
-      --border-subtle: #1e293b;
-      --border-focus: #38bdf8;
-      --border-active: #2563eb;
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
-      --text-faint: #64748b;
-      --accent-cyan: #38bdf8;
-      --accent-indigo: #818cf8;
-      --accent-blue: #3b82f6;
+      color-scheme: dark;
+      --bg-canvas: #17191d;
+      --bg-panel: #202329;
+      --bg-panel-elevated: #292d34;
+      --bg-input: #17191d;
+      --border-subtle: #3a3e46;
+      --border-focus: #8bb2ff;
+      --border-active: #2456b8;
+      --text-main: #ece9e1;
+      --text-muted: #b7b9bd;
+      --text-faint: #a0a5ad;
+      --accent-cyan: #8bb2ff;
+      --accent-indigo: #a9afff;
+      --accent-blue: #8bb2ff;
       --state-idle: #34d399;
       --state-idle-bg: rgba(52, 211, 153, 0.12);
       --state-working: #fbbf24;
@@ -33,8 +34,11 @@
       --state-fallback: #f59e0b;
       --state-fallback-bg: rgba(245, 158, 11, 0.08);
       --state-fallback-border: rgba(245, 158, 11, 0.35);
-      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --shell-width: 1320px;
+      --shell-gutter: 24px;
+      --radius-small: 4px;
     }
 
     * {
@@ -43,6 +47,7 @@
 
     body {
       margin: 0;
+      min-height: 100vh;
       font-family: var(--font-sans);
       background-color: var(--bg-canvas);
       color: var(--text-main);
@@ -50,19 +55,25 @@
       -webkit-font-smoothing: antialiased;
     }
 
+    :focus-visible {
+      outline: 2px solid var(--border-focus);
+      outline-offset: 3px;
+    }
+
+    a {
+      color: var(--accent-cyan);
+      text-underline-offset: 0.15em;
+    }
+
     .app-header {
       border-bottom: 1px solid var(--border-subtle);
-      background: rgba(15, 23, 42, 0.85);
-      backdrop-filter: blur(12px);
-      position: sticky;
-      top: 0;
-      z-index: 20;
+      background: var(--bg-panel);
     }
 
     .header-content {
-      max-width: 1320px;
+      max-width: var(--shell-width);
       margin: 0 auto;
-      padding: 16px 24px;
+      padding: 18px var(--shell-gutter);
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -72,59 +83,58 @@
     .brand-group {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
+      min-width: 0;
     }
 
     .brand-logo {
-      width: 44px;
-      height: 44px;
-      border-radius: 10px;
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-small);
       flex-shrink: 0;
-      box-shadow: 0 0 16px rgba(56, 189, 248, 0.2);
-      border: 1px solid rgba(56, 189, 248, 0.25);
+      border: 1px solid var(--border-subtle);
       object-fit: cover;
       display: block;
     }
 
+    .brand-kicker {
+      margin: 0 0 2px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
     .brand-title {
-      font-size: 1.25rem;
+      font-size: 1.125rem;
       font-weight: 700;
       letter-spacing: -0.02em;
       margin: 0;
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      line-height: 1.25;
       color: var(--text-main);
     }
 
-    .brand-title .lab-badge {
-      font-family: var(--font-mono);
-      font-size: 0.6875rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      background: rgba(56, 189, 248, 0.12);
-      color: var(--accent-cyan);
-      border: 1px solid rgba(56, 189, 248, 0.3);
-      border-radius: 6px;
-      padding: 2px 7px;
-    }
-
-    .brand-title .version-badge {
+    .brand-meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 4px;
+      color: var(--text-muted);
       font-family: var(--font-mono);
       font-size: 0.6875rem;
       letter-spacing: 0.04em;
-      background: rgba(148, 163, 184, 0.1);
-      color: var(--text-muted);
-      border: 1px solid rgba(148, 163, 184, 0.25);
-      border-radius: 6px;
-      padding: 2px 7px;
-      font-weight: 500;
     }
 
-    .brand-subtitle {
-      font-size: 0.8125rem;
-      color: var(--text-muted);
-      margin: 3px 0 0 0;
+    .lab-badge {
+      text-transform: uppercase;
+    }
+
+    .version-badge {
+      border-left: 1px solid var(--border-subtle);
+      padding-left: 8px;
+      font-variant-numeric: tabular-nums;
     }
 
     .system-status {
@@ -133,10 +143,9 @@
       gap: 8px;
       font-size: 0.75rem;
       font-family: var(--font-mono);
-      background: var(--bg-panel);
       border: 1px solid var(--border-subtle);
-      border-radius: 9999px;
-      padding: 6px 14px;
+      border-radius: var(--radius-small);
+      padding: 6px 10px;
       color: var(--text-muted);
     }
 
@@ -145,18 +154,17 @@
       height: 8px;
       border-radius: 50%;
       background: var(--state-idle);
-      box-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
+      flex-shrink: 0;
     }
 
     .status-dot.offline {
       background: var(--state-error);
-      box-shadow: 0 0 8px rgba(248, 113, 113, 0.4);
     }
 
     .main-wrap {
-      max-width: 1320px;
+      max-width: var(--shell-width);
       margin: 0 auto;
-      padding: 24px;
+      padding: 24px var(--shell-gutter);
     }
 
     .console-grid {
@@ -233,9 +241,7 @@
     }
 
     textarea#prompt:focus-visible {
-      outline: none;
       border-color: var(--border-focus);
-      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
     }
 
     textarea#prompt:disabled {
@@ -1306,12 +1312,12 @@
 
     /* Responsive */
     @media (max-width: 960px) {
-      .console-grid {
-        grid-template-columns: 1fr;
+      :root {
+        --shell-gutter: 16px;
       }
 
-      .main-wrap {
-        padding: 16px;
+      .console-grid {
+        grid-template-columns: 1fr;
       }
     }
 
@@ -1329,19 +1335,13 @@
       .brand-logo {
         width: 38px;
         height: 38px;
-        border-radius: 8px;
-      }
-
-      .brand-title {
-        flex-wrap: wrap;
-        font-size: 1.125rem;
       }
     }
 
     .app-footer {
       border-top: 1px solid var(--border-subtle);
       margin-top: 48px;
-      padding: 24px;
+      padding: 24px var(--shell-gutter);
       text-align: center;
       font-size: 0.75rem;
       color: var(--text-faint);
@@ -1349,7 +1349,7 @@
     }
 
     .footer-content {
-      max-width: 1320px;
+      max-width: var(--shell-width);
       margin: 0 auto;
       display: flex;
       justify-content: center;
@@ -1369,14 +1369,14 @@
   <header class="app-header">
     <div class="header-content">
       <div class="brand-group">
-        <img src="/static/logo.png" alt="Autonomous Agent Lab logo" class="brand-logo" width="44" height="44">
+        <img src="/static/logo.png" alt="Tiny Robot Lab robot" class="brand-logo" width="40" height="40">
         <div>
-          <h1 class="brand-title">
-            Autonomous Agent Lab
+          <p class="brand-kicker">Tiny Robot Lab</p>
+          <h1 class="brand-title">Tiny Agent Lab</h1>
+          <div class="brand-meta">
             <span class="lab-badge">Prototype Console</span>
             <span class="version-badge">v0.4.0</span>
-          </h1>
-          <p class="brand-subtitle">A generic platform for experimenting with autonomous-agent patterns.</p>
+          </div>
         </div>
       </div>
       <div class="system-status" id="system-status-indicator">
@@ -1515,7 +1515,7 @@
 
   <footer class="app-footer">
     <div class="footer-content">
-      <span>Autonomous Agent Lab</span>
+      <span>Tiny Agent Lab</span>
       <span class="footer-sep">•</span>
       <span>v0.4.0</span>
       <span class="footer-sep">•</span>

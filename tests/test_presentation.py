@@ -61,7 +61,7 @@ async def test_dashboard_displays_primary_logo() -> None:
     html = await dashboard()
     assert '<img src="/static/logo.png"' in html
     assert 'class="brand-logo"' in html
-    assert 'alt="Autonomous Agent Lab logo"' in html
+    assert 'alt="Tiny Robot Lab robot"' in html
     assert 'class="brand-group"' in html
 
 
@@ -349,8 +349,10 @@ async def test_dashboard_endpoint_serves_console() -> None:
     assert app is not None
     html_content = await dashboard()
     assert "<!doctype html>" in html_content
-    assert "Autonomous Agent Lab" in html_content
-    assert "A generic platform for experimenting with autonomous-agent patterns." in html_content
+    assert "<title>Tiny Agent Lab | Prototype Console</title>" in html_content
+    assert '<h1 class="brand-title">Tiny Agent Lab</h1>' in html_content
+    assert '<p class="brand-kicker">Tiny Robot Lab</p>' in html_content
+    assert "Autonomous Agent Lab" not in html_content
 
 
 @pytest.mark.anyio
