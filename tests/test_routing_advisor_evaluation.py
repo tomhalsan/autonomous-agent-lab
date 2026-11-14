@@ -94,8 +94,8 @@ class TestCliIntegrationAndValidation:
         assert ret == 0
         captured = capsys.readouterr().out
         assert "ROUTING BENCHMARK REPORT: DeterministicCapabilityRouter" in captured
-        assert "Provisional Capability Acc:  100.00% (44/44)" in captured
-        assert "Final Capability Acc:        100.00% (44/44)" in captured
+        assert "Provisional Capability Acc:  100.00% (45/45)" in captured
+        assert "Final Capability Acc:        100.00% (45/45)" in captured
         assert "SIMULATED ADVISOR PLUMBING VALIDATION" not in captured
         assert "MODEL ADVISOR EXPERIMENTAL CONFIGURATION" not in captured
 
@@ -107,8 +107,8 @@ class TestCliIntegrationAndValidation:
         assert "SIMULATED ADVISOR PLUMBING VALIDATION" in captured
         assert "Total Ambiguous Eligible:          5" in captured
         assert "Clear Assessment Invocations:      0" in captured
-        assert "Provisional Capability Acc:  100.00% (44/44)" in captured
-        assert "Final Capability Acc:         97.73% (43/44)" in captured
+        assert "Provisional Capability Acc:  100.00% (45/45)" in captured
+        assert "Final Capability Acc:         97.78% (44/45)" in captured
 
     def test_18_cli_rejects_missing_ollama_model(self) -> None:
         """Selecting --advisor-provider ollama without --ollama-model raises ValueError."""
@@ -349,8 +349,8 @@ class TestAdvisorScoringAndAuthorityInvariants:
             latency_iterations=1,
         )
 
-        # All 39 clear cases remain 100% provisional and final correct
-        assert result.clear_cases == 39
+        # All 40 clear cases remain 100% provisional and final correct
+        assert result.clear_cases == 40
         assert result.provisional_clear_accuracy == 1.0
         assert result.final_clear_accuracy == 1.0
         assert result.advisor_clear_invocation_count == 0
@@ -441,7 +441,7 @@ class TestTelemetryAndLatencySeparation:
 
             # Deterministic latency is in microseconds (µs)
             assert result.latency.mean_us > 0.0
-            assert result.latency.sample_count == 44 * 5
+            assert result.latency.sample_count == 45 * 5
 
             # Advisor latency is in nanoseconds (ns) and calculated only over ambiguous cases (5 cases)
             assert result.advisor_latency is not None
@@ -523,9 +523,9 @@ class TestTelemetryAndLatencySeparation:
                 latency_iterations=1,
             )
 
-            # Accuracy still scored across exactly 44 dataset cases
-            assert result.total_cases == 44
-            assert len(result.case_results) == 44
+            # Accuracy still scored across exactly 45 dataset cases
+            assert result.total_cases == 45
+            assert len(result.case_results) == 45
 
             # Warm latency sample count is exactly 5 (the 5 ambiguous cases), excluding the cold probe
             assert result.advisor_latency is not None

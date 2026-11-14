@@ -103,13 +103,13 @@ RESEARCH_INTENT_PATTERNS: Mapping[ResearchIntentCategory, list[str]] = {
         r"\bexplor(e|ed|es|ing|ation|ations)\b",
     ],
     ResearchIntentCategory.FRESHNESS_AND_CURRENT_INFO: [
-        r"\blatest\s+(developments?|news|trends?|updates?|findings?|releases?|advancements?|breakthroughs?|reports?|data|information|research|status|state|cves?|vulnerabilities?|pricing)\b",
+        r"\blatest\s+(developments?|news|trends?|updates?|findings?|releases?|advancements?|breakthroughs?|reports?|data|information|research|status|state|cves?|vulnerabilities?|pricing|sources?\b(?!\s+code\b)|literature)\b",
         r"\blatest\s+(on|about|regarding)\b",
         r"\bwhat('s|\s+is|\s+are)\s+(the\s+)?latest\b",
-        r"\bcurrent\s+(information|state|status|trends?|market|data|developments?|landscape|adoption|events?|news|progress|statistics|prime\s+minister|president|ceo|leader|pricing|features?|release\s+status|guidance|standards?)\b",
+        r"\bcurrent\s+(information|state|status|trends?|market|data|developments?|landscape|adoption|events?|news|progress|statistics|prime\s+minister|president|ceo|leader|pricing|features?|release\s+status|guidance|standards?|sources?\b(?!\s+code\b)|literature)\b",
         r"\bcurrent\s+(information|data|details|status)\s+(about|on|regarding|for)\b",
         r"\bwhat('s|\s+is|\s+are)\s+(the\s+)?current\s+(state|status|situation|landscape)\b",
-        r"\brecent\s+(developments?|news|trends?|updates?|advancements?|breakthroughs?|changes|events?|reports?|findings?|outages?|cves?)\b",
+        r"\brecent\s+(developments?|news|trends?|updates?|advancements?|breakthroughs?|changes|events?|reports?|findings?|outages?|cves?|sources?\b(?!\s+code\b)|literature)\b",
         r"\bmost\s+recent\s+(cves?|vulnerabilities?|developments?|releases?|announcements?|outages?)\b",
         r"\bup-?to-?date\s+(information|data|details|status|overview|developments?|news|pricing)\b",
         r"\bstate-?of-?the-?art\b",
@@ -118,11 +118,11 @@ RESEARCH_INTENT_PATTERNS: Mapping[ResearchIntentCategory, list[str]] = {
         r"\b(this\s+week|this\s+month|trending\s+.*?\s+this\s+month)\b",
     ],
     ResearchIntentCategory.SOURCES_AND_EVIDENCE: [
-        r"\b(find|search\s+for|look\s+up|gather|collect|provide|retrieve|cite|give\s+me)\s+(sources?|citations?|references?|papers?|articles?|literature)\b(?!\s+code\b)",
-        r"\b(sources?|citations?|references?|literature)\s+(about|on|for|regarding)\b",
+        r"\b(find|search\s+for|look\s+up|gather|collect|provide|retrieve|cite|give\s+me)\s+(?:the\s+)?(sources?|citations?|references?|papers?|articles?|literature)\b(?!\s+code\b)",
+        r"\b(sources?|citations?|references?|literature)\b(?!\s+code\b)\s+(about|on|for|regarding)\b",
         r"\b(find|search\s+for|look\s+up|gather|collect|provide|retrieve)\s+evidence\b",
         r"\bevidence\s+(for|against|about|on|regarding|of)\b",
-        r"\b(primary\s+sources?|empirical\s+(studies|evidence)|peer-?reviewed|medical\s+literature|whitepapers?)\b",
+        r"\b(primary\s+sources?|authoritative\s+sources?|empirical\s+(studies|evidence)|peer-?reviewed|medical\s+literature|whitepapers?)\b(?!\s+code\b)",
         r"\b(find|search\s+for|look\s+up|retrieve|gather)\s+(current|recent|up-?to-?date)\s+information\b",
     ],
 }
@@ -183,6 +183,7 @@ def _is_false_freshness(prompt: str, match_text: str) -> bool:
                 "vulnerabilities",
                 "outages",
                 "market",
+                "sources",
             )
         ):
             return False
@@ -199,14 +200,14 @@ STRONG_RESEARCH_PATTERNS: list[tuple[RoutingSignalType, re.Pattern[str]]] = [
     (
         RoutingSignalType.EXPLICIT_SOURCES_OR_CITATIONS,
         re.compile(
-            r"\b(find|search\s+for|look\s+up|gather|collect|provide|retrieve|cite|give\s+me)\s+(sources?|citations?|references?|papers?|articles?|literature)\b(?!\s+code\b)|\b(sources?|citations?|references?|literature)\s+(about|on|for|regarding)\b|\b(find|search\s+for|look\s+up|gather|collect|provide|retrieve)\s+evidence\b|\bevidence\s+(for|against|about|on|regarding|of)\b|\b(primary\s+sources?|empirical\s+(studies|evidence)|peer-?reviewed(\s+literature|\s+evidence|\s+papers?)?|medical\s+literature|whitepapers?)\b|\bpublished\s+benchmarks?\b",
+            r"\b(find|search\s+for|look\s+up|gather|collect|provide|retrieve|cite|give\s+me)\s+(?:the\s+)?(sources?|citations?|references?|papers?|articles?|literature)\b(?!\s+code\b)|\b(sources?|citations?|references?|literature)\b(?!\s+code\b)\s+(about|on|for|regarding)\b|\b(find|search\s+for|look\s+up|gather|collect|provide|retrieve)\s+evidence\b|\bevidence\s+(for|against|about|on|regarding|of)\b|\b(primary\s+sources?|authoritative\s+sources?|empirical\s+(studies|evidence)|peer-?reviewed(\s+literature|\s+evidence|\s+papers?)?|medical\s+literature|whitepapers?)\b(?!\s+code\b)|\bpublished\s+benchmarks?\b",
             re.IGNORECASE,
         ),
     ),
     (
         RoutingSignalType.FRESHNESS_OR_CURRENT_INFO,
         re.compile(
-            r"\b(is\s+|are\s+)?(currently|presently|now)\s+supported\b|\bsupported\s+(by|in)\s+(the\s+)?(latest|current|newest|recent)\b|\b(latest|current|recent|newest)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(developments?|news|trends?|updates?|findings?|releases?|advancements?|advances|breakthroughs?|reports?|data|information|research|status|state|cves?|vulnerabilities?|pricing|version|build|lts|guidance|standards?|edition|algorithms?|protocols?|approaches?|tools?|techniques?|papers?|systems?|architectures?|benchmarks?|recommendations?)\b|\b(current|latest|present)\s+status\s+of\s+(the\s+)?([a-zA-Z0-9_\-\.]+\s+){0,3}(release|version|build)\b|\b(today(\x27s|\x19s|\x27s)?|current|latest|recent|up-?to-?date)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(pricing|prices?|rates?|costs?|tiers?|plans?|fees?)\b|\b(pricing|pricing\s+tiers?|rates?|costs?)\s+as\s+of\b|\b(latest|recent|most\s+recent|new|current)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(cves?|vulnerabilities?|security\s+advisories?|exploits?|bulletins?)\b|\bwho\s+is\s+(the\s+)?current\b|\bcurrent\s+(prime\s+minister|president|vice\s+president|ceo|cto|cfo|governor|senator|chancellor|director|leader)\b|\bcurrent\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(information|state|status|trends?|market|data|developments?|landscape|adoption|events?|news|progress|statistics|guidance|standards?)\b|\b(find|search\s+for|look\s+up|retrieve|gather)\s+(current|recent|up-?to-?date)\s+information\b|\b(new\s+features?|breaking\s+changes|deprecations?|announcements?)\s+.*?\s+(latest|recent|newest)\s+(release|version)\b|\b(current|latest|recent)\s+features?\s+(and|&)\s+pricing\b|\b(latest|recent|current)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(market\s+trends?|stock\s+trends?|stock\s+market|market\s+conditions?)\b|\btrending\s+.*?\s+this\s+month\b|\b(recent|latest|current)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(outages?|downtime|service\s+status|availability)\b|\bas of\s+(today|now|recently|this\s+month|this\s+year|202[4-9])\b|\b([a-zA-Z0-9_\-\.]+\s+){0,3}(trends?|developments?|news|releases?|outages?|cves?|vulnerabilities?|announcements?)\s+(this\s+week|this\s+month)\b|\b(how\s+many\s+(people|humans)|population|inhabitants)\b.*?\b(alive|living|on\s+earth|in\s+the\s+world|globally|worldwide)\b.*?\b(right\s+now|today|currently|at\s+present)\b|\bhow\s+many\s+people\s+are\s+alive\b|\bwhat(\x27s|\s+is|\s+are)\s+(the\s+)?latest\b|\bwhat(\x27s|\s+is|\s+are)\s+(the\s+)?current\s+(state|status|situation|landscape)\b|\bup-?to-?date\s+(information|data|details|status|overview|developments?|news|pricing)\b",
+            r"\b(is\s+|are\s+)?(currently|presently|now)\s+supported\b|\bsupported\s+(by|in)\s+(the\s+)?(latest|current|newest|recent)\b|\b(latest|current|recent|newest)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(developments?|news|trends?|updates?|findings?|releases?|advancements?|advances|breakthroughs?|reports?|data|information|research|status|state|cves?|vulnerabilities?|pricing|version|build|lts|guidance|standards?|edition|algorithms?|protocols?|approaches?|tools?|techniques?|papers?|systems?|architectures?|benchmarks?|recommendations?|sources?\b(?!\s+code\b)|literature)\b|\b(current|latest|present)\s+status\s+of\s+(the\s+)?([a-zA-Z0-9_\-\.]+\s+){0,3}(release|version|build)\b|\b(today(\x27s|\x19s|\x27s)?|current|latest|recent|up-?to-?date)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(pricing|prices?|rates?|costs?|tiers?|plans?|fees?)\b|\b(pricing|pricing\s+tiers?|rates?|costs?)\s+as\s+of\b|\b(latest|recent|most\s+recent|new|current)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(cves?|vulnerabilities?|security\s+advisories?|exploits?|bulletins?)\b|\bwho\s+is\s+(the\s+)?current\b|\bcurrent\s+(prime\s+minister|president|vice\s+president|ceo|cto|cfo|governor|senator|chancellor|director|leader)\b|\bcurrent\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(information|state|status|trends?|market|data|developments?|landscape|adoption|events?|news|progress|statistics|guidance|standards?)\b|\b(find|search\s+for|look\s+up|retrieve|gather)\s+(current|recent|up-?to-?date)\s+information\b|\b(new\s+features?|breaking\s+changes|deprecations?|announcements?)\s+.*?\s+(latest|recent|newest)\s+(release|version)\b|\b(current|latest|recent)\s+features?\s+(and|&)\s+pricing\b|\b(latest|recent|current)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(market\s+trends?|stock\s+trends?|stock\s+market|market\s+conditions?)\b|\btrending\s+.*?\s+this\s+month\b|\b(recent|latest|current)\s+([a-zA-Z0-9_\-\.]+\s+){0,3}(outages?|downtime|service\s+status|availability)\b|\bas of\s+(today|now|recently|this\s+month|this\s+year|202[4-9])\b|\b([a-zA-Z0-9_\-\.]+\s+){0,3}(trends?|developments?|news|releases?|outages?|cves?|vulnerabilities?|announcements?)\s+(this\s+week|this\s+month)\b|\b(how\s+many\s+(people|humans)|population|inhabitants)\b.*?\b(alive|living|on\s+earth|in\s+the\s+world|globally|worldwide)\b.*?\b(right\s+now|today|currently|at\s+present)\b|\bhow\s+many\s+people\s+are\s+alive\b|\bwhat(\x27s|\s+is|\s+are)\s+(the\s+)?latest\b|\bwhat(\x27s|\s+is|\s+are)\s+(the\s+)?current\s+(state|status|situation|landscape)\b|\bup-?to-?date\s+(information|data|details|status|overview|developments?|news|pricing)\b",
             re.IGNORECASE,
         ),
     ),
