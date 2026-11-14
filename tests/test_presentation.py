@@ -1565,3 +1565,246 @@ def test_agent_card_inference_provider_source_authority_resolution() -> None:
     assert raw_legacy_no_provs == "stub"
     assert parse_inference_providers(raw_legacy_no_provs) == ["stub"]
 
+
+# ==============================================================================
+# Issue #29: Display Agent Tool Usage in Prototype Console Tests
+# ==============================================================================
+
+
+@pytest.mark.anyio
+async def test_timeline_tool_css_and_presentation_hooks_exist() -> None:
+    html = await dashboard()
+
+    # CSS hooks for tool timeline entries, callouts, and state pills
+    assert ".timeline-entry.tool" in html
+    assert ".timeline-entry:has(.timeline-tool-callout)" in html
+    assert ".state-pill.tool" in html
+    assert ".state-pill.tool-failed" in html
+    assert ".timeline-tool-callout" in html
+    assert ".timeline-tool-callout.tool-failed" in html
+    assert ".timeline-tool-header" in html
+    assert ".timeline-tool-identity" in html
+    assert ".timeline-tool-name" in html
+    assert ".timeline-tool-call-id" in html
+    assert ".timeline-tool-badge" in html
+    assert ".timeline-tool-badge.succeeded" in html
+    assert ".timeline-tool-badge.failed" in html
+    assert ".timeline-tool-meta" in html
+    assert ".timeline-tool-meta .meta-val.error-code" in html
+
+
+@pytest.mark.anyio
+async def test_timeline_parse_tool_telemetry_structure_and_safety() -> None:
+    html = await dashboard()
+
+    assert "function parseToolTelemetry(" in html
+    parse_tool_fn = html.split("function parseToolTelemetry(")[1].split("function parseFallbackTransition(")[0]
+
+    # Catches parse error and returns null safely
+    assert "catch {" in parse_tool_fn
+    assert "return null;" in parse_tool_fn
+
+    # Validates string JSON and object forms safely
+    assert "JSON.parse(trimmed)" in parse_tool_fn
+    assert "Array.isArray(payload)" in parse_tool_fn
+    assert "payload === null" in parse_tool_fn
+
+    # Validates required tool telemetry attributes
+    assert "typeof payload.tool_name === 'string'" in parse_tool_fn
+    assert "payload.tool_name.trim()" in parse_tool_fn
+    assert "outcome !== 'succeeded' && outcome !== 'failed'" in parse_tool_fn
+    assert "typeof payload.duration_ms === 'number'" in parse_tool_fn
+    assert "Number.isFinite(payload.duration_ms)" in parse_tool_fn
+
+    # Safely parses optional argument and result byte counts
+    assert "typeof payload.argument_size_bytes === 'number'" in parse_tool_fn
+    assert "Number.isInteger(payload.argument_size_bytes)" in parse_tool_fn
+    assert "payload.argument_size_bytes >= 0" in parse_tool_fn
+    assert "typeof payload.result_size_bytes === 'number'" in parse_tool_fn
+    assert "Number.isInteger(payload.result_size_bytes)" in parse_tool_fn
+    assert "payload.result_size_bytes >= 0" in parse_tool_fn
+
+    # Safely parses error_code without arbitrary message
+    assert "typeof payload.error_code === 'string'" in parse_tool_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_tool_render_events_state_pill_not_idle() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Tool events with state=None are distinctly mapped to tool/tool:failed rather than idle
+    assert "const toolTelem = parseToolTelemetry(e.tool_execution_telemetry);" in render_events_fn
+    assert "const isTool = toolTelem !== null;" in render_events_fn
+    assert "if (isTool) {" in render_events_fn
+    assert "stateClass = isFailed ? 'tool-failed' : 'tool';" in render_events_fn
+    assert "displayState = isFailed ? 'tool:failed' : 'tool';" in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_tool_render_events_success_and_metadata_presentation() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Tool callout rendering hooks
+    assert '<div class="timeline-tool-callout' in render_events_fn
+    assert '<span class="timeline-tool-name">${esc(toolTelem.tool_name)}</span>' in render_events_fn
+    assert '<span class="timeline-tool-badge ${isFailed ? \'failed\' : \'succeeded\'}">${esc(toolTelem.outcome)}</span>' in render_events_fn
+    assert '<span class="meta-label">Duration:</span>' in render_events_fn
+    assert '<span class="meta-val">${esc(formatDuration(toolTelem.duration_ms))}</span>' in render_events_fn
+
+    # Byte counts rendered when present
+    assert "if (toolTelem.argument_size_bytes !== null) {" in render_events_fn
+    assert '<span class="meta-label">Args:</span>' in render_events_fn
+    assert '<span class="meta-val">${toolTelem.argument_size_bytes} B</span>' in render_events_fn
+    assert "if (toolTelem.result_size_bytes !== null) {" in render_events_fn
+    assert '<span class="meta-label">Result:</span>' in render_events_fn
+    assert '<span class="meta-val">${toolTelem.result_size_bytes} B</span>' in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_tool_render_events_failure_and_error_code() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Failed outcome includes error code when present
+    assert "if (isFailed && toolTelem.error_code) {" in render_events_fn
+    assert '<span class="meta-label">Error:</span>' in render_events_fn
+    assert '<span class="meta-val error-code">${esc(toolTelem.error_code)}</span>' in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_tool_task_correlation_and_absence_handling() -> None:
+    html = await dashboard()
+
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Uses effective task ID and omits tag when absent without rendering undefined/null
+    assert "const effectiveTaskId = (typeof e.task_id === 'string' && e.task_id.trim())" in render_events_fn
+    assert "Task: undefined" not in render_events_fn
+    assert "Task: null" not in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_timeline_tool_security_sentinels_never_expected_or_rendered() -> None:
+    html = await dashboard()
+
+    parse_tool_fn = html.split("function parseToolTelemetry(")[1].split("function parseFallbackTransition(")[0]
+    render_events_fn = html.split("function renderEvents(")[1].split("// --- Lifecycle Cleanups ---")[0]
+
+    # Verifies raw argument/result/exception fields are not extracted
+    assert "payload.arguments" not in parse_tool_fn
+    assert "payload.output" not in parse_tool_fn
+    assert "payload.results" not in parse_tool_fn
+    assert "payload.result_value" not in parse_tool_fn
+    assert "payload.exception" not in parse_tool_fn
+    assert "payload.stack" not in parse_tool_fn
+    assert "payload.traceback" not in parse_tool_fn
+    assert "payload.prompt" not in parse_tool_fn
+
+    # Verifies callout HTML does not display raw payload or detail as tool data
+    assert "toolTelem.arguments" not in render_events_fn
+    assert "toolTelem.results" not in render_events_fn
+    assert "toolTelem.output" not in render_events_fn
+    assert "toolTelem.exception" not in render_events_fn
+    assert "toolTelem.stack" not in render_events_fn
+
+
+@pytest.mark.anyio
+async def test_api_events_serves_tool_execution_telemetry_success() -> None:
+    from agent_contracts import AgentEvent, ToolExecutionTelemetry
+
+    telemetry = ToolExecutionTelemetry(
+        tool_name="web_search",
+        agent_id="research-agent-1",
+        call_id="call-telemetry-success-1",
+        duration_ms=14.5,
+        outcome="succeeded",
+        argument_size_bytes=42,
+        result_size_bytes=256,
+        task_id="task-tool-success-1",
+    )
+    event = AgentEvent.create(
+        agent_id="research-agent-1",
+        state=None,
+        detail="Tool execution telemetry",
+        task_id=telemetry.task_id,
+        tool_execution_telemetry=telemetry,
+    )
+    fake_reader = FakeStateReader(events_data=[event.to_dict()])
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+    res = await events(request=req, limit=5)
+
+    assert len(res) == 1
+    ev = res[0]
+    assert ev["task_id"] == "task-tool-success-1"
+    assert ev.get("state") is None
+    telem_dict = (
+        json.loads(ev["tool_execution_telemetry"])
+        if isinstance(ev["tool_execution_telemetry"], str)
+        else ev["tool_execution_telemetry"]
+    )
+    assert telem_dict["tool_name"] == "web_search"
+    assert telem_dict["agent_id"] == "research-agent-1"
+    assert telem_dict["call_id"] == "call-telemetry-success-1"
+    assert telem_dict["outcome"] == "succeeded"
+    assert telem_dict["duration_ms"] == 14.5
+    assert telem_dict["argument_size_bytes"] == 42
+    assert telem_dict["result_size_bytes"] == 256
+    assert "error_code" not in telem_dict
+
+
+@pytest.mark.anyio
+async def test_api_events_serves_tool_execution_telemetry_failure_with_error_code() -> None:
+    from agent_contracts import AgentEvent, ToolErrorCode, ToolExecutionTelemetry
+
+    telemetry = ToolExecutionTelemetry(
+        tool_name="database_query",
+        agent_id="worker-1",
+        call_id="call-telemetry-fail-2",
+        duration_ms=500.0,
+        outcome="failed",
+        argument_size_bytes=100,
+        result_size_bytes=None,
+        task_id="task-tool-fail-2",
+        error_code=ToolErrorCode.TIMEOUT,
+    )
+    event = AgentEvent.create(
+        agent_id="worker-1",
+        state=None,
+        detail="Tool execution telemetry",
+        task_id=telemetry.task_id,
+        tool_execution_telemetry=telemetry,
+    )
+    fake_reader = FakeStateReader(events_data=[event.to_dict()])
+    app = create_app(
+        settings=Settings(redis_url="redis://fake:6379/9", app_env="test"),
+        state_reader=fake_reader,
+    )
+    req = Request({"type": "http", "app": app})
+    res = await events(request=req, limit=5)
+
+    assert len(res) == 1
+    ev = res[0]
+    assert ev["task_id"] == "task-tool-fail-2"
+    assert ev.get("state") is None
+    telem_dict = (
+        json.loads(ev["tool_execution_telemetry"])
+        if isinstance(ev["tool_execution_telemetry"], str)
+        else ev["tool_execution_telemetry"]
+    )
+    assert telem_dict["tool_name"] == "database_query"
+    assert telem_dict["agent_id"] == "worker-1"
+    assert telem_dict["outcome"] == "failed"
+    assert telem_dict["duration_ms"] == 500.0
+    assert telem_dict["argument_size_bytes"] == 100
+    assert telem_dict["result_size_bytes"] is None
+    assert telem_dict["error_code"] == "timeout"
+

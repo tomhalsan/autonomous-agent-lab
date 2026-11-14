@@ -883,6 +883,18 @@
       border: 1px solid rgba(245, 158, 11, 0.4);
     }
 
+    .state-pill.tool {
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+    }
+
+    .state-pill.tool-failed {
+      background: var(--state-error-bg);
+      color: var(--state-error);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+    }
+
     .state-pill.unknown {
       background: rgba(148, 163, 184, 0.1);
       color: var(--text-muted);
@@ -1102,6 +1114,132 @@
       font-family: var(--font-mono);
       color: var(--text-muted);
       overflow-wrap: anywhere;
+    }
+
+    /* Tool Timeline Entry Highlight (Issue #29) */
+    .timeline-entry.tool,
+    .timeline-entry:has(.timeline-tool-callout) {
+      border-left: 3px solid var(--accent-cyan);
+      background: rgba(56, 189, 248, 0.04);
+    }
+
+    .timeline-entry.tool:hover,
+    .timeline-entry:has(.timeline-tool-callout):hover {
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .timeline-entry.tool.tool-failed,
+    .timeline-entry:has(.timeline-tool-callout.tool-failed) {
+      border-left: 3px solid var(--state-error);
+      background: var(--state-error-bg);
+    }
+
+    .timeline-entry.tool.tool-failed:hover,
+    .timeline-entry:has(.timeline-tool-callout.tool-failed):hover {
+      background: rgba(248, 113, 113, 0.18);
+    }
+
+    .timeline-tool-callout {
+      margin: 6px 0;
+      padding: 6px 10px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 0.75rem;
+    }
+
+    .timeline-tool-callout.tool-failed {
+      border-color: rgba(248, 113, 113, 0.35);
+      background: rgba(248, 113, 113, 0.06);
+    }
+
+    .timeline-tool-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .timeline-tool-identity {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      color: var(--text-main);
+      overflow-wrap: anywhere;
+    }
+
+    .timeline-tool-name {
+      color: var(--accent-cyan);
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+    }
+
+    .timeline-tool-call-id {
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+      font-size: 0.6875rem;
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .timeline-tool-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 0.625rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 1px 6px;
+      border-radius: 9999px;
+    }
+
+    .timeline-tool-badge.succeeded {
+      background: var(--state-idle-bg);
+      color: var(--state-idle);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+    }
+
+    .timeline-tool-badge.failed {
+      background: var(--state-error-bg);
+      color: var(--state-error);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+    }
+
+    .timeline-tool-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--text-faint);
+      font-size: 0.6875rem;
+    }
+
+    .timeline-tool-meta .meta-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    .timeline-tool-meta .meta-label {
+      color: var(--text-faint);
+    }
+
+    .timeline-tool-meta .meta-val {
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      overflow-wrap: anywhere;
+    }
+
+    .timeline-tool-meta .meta-val.error-code {
+      color: var(--state-error);
     }
 
     .timeline-header {
@@ -2312,6 +2450,86 @@
       }).join('');
     }
 
+    function formatDuration(ms) {
+      if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+        return '';
+      }
+      if (ms < 1) {
+        return '< 1 ms';
+      }
+      if (ms < 1000) {
+        return `${Number(ms.toFixed(1))} ms`;
+      }
+      return `${Number((ms / 1000).toFixed(2))} s`;
+    }
+
+    function parseToolTelemetry(raw) {
+      if (!raw) return null;
+      let payload = raw;
+      if (typeof payload === 'string') {
+        const trimmed = payload.trim();
+        if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+          return null;
+        }
+        try {
+          payload = JSON.parse(trimmed);
+        } catch {
+          return null;
+        }
+      }
+      if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+        return null;
+      }
+      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name.trim() : '';
+      if (!toolName) {
+        return null;
+      }
+      const outcome = typeof payload.outcome === 'string' ? payload.outcome.trim().toLowerCase() : '';
+      if (outcome !== 'succeeded' && outcome !== 'failed') {
+        return null;
+      }
+      const durationMs = (typeof payload.duration_ms === 'number' && Number.isFinite(payload.duration_ms) && payload.duration_ms >= 0)
+        ? payload.duration_ms
+        : null;
+      if (durationMs === null) {
+        return null;
+      }
+
+      const result = {
+        tool_name: toolName,
+        outcome: outcome,
+        duration_ms: durationMs,
+        argument_size_bytes: null,
+        result_size_bytes: null,
+        error_code: null,
+        call_id: typeof payload.call_id === 'string' ? payload.call_id.trim() : '',
+        agent_id: typeof payload.agent_id === 'string' ? payload.agent_id.trim() : '',
+        task_id: typeof payload.task_id === 'string' && payload.task_id.trim() ? payload.task_id.trim() : null,
+      };
+
+      if (
+        typeof payload.argument_size_bytes === 'number' &&
+        Number.isInteger(payload.argument_size_bytes) &&
+        payload.argument_size_bytes >= 0
+      ) {
+        result.argument_size_bytes = payload.argument_size_bytes;
+      }
+
+      if (
+        typeof payload.result_size_bytes === 'number' &&
+        Number.isInteger(payload.result_size_bytes) &&
+        payload.result_size_bytes >= 0
+      ) {
+        result.result_size_bytes = payload.result_size_bytes;
+      }
+
+      if (typeof payload.error_code === 'string' && payload.error_code.trim()) {
+        result.error_code = payload.error_code.trim();
+      }
+
+      return result;
+    }
+
     function parseFallbackTransition(raw) {
       if (!raw) return null;
       let payload = raw;
@@ -2358,13 +2576,19 @@
       }
 
       eventsContainer.innerHTML = eventsList.map(e => {
+        const toolTelem = parseToolTelemetry(e.tool_execution_telemetry);
         const rawState = (e.state || 'idle').toLowerCase();
         const transition = parseFallbackTransition(e.fallback_transition);
         const isFallback = rawState === 'fallback' || transition !== null;
+        const isTool = toolTelem !== null;
 
         let stateClass = 'unknown';
         let displayState = rawState;
-        if (isFallback) {
+        if (isTool) {
+          const isFailed = toolTelem.outcome === 'failed';
+          stateClass = isFailed ? 'tool-failed' : 'tool';
+          displayState = isFailed ? 'tool:failed' : 'tool';
+        } else if (isFallback) {
           stateClass = 'fallback';
           displayState = 'fallback';
         } else if (rawState === 'working' || rawState === 'idle' || rawState === 'error') {
@@ -2372,7 +2596,75 @@
         }
 
         const timeFormatted = formatTime(e.occurred_at);
-        const taskTag = e.task_id ? `<span class="timeline-task" title="${esc(e.task_id)}">Task: ${esc(e.task_id.slice(0, 8))}...</span>` : '';
+        const effectiveTaskId = (typeof e.task_id === 'string' && e.task_id.trim())
+          ? e.task_id.trim()
+          : (toolTelem && typeof toolTelem.task_id === 'string' && toolTelem.task_id.trim())
+            ? toolTelem.task_id.trim()
+            : '';
+        const taskTag = effectiveTaskId
+          ? `<span class="timeline-task" title="${esc(effectiveTaskId)}">Task: ${esc(effectiveTaskId.slice(0, 8))}...</span>`
+          : '';
+
+        let toolCalloutHtml = '';
+        if (toolTelem) {
+          const isFailed = toolTelem.outcome === 'failed';
+          const metaItems = [];
+
+          metaItems.push(`
+            <span class="meta-item">
+              <span class="meta-label">Duration:</span>
+              <span class="meta-val">${esc(formatDuration(toolTelem.duration_ms))}</span>
+            </span>
+          `);
+
+          if (toolTelem.argument_size_bytes !== null) {
+            metaItems.push(`
+              <span class="meta-item">
+                <span class="meta-label">Args:</span>
+                <span class="meta-val">${toolTelem.argument_size_bytes} B</span>
+              </span>
+            `);
+          }
+
+          if (toolTelem.result_size_bytes !== null) {
+            metaItems.push(`
+              <span class="meta-item">
+                <span class="meta-label">Result:</span>
+                <span class="meta-val">${toolTelem.result_size_bytes} B</span>
+              </span>
+            `);
+          }
+
+          if (isFailed && toolTelem.error_code) {
+            metaItems.push(`
+              <span class="meta-item">
+                <span class="meta-label">Error:</span>
+                <span class="meta-val error-code">${esc(toolTelem.error_code)}</span>
+              </span>
+            `);
+          }
+
+          const callIdTag = toolTelem.call_id
+            ? `<span class="timeline-tool-call-id" title="${esc(toolTelem.call_id)}">#${esc(toolTelem.call_id)}</span>`
+            : '';
+
+          const metaHtml = metaItems.length > 0
+            ? `<div class="timeline-tool-meta">${metaItems.join('')}</div>`
+            : '';
+
+          toolCalloutHtml = `
+            <div class="timeline-tool-callout ${isFailed ? 'tool-failed' : ''}">
+              <div class="timeline-tool-header">
+                <div class="timeline-tool-identity">
+                  <span class="timeline-tool-name">${esc(toolTelem.tool_name)}</span>
+                  ${callIdTag}
+                </div>
+                <span class="timeline-tool-badge ${isFailed ? 'failed' : 'succeeded'}">${esc(toolTelem.outcome)}</span>
+              </div>
+              ${metaHtml}
+            </div>
+          `;
+        }
 
         let fallbackCalloutHtml = '';
         if (transition) {
@@ -2420,6 +2712,7 @@
               <span class="timeline-time">${esc(timeFormatted)}</span>
             </div>
             ${fallbackCalloutHtml}
+            ${toolCalloutHtml}
             <div class="timeline-detail">${esc(e.detail || '')}</div>
             ${taskTag}
           </div>
